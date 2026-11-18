@@ -26,5 +26,5 @@
 M1 (headless main), M2 (window, ANGLE Metal, title and room render) and M3
 (keyboard, mouse, gamepads with rumble) are done, see PROGRESS.md.
 
-4. Audio: the OpenAL shim's mixer output to an SDL audio stream.
+4. (done) Audio: see M4 in PROGRESS.md.
 5. Steam (achievements), Workshop mod folder, the Launcher, the Layer.

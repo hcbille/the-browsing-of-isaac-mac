@@ -280,6 +280,7 @@ void isaac_mac_present(void) {
         _exit(0);
     }
 
+    { extern void isaac_mac_audio_tick(void); isaac_mac_audio_tick(); }
     pace();
     SDL_GL_SwapWindow(g_win);
     stats_frame(start, now_ns(), frame);

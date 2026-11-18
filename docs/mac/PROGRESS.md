@@ -71,6 +71,24 @@ Contracts: `docs/mac/launcher.md` ("Save import", "Workshop sync").
   Real sync into a scratch support dir: 95 mods copied in about 2 s, 402 MB logical, about 12 MB
   physical (APFS clones); a second run copies 0.
 
+## M8 Layer: mod scan and layer-info (Launcher side; pending Verifier, game side not run)
+
+Notes (Implementer, mod-scan piece):
+
+- The gate's input, `modscan.lua`, is produced by the Launcher: `native/mac/launcher/Sources/ModScan.swift` is a
+  faithful Swift port of `createModScan` / `stripLua` / `scanLua` (`scripts/recomp/web/mods.mjs`), run by
+  `PreLaunch.run()` after the Workshop sync over the enabled mods of `<support>/mods`; output
+  `<support>/modscan.lua` (also `modscan_path` in `launch-settings.json`), cache `<support>/modscan-cache.json`.
+  Open item for the Host: serve that file at the virtual path `mods/repentogon/modscan.lua` (the Browser Build seeds
+  `c:/isaac/mods/repentogon/modscan.lua`); see launcher.md "Mod scan".
+- Golden test (`Tests/run.sh`, `Tests/golden/`, `Tests/golden_scan.mjs`): Swift and the JS `createModScan(...).lua()`
+  give byte-identical files on 17 edge-case fixture files and on the 95 Workshop mods (1,207 `.lua` files; set
+  `REPENTANCE_MAC_GOLDEN_WORKSHOP`), and stripLua / scanLua agree per file. Cold scan of the 95 mods about 1.5 to 2 s,
+  cached about 0.3 to 0.5 s (JS about 3 to 4 s).
+- `native/mac/launcher/gen_layer_info.py` writes `layer-info.json` (layer_version from `rgon.lua` VERSION, coverage
+  counts from `gate_names.lua` and `enums_ex.lua`); static estimates until a `lab_names` run's log is passed with
+  `--lab-log`. To be wired into `build.sh` at M11.
+
 ## M2 Picture: done (pending Verifier)
 
 Status: `isaac-mac` opens a 960x540 SDL3 window, creates an OpenGL ES 3.0 context
@@ -153,3 +171,43 @@ Evidence: `ISAAC_MAC_RUN_FRAMES=20000 output/mac/isaac-mac output/recomp/host/is
 exits 0. Error lines match the Browser Build's boot log
 (`output/recomp/local-smoke/page.log`) exactly: XInputGetCapabilitiesEx,
 EOS handle, 7 optional `repentance_*.a` language archives, options config.
+
+## M4 Sound: done (pending Verifier)
+
+Status: music and effects play through an SDL3 audio stream. The Browser Build
+has no C mixer (WebAudio mixes), so `native/mac/host/mac_audio.c` provides the
+strong `isaac_audio_backend_*` hooks (weak in `host_audio.c`) and mixes itself:
+PCM converted once to float stereo, per-source head entry/position/gain/pitch/
+loop, linear-interpolated resampling to the device. No shim file changed.
+
+Format and pump: 48 kHz, 2 ch, float32 stream on the default playback device;
+SDL converts to the hardware. Pump is on demand: SDL's get-callback asks for N
+frames and the mixer renders exactly N under one mutex (a per-frame push would
+crackle whenever a game frame ran long; the 1024-frame period is 21 ms). Streams
+that run dry idle until the game queues more. Music/SFX options reach the mixer
+as AL_GAIN per source (the engine sets them); nothing else is applied. Default
+device changes are followed by SDL itself (default-device stream). Headless or
+no device: a null sink drains the mixer on the wall clock (`ISAAC_MAC_AUDIO_NULL=1`
+forces it; `ISAAC_MAC_AUDIO=0` disables).
+
+Counters: `[mac][audio] mixed ... cb, queued, voices, underruns, overruns, late,
+peak, rms` once a second (`ISAAC_MAC_AUDIO_LOG=0` mutes). Underrun = callback
+found the stream empty well after the previous supply should have played out;
+late = callback slower than real time; overrun = request clamped to 0.5 s.
+`ISAAC_MAC_AUDIO_DUMP=/abs/path.wav` writes the exact float32 stereo samples
+sent to SDL (header patched each second; give an absolute path, the driver
+chdirs).
+
+Evidence (`.scratch/m4/`): 9000-frame windowed run with scripted firing,
+152 s of audio: 7108 callbacks, underruns 0, overruns 0, late 0; 0 silent
+seconds; peak 0.36; 2nd-difference spikes show no enrichment at callback
+boundaries (237 vs 243 expected by chance); headless run exits 0 with voices
+mixed. Not verified by ear.
+
+Verified: Verifier PASS. Music and effects are non-silent, 0 underruns and 0
+overruns, 3 late callbacks at a room-load stall in a 148 s run, no crackle in
+the dump analysis, MusicVolume and SFXVolume respected. Known gaps: no
+positional audio or panning, because the backend hooks receive no positions
+(the Browser Build's `host_audio_web.c` has the same interface and does not pan
+either: no panner or position code in it); the atexit `[mac][audio] final`
+line never prints because the RUN_FRAMES watchdog and exit path use `_exit`.
