@@ -139,9 +139,25 @@ static void *frame_watchdog(void *arg) {
     return NULL;
 }
 
+void isaac_mac_gl_install_fakes(void);
+int isaac_mac_headless(void);
+
 int main(int argc, char **argv) {
+    /* --headless anywhere on the line is ISAAC_MAC_HEADLESS=1 */
+    for (int i = 1; i < argc; ++i)
+        if (!strcmp(argv[i], "--headless")) {
+            setenv("ISAAC_MAC_HEADLESS", "1", 1);
+            for (int j = i; j < argc; ++j) argv[j] = argv[j + 1];
+            --argc;
+            --i;
+        }
+    /* the driver chdirs into the instance; relative output paths (screenshots) are
+     * meant relative to where the user ran it */
+    { char cwd[4096]; if (getcwd(cwd, sizeof cwd)) setenv("ISAAC_MAC_LAUNCH_CWD", cwd, 1); }
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <isaac.segs.bin> <instance dir> [boot|main] [save dir]\n", argv[0]);
+        fprintf(stderr, "usage: %s [--headless] <isaac.segs.bin> <instance dir> [boot|main] [save dir]\n"
+                        "  windowed by default (SDL3 + ANGLE on Metal); --headless or ISAAC_MAC_HEADLESS=1: no window, fake GL\n",
+                argv[0]);
         return 2;
     }
     const char *segs = argv[1];
@@ -185,6 +201,10 @@ int main(int argc, char **argv) {
     if (chdir(g_mac_instance_dir) != 0) perror("[mac] chdir to the instance");
 
     setvbuf(stdout, NULL, _IOLBF, 0);
+    if (isaac_mac_headless()) {
+        isaac_mac_gl_install_fakes();      /* no window, no ANGLE: the fake GL answers */
+        printf("[mac] headless: no window\n");
+    }
     int boot_rc = isaac_run_boot(1);
     uint32_t g = isaac_guard_check();
     printf("[mac] isaac_run_boot -> %d, guard %s\n", boot_rc, g ? "CORRUPTED" : "intact");

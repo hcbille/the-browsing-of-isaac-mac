@@ -23,10 +23,9 @@
 
 ## Next
 
-M1 (headless main) is done, see PROGRESS.md.
+M1 (headless main) and M2 (window, ANGLE Metal, title and room render) are
+done, see PROGRESS.md.
 
-2. Window, GL context and present through SDL3 + ANGLE (replace the WebGL
-   backend's surface; the GL calls themselves are GLES already).
 3. Input from SDL events into `isaac_input_key` / `_mouse_*`; pads into the
    XInput shim.
 4. Audio: the OpenAL shim's mixer output to an SDL audio stream.

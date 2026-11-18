@@ -107,6 +107,160 @@ index 03f7af3..ca94beb 100644
  
      /* Every fixed guest-side region must actually be on the guest side. */
      struct { const char *name; uint32_t lo, hi; } gr[] = {
+diff --git a/scripts/recomp/host/src/host_gl_clientarrays.c b/scripts/recomp/host/src/host_gl_clientarrays.c
+index dedfd58..dbe738f 100644
+--- a/scripts/recomp/host/src/host_gl_clientarrays.c
++++ b/scripts/recomp/host/src/host_gl_clientarrays.c
+@@ -95,7 +95,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || (defined(ISAAC_NATIVE) && ISAAC_NATIVE)
+ #include <GLES3/gl3.h>
+ #else
+ /* Host-test build: the logic is exercised without a GL context. */
+@@ -369,7 +369,7 @@ static uint32_t ring_put(GLenum target, gl_ring *r, uint32_t initial,
+         ++r->orphans;
+     }
+     uint32_t off = r->head;
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || (defined(ISAAC_NATIVE) && ISAAC_NATIVE)
+     if (src) glBufferSubData(target, (GLintptr)off, (GLsizeiptr)bytes, src);
+ #else
+     (void)src;
+@@ -502,7 +502,7 @@ static uint32_t stage_attributes(uint32_t vertex_count, uint32_t shift_limit) {
+                 uint64_t at = g_seg.base + k * unit;
+                 if (at + bytes <= g_vring.cap && 4u * k + vertex_count <= shift_limit) {
+                     bind_array_buffer(g_vring.buf);
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || (defined(ISAAC_NATIVE) && ISAAC_NATIVE)
+                     glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)at, (GLsizeiptr)bytes, isaac_g(base));
+ #endif
+                     g_vring.head = (uint32_t)at + ((bytes + 15u) & ~15u);
+@@ -544,7 +544,7 @@ static uint32_t stage_attributes(uint32_t vertex_count, uint32_t shift_limit) {
+         if (!a->enabled || !a->configured || !a->client_ptr) continue;
+         if (vertex_count) off = attribute_offset(off, a);
+         uint32_t bytes = attribute_span(a, vertex_count);
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || (defined(ISAAC_NATIVE) && ISAAC_NATIVE)
+         glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)(at + off), (GLsizeiptr)bytes,
+                         isaac_g(a->client_ptr));
+ #endif
+@@ -619,7 +619,7 @@ void isaac_gl_draw_arrays_instanced(GLenum mode, GLint first, GLsizei count,
+     ensure_buffers();
+     sync_enables();                                  /* round 107 */
+     uint32_t v0 = stage_attributes((uint32_t)first + (uint32_t)count, first >= 0 ? (1u << 30) : 0u);
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || (defined(ISAAC_NATIVE) && ISAAC_NATIVE)
+     glDrawArraysInstanced(mode, first + (GLint)v0, count, prims);
+ #else
+     (void)v0;
+diff --git a/scripts/recomp/host/src/host_gl_webgl.c b/scripts/recomp/host/src/host_gl_webgl.c
+index 98869fc..2dbd808 100644
+--- a/scripts/recomp/host/src/host_gl_webgl.c
++++ b/scripts/recomp/host/src/host_gl_webgl.c
+@@ -29,7 +29,10 @@
+  * Nothing needed enum translation. Unknown values are still passed through
+  * and would surface as GL errors, which isaac_web_present() polls once per
+  * frame (glGetError) and logs. */
+-#ifdef ISAAC_WEB
++#if defined(ISAAC_WEB) || (defined(ISAAC_NATIVE) && ISAAC_NATIVE)
++/* ISAAC_NATIVE: the Mac Build compiles this backend unchanged against ANGLE
++ * (GLES 3.0 on Metal). The context, window and swap come from native/mac/host/
++ * mac_gl.c (SDL3); only the browser-specific bits below stay behind ISAAC_WEB. */
+ #include "isaac_host.h"
+ #include "shim_decls.h"
+ 
+@@ -55,8 +58,10 @@ static int tex_band_mode(void) {
+     if (g_tex_band_mode < 0) { const char *e = getenv("ISAAC_GL_TEX_BAND"); g_tex_band_mode = (e && *e == '0') ? 0 : 1; }
+     return g_tex_band_mode;
+ }
++#ifdef ISAAC_WEB
+ #include <emscripten.h>
+ #include <emscripten/html5.h>
++#endif
+ #include <stdlib.h>
+ #include <string.h>
+ 
+@@ -202,6 +207,7 @@ void isaac_web_get_integerv(uint32_t pname, uint32_t out) {
+ }
+ 
+ /* ---- frame presentation --------------------------------------------------- */
++#ifdef ISAAC_WEB
+ EM_JS(void, isaac_present_js, (const uint8_t *px, int w, int h), {
+     if (typeof Module.isaacPresent === "function") Module.isaacPresent(px, w, h);
+ });
+@@ -216,6 +222,10 @@ EM_JS(int, isaac_wants_frame_js, (unsigned n), {
+ });
+ static uint8_t *g_present_buf;
+ static uint32_t g_present_cap;
++#else
++/* the Mac Build's window, swap, pacing and screenshots (native/mac/host/mac_gl.c) */
++void isaac_mac_present(void);
++#endif
+ void isaac_web_present(void) {
+     if (!isaac_web_gl_ready()) return;
+     ++g_present_count;
+@@ -230,6 +240,7 @@ void isaac_web_present(void) {
+                 isaac_log("[isaac][gl] GL error 0x%x pending at present #%u", err, g_present_count);
+         }
+     }
++#ifdef ISAAC_WEB
+     if (!isaac_wants_frame_js(g_present_count)) return;   /* no PNG wanted: no readback */
+     int w = 0, h = 0;
+     emscripten_webgl_get_drawing_buffer_size(emscripten_webgl_get_current_context(), &w, &h);
+@@ -247,6 +258,9 @@ void isaac_web_present(void) {
+     glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, g_present_buf);
+     glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prev);
+     isaac_present_js(g_present_buf, w, h);
++#else
++    isaac_mac_present();
++#endif
+ }
+ void isaac_web_gl_report(void) {
+     isaac_log("[isaac][gl] web backend: %u GL calls, %u GL errors, %u frames presented",
+@@ -602,10 +616,16 @@ GLFN(glProgramUniform1ivEXT) { ENTER; RET0; }
+ /* Round 48: the first three of the game's own glReadPixels log the wasm stack
+  * (the names come from the module's name section): the engine reads pixels
+  * back in play, one call every dozen frames, each a GPU pipeline drain. */
++#ifdef ISAAC_WEB
+ EM_JS(void, isaac_readpixels_stack_js, (int x, int y, int w, int h), {
+     var st = (new Error().stack || "").split("\n").slice(2, 12).map(function (l) { var t = l.trim(); if (t.indexOf("at ") === 0) t = t.slice(3); return t.split(" ")[0]; }).join(" < ");
+     err("[isaac][gl] glReadPixels " + w + "x" + h + " at " + x + "," + y + " from: " + st);
+ });
++#else
++static void isaac_readpixels_stack_js(int x, int y, int w, int h) {
++    isaac_log("[isaac][gl] glReadPixels %dx%d at %d,%d", w, h, x, y);
++}
++#endif
+ static uint32_t g_rp_logged;
+ /* Round 94: the game's one readback, made asynchronous. On a footstep frame
+  * (Entity_Player::IsFootstepFrame 0x007b9940, every 6 ticks, from 0x007b8cb0)
+@@ -625,7 +645,17 @@ static uint32_t g_rp_logged;
+  * ISAAC_READPIXELS_CHECK=1 also reads each pixel synchronously and logs the
+  * pair, so the lag can be seen. */
+ /* WebGL2's getBufferSubData; Emscripten implements it, GLES3's gl3.h does not declare it */
++#ifdef ISAAC_WEB
+ void glGetBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, void *data);
++#else
++/* ANGLE exports no glGetBufferSubData; a mapped range does the same read */
++static void glGetBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, void *data) {
++    void *p = glMapBufferRange(target, offset, size, GL_MAP_READ_BIT);
++    if (!p) return;
++    memcpy(data, p, (size_t)size);
++    glUnmapBuffer(target);
++}
++#endif
+ #define RP_RING 4
+ static GLuint g_rp_pbo[RP_RING];
+ static GLsync g_rp_fence[RP_RING];
+@@ -848,4 +878,4 @@ GLFN(glViewport) {
+     RET0;
+ }
+ 
+-#endif /* ISAAC_WEB */
++#endif /* ISAAC_WEB || ISAAC_NATIVE */
 diff --git a/scripts/recomp/host/src/host_lua.c b/scripts/recomp/host/src/host_lua.c
 index d845225..b75b538 100644
 --- a/scripts/recomp/host/src/host_lua.c
@@ -309,6 +463,109 @@ index 818d851..b2a5afa 100644
  #else
  static int isaac_fs_persist_js(const char *key, const char *src, const uint8_t *data, uint32_t len) {
      (void)key; (void)src; (void)data; (void)len; return 0;
+diff --git a/scripts/recomp/host/src/host_shims_gl.c b/scripts/recomp/host/src/host_shims_gl.c
+index e17068a..7bd4a45 100644
+--- a/scripts/recomp/host/src/host_shims_gl.c
++++ b/scripts/recomp/host/src/host_shims_gl.c
+@@ -128,12 +128,20 @@ static int web_context_ready(void) {
+     return 1;
+ }
+ int isaac_web_gl_ready(void) { return web_context_ready(); }
++#elif defined(ISAAC_NATIVE) && ISAAC_NATIVE
++/* Mac Build: native/mac/host/mac_gl.c opens the SDL3 window and the ANGLE
++ * context; with no window (ISAAC_MAC_HEADLESS) the fake GL below answers. */
++extern int isaac_mac_gl_open(void);       /* first use creates it: 1 context current, 0 headless, -1 failed */
++extern int isaac_mac_gl_ready(void);      /* 1 once a context is current */
++int isaac_web_gl_ready(void) { return isaac_mac_gl_ready(); }
+ #endif
+ void imp_opengl32__wglCreateContext(CpuState *restrict cpu) {
+     (void)isaac_arg(cpu, 0);
+     static uint32_t n = 0;
+ #ifdef ISAAC_WEB
+     if (!web_context_ready()) { cpu->EAX = 0; return; }
++#elif defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    if (isaac_mac_gl_open() < 0) { cpu->EAX = 0; return; }
+ #endif
+     cpu->EAX = 0x77880000u + (++n & 0x7ffffu);
+ }
+@@ -182,6 +190,8 @@ void imp_opengl32__wglMakeCurrent(CpuState *restrict cpu) {
+     uint32_t rc = isaac_arg(cpu, 1);
+ #ifdef ISAAC_WEB
+     if (rc && g_web_ctx) emscripten_webgl_make_context_current(g_web_ctx);
++#elif defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    { extern void isaac_mac_gl_make_current(void); if (rc) isaac_mac_gl_make_current(); }
+ #else
+     (void)rc;
+ #endif
+@@ -254,14 +264,19 @@ void isaac_gl_census_report(void) {
+ void imp_opengl32__glGetIntegerv(CpuState *restrict cpu) {
+     gl_census("glGetIntegerv", isaac_arg(cpu, 0), 0, 0, 0);
+     uint32_t pname = isaac_arg(cpu, 0), out = isaac_arg(cpu, 1);
+-#ifdef ISAAC_WEB
++#if defined(ISAAC_WEB) || (defined(ISAAC_NATIVE) && ISAAC_NATIVE)
+     /* Real answers for state and limits; the version/extension gates below
+      * keep their headless answers so the capability refresh takes the same
+      * branches as the node build. */
+-    if (pname == 0x8CA6u /* GL_FRAMEBUFFER_BINDING */ || pname == 0x0D33u ||
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    if (isaac_web_gl_ready() &&          /* headless: the fake answers below */
++#else
++    if (
++#endif
++        (pname == 0x8CA6u /* GL_FRAMEBUFFER_BINDING */ || pname == 0x0D33u ||
+         pname == 0x0D3Au || pname == 0x84E8u || pname == 0x8073u || pname == 0x851Cu ||
+         pname == 0x8CA7u /* GL_RENDERBUFFER_BINDING */ || pname == 0x8069u /* GL_TEXTURE_BINDING_2D */ ||
+-        pname == 0x0BA2u /* GL_VIEWPORT */ || pname == 0x8B8Du /* GL_CURRENT_PROGRAM */) {
++        pname == 0x0BA2u /* GL_VIEWPORT */ || pname == 0x8B8Du /* GL_CURRENT_PROGRAM */)) {
+         extern void isaac_web_get_integerv(uint32_t, uint32_t);
+         isaac_web_get_integerv(pname, out);
+         cpu->EAX = 0;
+@@ -488,6 +503,14 @@ void isaac_room_test(CpuState *cpu, const char *line) {
+     if (probe_u32(game + 0x1b83cu) == 0u) isaac_w32(game + 0x18318u, oslot);
+ }
+ 
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++/* The Mac Build carries both: host_gl_webgl.c's real entry points (ANGLE) and
++ * this fake, for ISAAC_MAC_HEADLESS runs with no window. The fake's functions
++ * are renamed fakegl_imp_* and the import table is pointed at them when
++ * headless (isaac_mac_gl_install_fakes, end of this file). The rename header is
++ * generated from shim_decls.h by scripts/mac/build_native.py. */
++#include "gl_fake_rename.h"
++#endif
+ #ifndef ISAAC_WEB   /* the fake, headless GL; host_gl_webgl.c is the web build's */
+ /* void glClear(GLbitfield mask) -- cdecl. Called once at 0x00a6b9e1 with
+  * 0x4000 (GL_COLOR_BUFFER_BIT); the return value is discarded. */
+@@ -945,6 +968,20 @@ void imp_opengl32__glViewport(CpuState *restrict cpu) {
+     cpu->EAX = 0;
+ }
+ 
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++/* point the import table at the fake GL (headless Mac Build) */
++static const struct { const char *name; isaac_shim_fn fn; } fakegl_table[] = { FAKEGL_ENTRIES };
++void isaac_mac_gl_install_fakes(void) {
++    unsigned n = 0;
++    for (unsigned i = 0; i < isaac_import_count; ++i) {
++        isaac_import *imp = &isaac_imports[i];
++        if (strcmp(imp->dll, "opengl32.dll") != 0) continue;
++        for (unsigned k = 0; fakegl_table[k].name; ++k)
++            if (strcmp(fakegl_table[k].name, imp->symbol) == 0) { imp->fn = fakegl_table[k].fn; ++n; break; }
++    }
++    isaac_log("[isaac][gl] headless: %u opengl32 entry point(s) switched to the fake GL", n);
++}
++#endif
+ #endif /* !ISAAC_WEB */
+ 
+ /* ================= TEMP instrumentation (remove after 0xa6b570 root cause) = */
+@@ -958,6 +995,9 @@ void imp_kernel32__OutputDebugStringA(CpuState *restrict cpu) {
+     }
+     buf[n] = 0;
+     fprintf(stderr, "[odsa] %s\n", buf);
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    { extern void isaac_mac_log_line(const char *line); isaac_mac_log_line(buf); }
++#endif
+     /* A log line is work, not the idle lap of a lock loop (issue #12). The
+      * engine logger 0x00a112c0 takes its Mutex 0xc37958 for every line and
+      * calls this import directly, so it never reached host_trap's "a host
 diff --git a/scripts/recomp/host/src/host_shims_heap.c b/scripts/recomp/host/src/host_shims_heap.c
 index caa9da0..d779e54 100644
 --- a/scripts/recomp/host/src/host_shims_heap.c
@@ -422,7 +679,7 @@ index 7933f49..ce09811 100644
          isaac_w32(ISAAC_TEB_VA + 0x34, 3u);         /* ERROR_PATH_NOT_FOUND */
          return;
 diff --git a/scripts/recomp/host/src/host_shims_win.c b/scripts/recomp/host/src/host_shims_win.c
-index 372e76d..8864b1b 100644
+index 372e76d..e2f3abb 100644
 --- a/scripts/recomp/host/src/host_shims_win.c
 +++ b/scripts/recomp/host/src/host_shims_win.c
 @@ -17,7 +17,9 @@
@@ -435,8 +692,24 @@ index 372e76d..8864b1b 100644
  
  #define WIN_CLASS_MAX 32
  #define WIN_HWND_MAX  32
-@@ -1265,10 +1267,20 @@ void isaac_input_mouse_button(int button, int down) {
+@@ -1091,7 +1093,7 @@ void isaac_render_skipped(CpuState *restrict cpu) { (void)cpu; }
+ #endif
+ /* BOOL SwapBuffers(HDC) -- gdi32, 4 bytes. One call per presented frame. */
+ void imp_gdi32__SwapBuffers(CpuState *restrict cpu) {
+-#ifdef ISAAC_WEB
++#if defined(ISAAC_WEB) || (defined(ISAAC_NATIVE) && ISAAC_NATIVE)
+     { extern void isaac_web_present(void); isaac_web_present(); }
+ #endif
+     (void)isaac_arg(cpu, 0);
+@@ -1263,12 +1265,27 @@ void isaac_input_mouse_button(int button, int down) {
+     msgq_push(message, g_mouse_mk, ((uint32_t)g_cur_y << 16) | ((uint32_t)g_cur_x & 0xFFFFu));
+     ++g_input_events;
  }
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++/* The Mac Build's window close button / Cmd+Q: WM_CLOSE to the game's window,
++ * which GLFW turns into the game's own orderly exit. */
++void isaac_input_window_close(void) { msgq_push(0x10u, 0u, 0u); }
++#endif
  uint32_t isaac_input_queued(void) { return g_msgq_count; }
  uint32_t isaac_input_dropped(void) { return g_input_dropped; }
 +#ifdef __EMSCRIPTEN__
@@ -456,6 +729,19 @@ index 372e76d..8864b1b 100644
  static void input_poll_page(void) {
      int32_t ev[4];
      for (unsigned n = 0; n < 64; ++n) {
+diff --git a/scripts/recomp/host/src/host_trap.c b/scripts/recomp/host/src/host_trap.c
+index 425aae4..5880866 100644
+--- a/scripts/recomp/host/src/host_trap.c
++++ b/scripts/recomp/host/src/host_trap.c
+@@ -376,7 +376,7 @@ void isaac_stub_report(void) {
+       extern uint32_t isaac_input_dropped(void);
+       isaac_log("[isaac][input] %u messages dispatched to the WndProc, %u still queued, %u dropped (queue full)",
+                 isaac_input_dispatched(), isaac_input_queued(), isaac_input_dropped()); }
+-#ifdef ISAAC_WEB
++#if defined(ISAAC_WEB) || (defined(ISAAC_NATIVE) && ISAAC_NATIVE)
+     { extern void isaac_web_gl_report(void); isaac_web_gl_report();
+       extern void isaac_gl_report(void); isaac_gl_report(); }
+ #endif
 diff --git a/scripts/recomp/lift/boot_integration.c b/scripts/recomp/lift/boot_integration.c
 index 6aa6b68..133df95 100644
 --- a/scripts/recomp/lift/boot_integration.c
