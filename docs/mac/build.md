@@ -38,7 +38,7 @@ Commands run from the repository root; `$PY` is `python` (else `python3`) of the
 | 9 | `launcher` | `native/mac/launcher/build.sh <out>/work` | `<out>/work/Launcher` |
 | 10 | `layer` | `$PY scripts/mac/stage_layer.py <out>/work/layer`; `$PY native/mac/launcher/gen_layer_info.py --enums <REPENTOGON enums_ex.lua> --out <out>/work/layer-info.json` | `<out>/work/{layer/,layer-info.json}` |
 | 11 | `app` | Builds `Repentance+.app` from scratch: `Info.plist`, `MacOS/<Launcher>`, `MacOS/isaac-mac`, `Resources/{isaac.segs.bin, game-bundle/, layer/, layer-info.json, AppIcon.icns}`. Big data is cloned with `cp -c` (APFS), so it costs no disk. The icon is a plain placeholder drawn by `scripts/mac/make_icon.py` (no game art) | the app folder |
-| 12 | `dylibs` | Copies ANGLE (`libEGL`, `libGLESv2`), SDL3 and, if found, `libsteam_api.dylib` into `Contents/Frameworks`; sets `@rpath/<name>` install names; rewrites the game's non-system dependencies to `@rpath/...`; replaces every `LC_RPATH` of the game with `@executable_path/../Frameworks` (of the libraries: `@loader_path`); fails if any non-system, non-`@rpath` dependency remains | `Contents/Frameworks/*.dylib` |
+| 12 | `dylibs` | Compiles the vendored NotchFill hook (`native/mac/third_party/notchfill/NotchFillHook.m`, MIT, unchanged; `clang -arch arm64 -mmacosx-version-min=11.0 -O2 -dynamiclib -fobjc-arc -framework AppKit`) to `Frameworks/libNotchFillHook.dylib` and copies its `LICENSE` to `Resources/licenses/NotchFill-LICENSE.txt`; copies ANGLE (`libEGL`, `libGLESv2`), SDL3 and, if found, `libsteam_api.dylib` into `Contents/Frameworks`; sets `@rpath/<name>` install names; rewrites the game's non-system dependencies to `@rpath/...`; replaces every `LC_RPATH` of the game with `@executable_path/../Frameworks` (of the libraries: `@loader_path`); fails if any non-system, non-`@rpath` dependency remains | `Contents/Frameworks/*.dylib`, `Resources/licenses/NotchFill-LICENSE.txt` |
 | 13 | `config` | Writes `Contents/Resources/sync-config.json` with `workshop_fallback` = `<game>/steamapps/workshop/content/250900` and `save_search` = `<game>` | the file |
 | 14 | `sign` | `codesign --force --sign -` on each dylib, then `isaac-mac`, then the Launcher program, then the app; `codesign --verify --deep --strict` | a valid signature |
 
@@ -87,12 +87,13 @@ Repentance+.app/Contents/
   Info.plist
   MacOS/Repentance+          the Launcher (CFBundleExecutable)
   MacOS/isaac-mac            the game
-  Frameworks/                libEGL, libGLESv2, libSDL3.0, libsteam_api (when found)
+  Frameworks/                libEGL, libGLESv2, libSDL3.0, libsteam_api (when found), libNotchFillHook (optional, Launcher option)
   Resources/isaac.segs.bin   game default: <exe dir>/../Resources/isaac.segs.bin
   Resources/game-bundle/     game default
   Resources/layer/           game default (--layer-dir)
   Resources/layer-info.json  the Launcher's Options tab
   Resources/sync-config.json this machine's Workshop fallback and save search
+  Resources/licenses/        NotchFill-LICENSE.txt (the Layer's licence is in Resources/layer/)
   Resources/AppIcon.icns
 ```
 

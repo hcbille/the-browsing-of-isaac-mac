@@ -39,6 +39,45 @@ enum Paths {
     }
 }
 
+// MARK: - NotchFill (optional, docs/mac/launcher.md)
+
+enum NotchFill {
+    static let libraryName = "libNotchFillHook.dylib"
+
+    /// True when a built-in screen has a notch (macOS 12+: a non-empty `auxiliaryTopLeftArea`).
+    /// `REPENTANCE_MAC_LAUNCHER_FORCE_NOTCH=1` shows the option on any Mac (UI tests).
+    static var macHasNotch: Bool {
+        if Paths.env["REPENTANCE_MAC_LAUNCHER_FORCE_NOTCH"] == "1" { return true }
+        if #available(macOS 12.0, *) {
+            return NSScreen.screens.contains { !($0.auxiliaryTopLeftArea ?? .zero).isEmpty }
+        }
+        return false
+    }
+
+    /// `<app>/Contents/Frameworks/libNotchFillHook.dylib`: next to the game program, else the app's own
+    /// Frameworks folder. nil when the file is not there.
+    static func libraryURL(gameExecutable: URL = Paths.gameExecutable,
+                           privateFrameworks: String? = Bundle.main.privateFrameworksPath) -> URL? {
+        var dirs = [gameExecutable.deletingLastPathComponent().deletingLastPathComponent()
+                        .appendingPathComponent("Frameworks")]
+        if let p = privateFrameworks { dirs.append(URL(fileURLWithPath: p)) }
+        return dirs.map { $0.appendingPathComponent(libraryName) }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    /// The game's environment. Off: `DYLD_INSERT_LIBRARIES` is removed (never inherited). On: set to
+    /// the library; when the file is missing `note` says so and the game starts without it.
+    static func environment(base: [String: String], enabled: Bool, library: URL?, note: (String) -> Void)
+        -> [String: String] {
+        var env = base
+        env["DYLD_INSERT_LIBRARIES"] = nil
+        guard enabled else { return env }
+        if let l = library { env["DYLD_INSERT_LIBRARIES"] = l.path }
+        else { note("NotchFill is on but \(libraryName) was not found in the app; starting the game without it") }
+        return env
+    }
+}
+
 // MARK: - Settings
 
 struct LauncherSettings: Codable, Equatable {
@@ -49,11 +88,13 @@ struct LauncherSettings: Codable, Equatable {
     var luaDebug = false
     /// "integer" = whole-number scaling with black bars (default); "fill" = fill the window.
     var scaleMode = "integer"
+    /// Load the vendored NotchFill library into the game (full screen uses the strip beside the notch).
+    var notchFill = false
 
     enum CodingKeys: String, CodingKey {
         case skipLauncher = "skip_launcher", vanillaLaunch = "vanilla_launch"
         case debugConsole = "debug_console", logWindow = "log_window", luaDebug = "lua_debug"
-        case scaleMode = "scale_mode"
+        case scaleMode = "scale_mode", notchFill = "notch_fill"
     }
     init() {}
     init(from d: Decoder) throws {
@@ -65,6 +106,7 @@ struct LauncherSettings: Codable, Equatable {
         luaDebug = try c.decodeIfPresent(Bool.self, forKey: .luaDebug) ?? false
         let sm = try c.decodeIfPresent(String.self, forKey: .scaleMode) ?? "integer"
         scaleMode = sm == "fill" ? "fill" : "integer"
+        notchFill = try c.decodeIfPresent(Bool.self, forKey: .notchFill) ?? false
     }
 
     static func load() -> LauncherSettings {

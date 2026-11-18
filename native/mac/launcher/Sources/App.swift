@@ -10,6 +10,8 @@ final class AppModel: ObservableObject {
     @Published var layer: LayerInfo? = LayerInfo.load()
     @Published var gate: GateLog? = GateLog.load()
     let runner = GameRunner()
+    /// A built-in screen has a notch: only then is the NotchFill option offered (kept visible while it is on).
+    var hasNotch: Bool { NotchFill.macHasNotch || settings.notchFill }
     /// Decided once at start: skip is on and Option is not held.
     let skipThisStart: Bool
     var didAutoStart = false

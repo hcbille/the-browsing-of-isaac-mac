@@ -11,10 +11,12 @@ holds only what it takes to compile the same code natively for arm64 macOS:
   with `-DISAAC_NATIVE=1`, reaching Guest memory through a base pointer
   (arm64 macOS reserves the low 4 GiB, so the browser build's identity
   mapping is impossible, see `docs/adr/0001`)
-- the Mac Host: the Guest memory region, real file I/O and a headless driver
-  (`native/mac/host`)
-- a native build script (`scripts/mac/build_native.py`)
-- a graphics spike proving SDL3 + ANGLE on Metal (`native/mac/spike`)
+- the Mac Host: Guest memory, file I/O, window, input, audio, saves, mods and the
+  Steam bridge (`native/mac/host`)
+- the Launcher, a SwiftUI app (`native/mac/launcher`)
+- the build: `scripts/mac/build.sh` for the whole app, `build_native.py` for the game
+  binary alone, and `run.sh` for test runs (`scripts/mac`)
+- NotchFill's hook source, unchanged (`native/mac/third_party/notchfill`)
 - the design: `GLOSSARY.md`, `docs/adr`, `docs/mac`
 
 ## What is not here
@@ -26,11 +28,32 @@ copy and never leaves your machine.
 
 ## Status
 
-See `docs/mac/NEXT.md`. Today: the upstream browser pipeline is verified on an
-M2, every Host file compiles natively for arm64, and the first native link is
-being brought up. There is no playable Mac app yet. Planned: SDL3 window,
-input and audio, Steam achievements and Workshop mods, a Launcher, and
-REPENTOGON support through upstream's compatibility layer.
+Playable, work in progress. Details: `docs/mac/NEXT.md` and `docs/mac/RUNBOOK.md`.
+
+Working, on an M2 MacBook Air:
+
+- A native arm64 `Repentance+.app`, built from your copy of the game by one resumable
+  command (`scripts/mac/build.sh`). It runs from its own bundle.
+- Picture through SDL3 and ANGLE on Metal: resizable window, full screen, integer or fill
+  scaling. Keyboard, mouse and gamepads (rumble, hot-plug). Native audio, with the intro
+  video in sync.
+- Your saves, imported from the Windows or Steam folders on first start.
+- Steam Workshop mods: a Launcher syncs your subscriptions, and each mod can be switched
+  on or off. The game's mods menu agrees with the Launcher.
+- REPENTOGON-using mods through upstream's compatibility layer: 5 of 11 tested mods,
+  including Epiphany (its Tarnished characters too) and Fiend Folio: RELOADED. The layer
+  decides per mod whether it can run.
+- A Launcher with a startup window that shows each loading step. A boot with about 95 mods
+  takes roughly 10 seconds.
+- Optional full screen into the strip beside the notch (NotchFill, see below).
+
+Not done yet:
+
+- Steam achievements: the bridge works against a stub, but stays off until it's checked
+  with a real Steam client.
+- Full-screen scaling that fills the whole notched display.
+- More REPENTOGON coverage (External Item Descriptions, StageAPI and others).
+- A from-scratch build check, and a known rare Lua garbage-collector crash.
 
 ## Use
 
@@ -40,8 +63,32 @@ git -C the-browsing-of-isaac checkout b986dd8
 scripts/mac/apply.sh the-browsing-of-isaac
 ```
 
-Then build upstream as its `docs/DEVELOPING.md` describes, through
-`build_boot.py`, and run `python scripts/mac/build_native.py` in the checkout.
+Then, in the checkout, build the app from your Windows copy of the game:
+
+```sh
+scripts/mac/build.sh --game "<folder with isaac-ng.exe>"
+```
+
+It needs Python, Java, Ghidra, Steamless, SDL3 and an ANGLE build with the Metal backend.
+`docs/mac/build.md` lists them with the environment variables that point at them. The
+first run takes about an hour, and later runs skip the stages that are current. The app
+lands in `output/mac-app/Repentance+.app`.
+
+## Third-party software
+
+The Mac app is built with, and bundles, these libraries under their own licences:
+
+- [NotchFill](https://github.com/squallsama/NotchFill) by Dmitrii Tikhonov, MIT. Its
+  `libNotchFillHook.dylib` is built from the unchanged source at commit `7fd6679`
+  (`native/mac/third_party/notchfill/`, with its licence). When the Launcher's
+  "Fill the notch area in full screen" option is on, it's loaded into the game so
+  macOS full screen also uses the strip beside the notch. Off by default.
+- [SDL3](https://github.com/libsdl-org/SDL), zlib licence: window, input and audio.
+- [ANGLE](https://chromium.googlesource.com/angle/angle), BSD-3-Clause: OpenGL ES on Metal.
+- [REPENTOGON](https://github.com/TeamREPENTOGON/REPENTOGON)'s `enums_ex.lua`,
+  GPL-2.0, unchanged, for the REPENTOGON-compatible layer.
+- Valve's `libsteam_api.dylib` comes from your own Steam installation at build time.
+  It isn't part of this repository.
 
 ## License
 

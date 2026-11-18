@@ -246,6 +246,13 @@ struct OptionsView: View {
                      : "The picture is scaled by whole numbers and centred, with black bars around it.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            if model.hasNotch {
+                Section("Full screen") {
+                    Toggle("Fill the notch area in full screen (NotchFill)", isOn: $model.settings.notchFill)
+                    Text("Uses the strip beside the notch in full screen. Loads the NotchFill library into the game.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("Launch") {
                 Toggle("Vanilla Launch (Layer off)", isOn: $model.settings.vanillaLaunch)
                 Text("No mod sees REPENTOGON. Mods that need it will fall back to their own code or refuse to run.")

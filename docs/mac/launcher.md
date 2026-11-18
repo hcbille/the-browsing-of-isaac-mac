@@ -28,7 +28,10 @@ game runs (Steam tracks the process it started) and quits when the game exits.
 - **Options**: Vanilla Launch (Layer off), Debug console, Log window, Lua debug
   (off by default; warning that it gives mods access to files and programs). The
   Layer's version and REPENTOGON coverage come from `layer-info.json`. No
-  auto-update.
+  auto-update. **Fill the notch area in full screen (NotchFill)** (`notch_fill`, default off): "Uses the strip
+  beside the notch in full screen. Loads the NotchFill library into the game." Offered only when a screen has a
+  notch (`NSScreen.auxiliaryTopLeftArea` non-empty, macOS 12+; it stays visible while the setting is on, so it can
+  be turned off); otherwise hidden.
 - **Play** writes `launch-settings.json`, starts the game with the arguments
   below, and always copies the game's stdout and stderr to `logs/game.log`; with
   the Log window option it also tails them in a "Game Log" window.
@@ -63,6 +66,20 @@ game runs (Steam tracks the process it started) and quits when the game exits.
   stored as `scale_mode` (`"integer"` | `"fill"`) in `launcher-settings.json` and written to
   `launch-settings.json` at each Play. The game side must read `scale_mode`. No fullscreen-at-start key is
   defined, so the Launcher has none.
+- **NotchFill** (`native/mac/third_party/notchfill/`, MIT, Copyright (c) 2026 Dmitrii Tikhonov, vendored
+  unchanged from https://github.com/squallsama/NotchFill at `7fd66794f5b96098bf76fa8d1b8200d363f4df86`; credit
+  also in the app at `Contents/Resources/licenses/NotchFill-LICENSE.txt`). The build compiles it to
+  `Contents/Frameworks/libNotchFillHook.dylib`. With the option on, `GameRunner` starts the game with
+  `DYLD_INSERT_LIBRARIES=<that file>` (found next to the game program, else `Bundle.main.privateFrameworksPath`);
+  with it off the variable is removed from the game's environment, never inherited. A missing file is logged
+  (`launcher.log`, Game Log) and the game starts without it. Why injection works: the game and the library are
+  ad-hoc signed without hardened runtime, so dyld honours `DYLD_INSERT_LIBRARIES`. The hook only changes macOS
+  native full screen (Cmd+Ctrl+F, the green button; the game's own F key / Options full screen if it uses the
+  native mode): it stretches the full-screen window up beside the notch, raises it above the menu bar and reports a
+  top safe-area inset of 0. Windowed play is unchanged. It logs `NotchFillHook: loaded` (stderr, so in
+  `game.log`). `NOTCHFILL_DISABLE=1` in the environment loads it without any change. The hook also reads NotchFill's
+  own preferences (`dev.notchfill.NotchFill`) if that app is installed. The option is applied even on a Mac
+  without a notch (the hook does nothing there), so a saved `true` is honoured.
 - A Workshop update re-copies a mod and keeps its `disable.it`; the Launcher
   never touches anything but `disable.it` and the Trash move.
 
@@ -91,7 +108,7 @@ environment variable, for tests.
 | Game program | `Repentance+.app/Contents/MacOS/isaac-mac` | `REPENTANCE_MAC_GAME_EXE` | the build |
 
 Test-only: `REPENTANCE_MAC_LAUNCHER_TAB=play|mods|options`, `REPENTANCE_MAC_LAUNCHER_SORT=load`,
-`REPENTANCE_MAC_LAUNCHER_FORCE=1` (act as if Option were held),
+`REPENTANCE_MAC_LAUNCHER_FORCE=1` (act as if Option were held), `REPENTANCE_MAC_LAUNCHER_FORCE_NOTCH=1` (show the NotchFill option on a Mac without a notch),
 `REPENTANCE_MAC_LAUNCHER_SNAPSHOT=<png>` (+ `_SNAPSHOT_DELAY`, `_EXIT=1`) renders
 every visible window from inside the app (no screen-recording permission needed).
 These are environment variables on purpose: unknown command-line arguments stopped
@@ -169,7 +186,7 @@ are invented.)
 
 ```json
 { "skip_launcher": false, "vanilla_launch": false, "debug_console": false,
-  "log_window": false, "lua_debug": false, "scale_mode": "integer" }
+  "log_window": false, "lua_debug": false, "scale_mode": "integer", "notch_fill": false }
 ```
 
 ### Launch contract (what the game must implement)
@@ -200,7 +217,7 @@ convenience):
   "version": 1,
   "launched_at": "2026-11-18T01:41:16Z",
   "vanilla_launch": false, "debug_console": false, "log_window": false, "lua_debug": false,
-  "scale_mode": "integer",
+  "scale_mode": "integer", "notch_fill": false,
   "support_dir": "<support>", "mods_dir": "<mods>",
   "gate_log_path": "<support>/logs/layer-gate.json",
   "game_log_path": "<support>/logs/game.log",

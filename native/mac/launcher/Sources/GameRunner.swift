@@ -57,7 +57,7 @@ final class GameRunner: ObservableObject {
             "version": 1, "launched_at": iso,
             "vanilla_launch": s.vanillaLaunch, "debug_console": s.debugConsole,
             "log_window": s.logWindow, "lua_debug": s.luaDebug,
-            "scale_mode": s.scaleMode,
+            "scale_mode": s.scaleMode, "notch_fill": s.notchFill,
             "support_dir": Paths.supportDir.path, "mods_dir": Paths.modsDir.path,
             "save_dir": SyncDirs.fromEnvironment().saves.path,
             "gate_log_path": Paths.gateLog.path, "game_log_path": Paths.gameLog.path,
@@ -79,7 +79,16 @@ final class GameRunner: ObservableObject {
         let p = Process()
         p.executableURL = exe
         p.arguments = args
-        var env = ProcessInfo.processInfo.environment
+        let lib = s.notchFill ? NotchFill.libraryURL(gameExecutable: exe) : nil
+        let launcherLog = SyncLog(SyncDirs.fromEnvironment().log)
+        var env = NotchFill.environment(base: ProcessInfo.processInfo.environment, enabled: s.notchFill, library: lib) { msg in
+            launcherLog.add(msg)
+            self.logText += "[launcher] \(msg)\n"
+        }
+        if let l = lib {
+            launcherLog.add("NotchFill on: DYLD_INSERT_LIBRARIES=\(l.path)")
+            logText += "[launcher] NotchFill on: DYLD_INSERT_LIBRARIES=\(l.path)\n"
+        }
         env["REPENTANCE_MAC_LAUNCH_SETTINGS"] = Paths.launchSettings.path
         p.environment = env
         let pipe = Pipe()

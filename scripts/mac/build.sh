@@ -327,8 +327,10 @@ fix_deps() { # <macho> <rpath to set>: non-system deps -> @rpath/<leaf>, replace
 fp_dylibs() {
     echo "$S_app"; fp_files scripts/mac/build.sh
     fp_files "$ANGLE_DIR/libEGL.dylib" "$ANGLE_DIR/libGLESv2.dylib" "$(sdl_dylib)" "$(steam_dylib)"
+    fp_tree native/mac/third_party/notchfill     # NotchFillHook.m, its LICENSE, README
 }
 ok_dylibs() { [ -f "$C/Frameworks/libGLESv2.dylib" ] && [ -f "$C/Frameworks/libSDL3.0.dylib" ] \
+    && [ -f "$C/Frameworks/libNotchFillHook.dylib" ] && [ -f "$C/Resources/licenses/NotchFill-LICENSE.txt" ] \
     && otool -arch arm64 -l "$C/MacOS/isaac-mac" | grep -q '@executable_path/../Frameworks'; }
 sdl_dylib() {
     p=${SDL_PREFIX:-$(brew --prefix sdl3 2>/dev/null || true)}
@@ -350,6 +352,12 @@ run_dylibs() {
     steam=$(steam_dylib)
     if [ -n "$steam" ]; then cp "$steam" "$fw/libsteam_api.dylib"
     else warn "libsteam_api.dylib not found (no local Steam client; set STEAM_API_DYLIB): Steam features are skipped"; fi
+    # NotchFill (MIT, vendored unchanged): optional "fill the notch" hook, loaded by the Launcher with
+    # DYLD_INSERT_LIBRARIES only when the user turns it on. Same command line as upstream, arm64 only.
+    clang -arch arm64 -mmacosx-version-min=11.0 -O2 -Wall -dynamiclib -fobjc-arc -framework AppKit \
+        -o "$fw/libNotchFillHook.dylib" native/mac/third_party/notchfill/NotchFillHook.m
+    mkdir -p "$C/Resources/licenses"
+    cp native/mac/third_party/notchfill/LICENSE "$C/Resources/licenses/NotchFill-LICENSE.txt"
     chmod u+w "$fw"/*.dylib
     for l in "$fw"/*.dylib; do
         install_name_tool -id "@rpath/$(basename "$l")" "$l" 2>/dev/null

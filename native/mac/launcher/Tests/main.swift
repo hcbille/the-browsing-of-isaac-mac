@@ -237,6 +237,20 @@ do {
     check((try? JSONDecoder().decode(LauncherSettings.self, from: enc))?.scaleMode == "fill"
           && String(decoding: enc, as: UTF8.self).contains("\"scale_mode\""), "scale_mode fill round-trips under the key scale_mode")
     check((try JSONDecoder().decode(LauncherSettings.self, from: Data("{\"scale_mode\":\"weird\"}".utf8))).scaleMode == "integer", "unknown scale_mode falls back to integer")
+    check(s0.notchFill == false, "notch_fill defaults to off")
+    var s2 = LauncherSettings(); s2.notchFill = true
+    let enc2 = try JSONEncoder().encode(s2)
+    check((try? JSONDecoder().decode(LauncherSettings.self, from: enc2))?.notchFill == true
+          && String(decoding: enc2, as: UTF8.self).contains("\"notch_fill\""), "notch_fill round-trips under the key notch_fill")
+    // the game's environment: DYLD_INSERT_LIBRARIES is set only when on, and never inherited
+    let lib = URL(fileURLWithPath: "/x/Frameworks/libNotchFillHook.dylib")
+    var notes: [String] = []
+    let inherited = ["DYLD_INSERT_LIBRARIES": "/evil.dylib", "A": "b"]
+    check(NotchFill.environment(base: inherited, enabled: false, library: lib, note: { notes.append($0) })["DYLD_INSERT_LIBRARIES"] == nil, "notch off: inherited DYLD_INSERT_LIBRARIES is removed")
+    check(NotchFill.environment(base: inherited, enabled: true, library: lib, note: { notes.append($0) })["DYLD_INSERT_LIBRARIES"] == lib.path, "notch on: DYLD_INSERT_LIBRARIES is the library only")
+    check(notes.isEmpty, "no note when the library exists")
+    let missing = NotchFill.environment(base: inherited, enabled: true, library: nil, note: { notes.append($0) })
+    check(missing["DYLD_INSERT_LIBRARIES"] == nil && missing["A"] == "b" && notes.count == 1, "notch on, library missing: env without it and one note")
 }
 
 // ---- sync-config merge: env > support > bundled > defaults ----
