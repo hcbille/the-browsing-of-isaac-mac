@@ -1,0 +1,8 @@
+-std=gnu11
+-DISAAC_NATIVE=1
+-DRECOMP_MEM_IDENTITY=0
+-I../../../scripts/recomp/host/include
+-I../../../scripts/recomp/host/generated
+-I../../../scripts/recomp/lift
+-I../../../output/recomp/lift/gu
+-I../../../tools/lua-5.3.3/src
