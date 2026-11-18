@@ -81,16 +81,28 @@ Pass: exit 0 and `reached N frames (wanted 3000); guard intact`. The only expect
 ### A real game with mods (scratch support folder)
 
 The game takes a `launch-settings.json`; flags win over the JSON, which wins over env vars
-(`launcher.md`, "Game side"). A working runner is `.scratch/m8/run.sh <support dir> <log>`: it writes the
-JSON (support, mods, saves, gate log, modscan, layer, segs, bundle) and runs the game under `perl alarm`.
-Env knobs: `FRAMES`, `SCRIPT`, `SHOT`, `DBG=true` (debug console), `VAN=true` (Vanilla Launch),
-`ISAAC_RGON_LAB=<lab file>`. To fill a support folder with the 95 Workshop mods, run the Launcher's
+(`launcher.md`, "Game side"). The runner is `scripts/mac/run.sh <support dir> <log>`. It stages a fresh
+Layer into `<support>/.layer`, writes the JSON (support, mods, saves, gate log, modscan, layer, segs, bundle),
+and runs the game under `perl alarm`. It refuses to start while a game runs. Env knobs (all in its header):
+`FRAMES`, `SCRIPT`, `SHOT`, `LAB=lab_trapdoor.lua` (copied from `scripts/recomp/rgon/`), `HEADLESS=1`,
+`FRESH=1` (runs `scripts/mac/fresh.sh` first), `DBG=true`, `VAN=true`, `ALARM`, `BUNDLE`. Example, headless
+to Cellar I in about 10 s: `HEADLESS=1 FRESH=1 FRAMES=900 LAB=lab_trapdoor.lua
+SCRIPT='until=Room 1.2(Start Room):enter' scripts/mac/run.sh <support> <log>`. To fill a support folder with
+the 95 Workshop mods, run the Launcher's
 pre-launch (`.scratch/verify67/prelaunch.bin`) with `REPENTANCE_MAC_SUPPORT_DIR=<support>`,
 `REPENTANCE_MAC_WORKSHOP_DIR=/nonexistent`, `REPENTANCE_MAC_WORKSHOP_FALLBACK=<workshop>`,
 `REPENTANCE_MAC_STEAM_USERDATA=<empty dir>`.
 
-These runners live in `.scratch/` (untracked). Promoting `run.sh`, `fresh.sh` and `lab_trapdoor.lua` into
-`scripts/mac/` is an open task.
+**The app itself, without touching the real save**: `open -n <app> --env REPENTANCE_MAC_SUPPORT_DIR=<scratch
+support>` plus `--env ISAAC_MAC_SCRIPT=...`, `--env ISAAC_MAC_SHOT=...` and `--env ISAAC_MAC_RUN_FRAMES=...`.
+The Launcher passes its environment to the game. `{"skip_launcher": true}` in that folder's
+`launcher-settings.json` makes it press Play by itself. `REPENTANCE_MAC_LAUNCHER_SNAPSHOT=<png>` with
+`..._SNAPSHOT_DELAY=4` captures the startup window. In `pgrep -f`, escape the `+` of `Repentance+.app`, or
+match `MacOS/isaac-mac`.
+
+**Steam**: the bridge is off unless `ISAAC_STEAM=1`. A build bundles the real `libsteam_api.dylib`, and a
+live bridge registers as app 250900 with the user's Steam client and can write achievements to the real
+account. Turn it on only for the M9 checks with the stub (`ISAAC_STEAM_DYLIB=<stub>`).
 
 ### Playing the current build by hand
 
@@ -115,9 +127,20 @@ appears, plus mouse, pad, `fullscreen`, `window:WxH` tokens.
 - A fresh save needs Enter at about 450 and 650 (Welcome popup) and 850 (title); with 95 mods the title
   appears around frame 1000. Then Enter on the file, Enter on New Run.
 - `until=Room 1.2(Start Room):enter` gets from boot to the first room.
-- If `gamestate1.dat` exists, Enter picks Continue, not New Run. `.scratch/m8/fresh.sh <support>` moves it aside.
+- If `gamestate1.dat` exists, Enter picks Continue, not New Run. `scripts/mac/fresh.sh <support>` moves it aside.
 - **Debug console**: grave (`` ` ``) opens it during a run (not on the title screen); **Escape closes it**.
   Pressing grave again only types a backtick, and every later key then goes into the console as text.
+- **Fiend Folio: RELOADED** (Workshop 3778123093, the Repentance+ one) is on the Layer's hand list in
+  `rgon.lua` as `fiendfolio-reloaded`. The host looks mods up by their full folder name, lowercased,
+  which on a Mac carries the Workshop id (`fiendfolio-reloaded_3778123093`). The list's metatable retries a
+  miss without the trailing `_<digits>`. Without that, Fiend Folio draws "REPENTOGON Required, MISSING!" in
+  the first room. Check: `REPENTOGON is visible to the mod 'fiendfolio-reloaded_3778123093'` in the log.
+  It adds about 24k files. A hand-installed mod isn't in `modscan.lua` until the Launcher scans again.
+- **Startup speed**: with Fiend Folio the boot took 181 s, because every DeleteFileA/RemoveDirectoryA
+  rebuilt the whole file-table hash (61k entries). Now a delete removes only its own entry, and folder
+  listings use a parent→children index, so the boot takes about 10 s. If boot is slow again, run
+  `sample <pid> 5` during it before guessing. The steps print as `[mac][boot] status:` lines, which the
+  Launcher shows (docs/mac/launcher.md).
 - **`gridspawn 9000` spawns a trapdoor** (`17` does not: the console takes room-editor ids). It lands on a
   random free tile, so walking to it blind doesn't work.
 - **Floor changes**: use the lab, not walking. `ISAAC_RGON_LAB=lab_trapdoor.lua` (copy it into the staged
@@ -155,12 +178,12 @@ audio (fixed 2026-11-18, user-checked). The other time imports already read the 
 it. That is how the M4 audio deadlock (lock-order inversion in `mac_audio.c`) was found. Crashes:
 `lldb --batch`.
 
-**M9 Steam bridge recipe** (design and verifier steps: `steam-bridge.md` section 8). Off by default unless a
-`libsteam_api.dylib` sits in `<exe dir>/../Frameworks`, next to the exe, or at `ISAAC_STEAM_DYLIB`; with none, the
+**M9 Steam bridge recipe** (design and verifier steps: `steam-bridge.md` section 8). Off unless `ISAAC_STEAM=1`; then it needs a
+`libsteam_api.dylib` in `<exe dir>/../Frameworks`, next to the exe, or at `ISAAC_STEAM_DYLIB`; when off or missing, the
 log shows one `[mac][steam] disabled: ...` line and the game behaves as before. Test without Steam against
 `.scratch/steam-research/libsteam_api_stub.dylib` (rebuild: `clang -arch arm64 -dynamiclib -install_name
 @rpath/libsteam_api.dylib stub_steam_api.c -o libsteam_api_stub.dylib`):
-`ISAAC_STEAM_DYLIB=$PWD/.scratch/steam-research/libsteam_api_stub.dylib ISAAC_STEAM_SELFTEST=1 ISAAC_MAC_RUN_FRAMES=600
+`ISAAC_STEAM=1 ISAAC_STEAM_DYLIB=$PWD/.scratch/steam-research/libsteam_api_stub.dylib ISAAC_STEAM_SELFTEST=1 ISAAC_MAC_RUN_FRAMES=600
 output/mac/isaac-mac --headless ... 2>&1 | grep -E 'mac\]\[steam|stub-steam|TRAP'`. Knobs: `ISAAC_STEAM=0` (force off),
 `ISAAC_STEAM_DRYRUN=1` (log writes, do not forward), `ISAAC_STEAM_SELFTEST=1`. A `CLOUD-WRITE` line from the stub
 means the cloud guard failed. Never run it against the real client without `ISAAC_STEAM_DRYRUN=1` first.
@@ -219,11 +242,18 @@ delete `apply.sh`.
    `lab_trapdoor` to Caves I; 95-mod run with no new Lua error; Launcher tests), then commit in pieces:
    the audio deadlock fix (`mac_audio.c`), the Layer rounds 1-2, the Launcher's bundled `sync-config.json`
    merge, `build.sh` + `build.md` + `apply.sh` + `make_icon.py`. Publish.
-2. **Make the app playable end to end** (user value first): `mac_gl.c` loads ANGLE from
-   `<exe dir>/../Frameworks` when present; rebuild the app with `build.sh` from the current game; Play from
-   the app reaches a room with mods; double-click from Finder works. Promote `run.sh`/`fresh.sh`/the lab into
-   `scripts/mac/`.
-3. **M9 Steam bridge** per `steam-bridge.md` section 7 (achievements: SetAchievement + StoreStats; cloud
+2. **Make the app playable end to end** (user value first): done 2026-11-19 except the user's check.
+   ANGLE loads from the app's Frameworks folder. `build.sh` rebuilt the app from the current game. Play from
+   the app reached the first room with 95 mods, and Fiend Folio sees REPENTOGON. `run.sh` and `fresh.sh` are
+   in `scripts/mac/`, `lab_unlock_all.lua` is in `scripts/recomp/rgon/`. Left for the user: double-click from
+   Finder, which uses the real save folder.
+3. **M9 Steam bridge**: verified with the stub 2026-11-19 (steps 1-5 and 7 in `steam-bridge.md` 8.4; 637
+   SetAchievement calls from the game's own TryUnlock reach it). Off unless `ISAAC_STEAM=1`. The game calls
+   `ResetAllStats(true)` when the stat `version` isn't 1000; it is refused and never forwarded (it would wipe a
+   real account). Before a real client is ever used: replace the token pool (it borrows never-called rows
+   such as `DefWindowProcA`, `_purecall` and `__CxxLongjmpUnwind` while live) with PROVIDED rows in
+   `gen_shims.py`. Find out why the console's `achievement N` doesn't reach Steam. The user then runs steps
+   6 and 8, dry run first. Original plan, per `steam-bridge.md` section 7 (achievements: SetAchievement + StoreStats; cloud
    slots stay NULL; graceful failure without Steam; test with the stub in `.scratch/steam-research/`).
 4. **M10**: Launcher features against the real game, with Launcher snapshots.
 5. **M11**: a from-scratch `build.sh` run in a clean output folder (check disk first).

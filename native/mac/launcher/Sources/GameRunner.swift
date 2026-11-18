@@ -7,12 +7,27 @@ final class GameRunner: ObservableObject {
     @Published var running = false
     @Published var logText = ""
     @Published var error: String?
+    /// Startup feedback, from the game's `[mac][boot]` stdout lines (docs/mac/launcher.md).
+    @Published var bootStatus: String?
+    @Published var bootStarted: Date?
+    @Published var ready = false
+    private var sawBootLine = false
+    private var lineBuffer = ""
+    private var fallbackTask: Task<Void, Never>?
+    /// Seconds without any `[mac][boot]` line after which an older game binary is treated as started.
+    static let noBootLineFallback: UInt64 = 240
+    /// Called once when the first frame is presented (or the fallback fires).
+    var onReady: (() -> Void)?
     private var process: Process?
     private var logHandle: FileHandle?
 
-    func launch(_ s: LauncherSettings, onExit: @escaping () -> Void) {
+    /// `onExit(status, wasReady)`: wasReady is false when the game ended during startup.
+    func launch(_ s: LauncherSettings, onExit: @escaping (Int32, Bool) -> Void) {
         guard !running else { return }
         error = nil
+        ready = false; sawBootLine = false; lineBuffer = ""; fallbackTask?.cancel()
+        bootStarted = Date()
+        bootStatus = "Preparing (save import, Workshop sync)"
         let fm = FileManager.default
         let exe = Paths.gameExecutable
         guard fm.isExecutableFile(atPath: exe.path) else {
@@ -34,7 +49,7 @@ final class GameRunner: ObservableObject {
 
     var onPrepared: (() -> Void)?
 
-    private func start(_ s: LauncherSettings, exe: URL, onExit: @escaping () -> Void) {
+    private func start(_ s: LauncherSettings, exe: URL, onExit: @escaping (Int32, Bool) -> Void) {
         let fm = FileManager.default
 
         let iso = ISO8601DateFormatter().string(from: Date())
@@ -78,6 +93,7 @@ final class GameRunner: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.logText += t
+                self.consumeBoot(t)
                 if self.logText.count > 400_000 { self.logText = String(self.logText.suffix(300_000)) }
             }
         }
@@ -86,19 +102,63 @@ final class GameRunner: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.running = false
+                self.fallbackTask?.cancel()
+                self.flushBootBuffer()
                 self.logText += "\n[launcher] game exited with status \(proc.terminationStatus)\n"
                 try? self.logHandle?.close()
-                onExit()
+                onExit(proc.terminationStatus, self.ready)
             }
         }
         do {
             try p.run()
             process = p
             running = true
+            if !sawBootLine { bootStatus = "Starting the game" }
+            fallbackTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: Self.noBootLineFallback * 1_000_000_000)
+                guard let self, !Task.isCancelled, self.running, !self.sawBootLine else { return }
+                self.markReady()
+            }
         } catch {
             self.error = "Could not start the game: \(error.localizedDescription)"
             running = false
+            bootStatus = nil
             for w in NSApp.windows where w.title == "Repentance+" { w.makeKeyAndOrderFront(nil) }
         }
+    }
+
+    // MARK: boot protocol
+
+    /// Buffers partial chunks and handles whole lines.
+    private func consumeBoot(_ chunk: String) {
+        lineBuffer += chunk
+        while let nl = lineBuffer.firstIndex(of: "\n") {
+            let line = String(lineBuffer[..<nl])
+            lineBuffer.removeSubrange(...nl)
+            handleBootLine(line)
+        }
+        if lineBuffer.count > 20_000 { lineBuffer = "" }
+    }
+
+    private func flushBootBuffer() {
+        if !lineBuffer.isEmpty { handleBootLine(lineBuffer); lineBuffer = "" }
+    }
+
+    private func handleBootLine(_ line: String) {
+        if let r = line.range(of: "[mac][boot] status:") {
+            sawBootLine = true
+            let t = line[r.upperBound...].trimmingCharacters(in: .whitespaces)
+            if !ready, !t.isEmpty { bootStatus = t }
+        } else if line.contains("[mac][boot] ready") {
+            sawBootLine = true
+            markReady()
+        }
+    }
+
+    private func markReady() {
+        guard !ready else { return }
+        ready = true
+        fallbackTask?.cancel()
+        onReady?()
     }
 }

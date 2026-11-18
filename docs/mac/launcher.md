@@ -32,6 +32,20 @@ game runs (Steam tracks the process it started) and quits when the game exits.
 - **Play** writes `launch-settings.json`, starts the game with the arguments
   below, and always copies the game's stdout and stderr to `logs/game.log`; with
   the Log window option it also tails them in a "Game Log" window.
+- **Startup window** (`StartupPanel.swift`): from Play until the game's first
+  frame the Launcher's own window is hidden and a small floating panel shows a
+  spinner, the elapsed time, the current startup step and a "Show log" button.
+  The game reports its steps on stdout:
+  - `[mac][boot] status: <text>`: the current step ("Loading the game",
+    "Reading packed archives", "Reading mods (N files)", "Starting the game",
+    "Reading mod: <folder>"). A phase change always prints; the rest at most
+    about four a second.
+  - `[mac][boot] ready`: printed once, at the first presented frame. The panel
+    closes.
+  If the game exits before `ready`, the Launcher comes back with "The game
+  exited during startup with status N" and a "Show log" button, and does not
+  quit. An older game that never prints a `[mac][boot]` line is treated as
+  ready after 240 s.
 
 ## Decisions
 

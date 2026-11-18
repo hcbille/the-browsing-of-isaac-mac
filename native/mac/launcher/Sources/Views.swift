@@ -35,10 +35,22 @@ struct RootView: View {
         model.reload()
         model.play(afterLaunch: {
             if model.settings.logWindow { LogWindow.show(model.runner) }
-            // the Launcher stays alive while the game runs (Steam tracks this process) but gets out of the way
+            // The startup panel stands in for the Launcher until the game's first frame. The Launcher
+            // stays alive while the game runs (Steam tracks this process) but gets out of the way.
+            StartupPanel.show(model.runner)
             for w in NSApp.windows where w.title == "Repentance+" { w.orderOut(nil) }
-        }, onExit: {
-            NSApp.terminate(nil)
+        }, onReady: {
+            StartupPanel.close()
+            for w in NSApp.windows where w.title == "Repentance+" { w.orderOut(nil) }
+        }, onExit: { status, wasReady in
+            StartupPanel.close()
+            if wasReady {
+                NSApp.terminate(nil)
+            } else {
+                model.runner.error = "The game exited during startup with status \(status)."
+                NSApp.activate(ignoringOtherApps: true)
+                for w in NSApp.windows where w.title == "Repentance+" { w.makeKeyAndOrderFront(nil) }
+            }
         })
         if model.runner.error != nil {
             for w in NSApp.windows where w.title == "Repentance+" { w.makeKeyAndOrderFront(nil) }
@@ -60,6 +72,7 @@ struct PlayView: View {
             if let e = model.runner.error {
                 Label(e, systemImage: "xmark.octagon.fill").foregroundStyle(.red)
                     .font(.callout).multilineTextAlignment(.center)
+                Button("Show log") { LogWindow.show(model.runner) }.controlSize(.small)
             }
             Button(action: play) {
                 Text(model.runner.running ? "Running…" : "Play").font(.title3.weight(.semibold))

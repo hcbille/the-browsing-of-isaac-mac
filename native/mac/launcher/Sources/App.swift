@@ -36,8 +36,10 @@ final class AppModel: ObservableObject {
         reload()
     }
 
-    func play(afterLaunch: @escaping () -> Void, onExit: @escaping () -> Void) {
+    func play(afterLaunch: @escaping () -> Void, onReady: @escaping () -> Void,
+              onExit: @escaping (Int32, Bool) -> Void) {
         runner.onPrepared = { [weak self] in self?.reload() }
+        runner.onReady = onReady
         runner.launch(settings, onExit: onExit)
         if runner.running { afterLaunch() }
     }

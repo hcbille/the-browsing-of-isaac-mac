@@ -27,6 +27,7 @@
 #include <sys/stat.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "isaac_host.h"
 #include "mac_launch.h"
@@ -47,7 +48,29 @@ extern const char *g_mac_save_dir;
 extern const char *g_mac_mods_dir, *g_mac_layer_dir, *g_mac_modscan_path, *g_mac_gate_log_path;
 extern int g_mac_layer_off;
 int mac_seed_mods(void);
+unsigned mac_mods_file_count(void);
 void isaac_mac_gate_log_off(const char *reason);
+
+/* Boot status lines for the Launcher (it reads the game's stdout):
+ *   [mac][boot] status: <text>     a phase change always prints; others at most ~4 a second
+ *   [mac][boot] ready              once, at the first presented frame (mac_gl.c)
+ * After "ready" no more status lines are printed. */
+static int g_boot_ready;
+void mac_boot_status(const char *text, int force) {
+    static uint64_t last;
+    if (g_boot_ready) return;
+    uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    if (!force && last && now - last < 250000000ull) return;
+    last = now;
+    printf("[mac][boot] status: %s\n", text);
+    fflush(stdout);
+}
+void mac_boot_ready(void) {
+    if (g_boot_ready) return;
+    g_boot_ready = 1;
+    printf("[mac][boot] ready\n");
+    fflush(stdout);
+}
 
 static int is_dir_path(const char *p) { struct stat st; return stat(p, &st) == 0 && S_ISDIR(st.st_mode); }
 static void mkdirs_path(const char *path) {
@@ -166,6 +189,7 @@ void isaac_mac_gl_install_fakes(void);
 int isaac_mac_headless(void);
 
 int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IOLBF, 0);      /* the Launcher reads the pipe live */
     /* --headless anywhere on the line is ISAAC_MAC_HEADLESS=1 */
     for (int i = 1; i < argc; ++i)
         if (!strcmp(argv[i], "--headless")) {
@@ -231,6 +255,7 @@ int main(int argc, char **argv) {
                g_mac_modscan_path ? g_mac_modscan_path : "(none)");
     }
 
+    mac_boot_status("Loading the game", 1);
     if (!isaac_native_reserve()) return 1;
     printf("[mac] Guest region at %p\n", (void *)recomp_mem_base);
 
@@ -246,6 +271,7 @@ int main(int argc, char **argv) {
     printf("[mac] layout check: %s\n", layout_bad ? "MISMATCH" : "ok");
     isaac_guard_arm();
 
+    mac_boot_status("Reading packed archives", 1);
     printf("[mac] seed packed archives\n");
     seed_archives();
     int files = 0;
@@ -257,6 +283,7 @@ int main(int argc, char **argv) {
         printf("[mac] %d saved file(s) restored from %s\n", n, g_mac_save_dir);
     }
     mac_seed_mods();
+    { char t[64]; snprintf(t, sizeof t, "Reading mods (%u files)", mac_mods_file_count()); mac_boot_status(t, 1); }
     if (chdir(g_mac_instance_dir) != 0) perror("[mac] chdir to the instance");
 
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -264,6 +291,7 @@ int main(int argc, char **argv) {
         isaac_mac_gl_install_fakes();      /* no window, no ANGLE: the fake GL answers */
         printf("[mac] headless: no window\n");
     }
+    mac_boot_status("Starting the game", 1);
     int boot_rc = isaac_run_boot(1);
     uint32_t g = isaac_guard_check();
     printf("[mac] isaac_run_boot -> %d, guard %s\n", boot_rc, g ? "CORRUPTED" : "intact");

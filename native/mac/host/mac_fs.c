@@ -200,6 +200,7 @@ static int has_disable_it(const char *dir) {
 }
 
 static struct { unsigned folders, off, files, seeded, skipped_name, skipped_long; } g_ms;
+unsigned mac_mods_file_count(void) { return g_ms.files; }
 
 /* dir: real folder; rel: path under the mods root ("<mod>/<...>") */
 static void seed_tree(const char *dir, const char *rel) {

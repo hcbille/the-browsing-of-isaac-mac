@@ -16,7 +16,8 @@
  *                              F frames after the scripted run started
  *                              (mac_script.c); a relative path is
  *                              relative to where isaac-mac was started
- *   ISAAC_ANGLE_DIR            where libEGL.dylib / libGLESv2.dylib are
+ *   ISAAC_ANGLE_DIR            where libEGL.dylib / libGLESv2.dylib are (default: <exe dir>/../Frameworks
+ *                              when it has them, as inside Repentance+.app, else the build's ANGLE_DIR)
  *                              (default: the directory baked in at build time)
  *   ISAAC_MAC_SCALE            integer (default) or fill (mac_window.c; also --scale,
  *                              launch-settings scale_mode)
@@ -37,6 +38,8 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <limits.h>
+#include <mach-o/dyld.h>
 
 #ifndef ISAAC_ANGLE_DIR
 #define ISAAC_ANGLE_DIR ""
@@ -84,7 +87,23 @@ int isaac_mac_gl_open(void) {
     if (isaac_mac_headless()) { g_state = 0; return 0; }
 
     const char *dir = getenv("ISAAC_ANGLE_DIR");
+    /* inside Repentance+.app: Contents/MacOS/isaac-mac -> Contents/Frameworks (scripts/mac/build.sh stage 12) */
+    static char fw[2048];
+    if (!dir || !*dir) {
+        char exe[1024], real[PATH_MAX], probe[2048];
+        uint32_t n = sizeof exe;
+        if (_NSGetExecutablePath(exe, &n) == 0 && realpath(exe, real)) {
+            char *slash = strrchr(real, '/');
+            if (slash) {
+                *slash = 0;
+                snprintf(fw, sizeof fw, "%s/../Frameworks", real);
+                snprintf(probe, sizeof probe, "%s/libEGL.dylib", fw);
+                if (access(probe, R_OK) == 0) dir = fw;
+            }
+        }
+    }
     if (!dir || !*dir) dir = ISAAC_ANGLE_DIR;
+    printf("[mac][gl] ANGLE from %s\n", *dir ? dir : "(default search)");
     char egl[2048], gles[2048];
     if (*dir) {
         snprintf(egl, sizeof egl, "%s/libEGL.dylib", dir);
@@ -276,6 +295,7 @@ static void atexit_report(void) {
 void isaac_mac_present(void) {
     static int registered;
     if (!registered) { registered = 1; atexit(atexit_report); }
+    { extern void mac_boot_ready(void); mac_boot_ready(); }   /* first frame: "[mac][boot] ready" (once) */
     uint32_t frame = isaac_frames_presented();
     uint64_t start = now_ns();
     isaac_mac_window_compose();          /* the game's picture into the drawable (mac_window.c) */

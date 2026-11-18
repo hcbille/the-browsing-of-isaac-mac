@@ -1,6 +1,6 @@
 # Steam bridge (M9) design
 
-Status: design only, nothing implemented. Written from the Host sources, the unpacked exe's import table, and a look at this Mac's Steam install. Hard limits that apply: never type credentials, never write to Steam Cloud, never buy anything, never write into the Workshop folder.
+Status: M9 implemented in code (`native/mac/host/mac_steam.c`), syntax-checked only; NOT built or run yet, nothing verified (section 8). Design written from the Host sources, the unpacked exe's import table, and a look at this Mac's Steam install. Hard limits that apply: never type credentials, never write to Steam Cloud, never buy anything, never write into the Workshop folder.
 
 ## 1. What the Guest imports from Steam, and what the Host does today
 
@@ -105,13 +105,7 @@ The Mac overlay is `gameoverlayrenderer.dylib` (arm64+x86_64), injected via `DYL
 
 Stub source and a built arm64 stub live in `.scratch/steam-research/` (`stub_steam_api.c`, `libsteam_api_stub.dylib`, install name `@rpath/libsteam_api.dylib`, 11 exported flat symbols, each call logs `[stub-steam] ...` to stderr). It exports `SteamAPI_InitFlat` returning false-as-OK (0), `IsSteamRunning`, `RestartAppIfNecessary`, `Shutdown`, `RunCallbacks`, `GetHSteamUser`, `SteamInternal_FindOrCreateUserInterface`, and `ISteamUserStats_{RequestCurrentStats,SetAchievement,StoreStats,GetAchievement}`. To be extended with `ManualDispatch_*` (return no callbacks) when the bridge is written.
 
-Verifier steps (after the bridge exists):
-1. Stub path: copy the stub to the app's `Frameworks/libsteam_api.dylib`; run the Mac Build headless with a script that reaches an achievement (or a Host self-test that calls the token directly). Expect log lines: `[mac][steam] dlopen ok`, `[stub-steam] InitFlat appid=250900`, `FindOrCreateUserInterface STEAMUSERSTATS_INTERFACE_VERSION013`, then `[stub-steam] SetAchievement <NAME>` followed by `StoreStats`.
-2. Missing dylib: remove the file. Expect `[mac][steam] disabled: dlopen failed (...)` once, the game reaches the title screen and plays, no crash, exit status 0.
-3. Wrong arch: build an x86_64-only stub (`clang -arch x86_64`), expect `disabled: ... incompatible architecture` and the same graceful continuation.
-4. Steam not running with the real dylib: copy the real one (from the Steam bundle path above) into Frameworks. Expect `InitFlat` failure text, `disabled: Steam is not running`, game continues.
-5. Cloud guard: with the stub, make the stub log `FileWrite*` entry points (add them); run a full save cycle; expect zero `FileWrite` log lines and no change under `userdata/`.
-6. With the real client (user-only, after login): `ISAAC_STEAM_DRYRUN=1` first to see the calls; then a real unlock on the user's profile only through a normal Steam launch.
+Verifier steps: see section 8.4 (exact commands and the log lines each must show). They replace the list that stood here; the stub is now the 28-export version described at the end of 8.4.
 
 ## 6. Open items
 
@@ -224,3 +218,44 @@ Always: `SteamAPI_InitFlat`, `SteamAPI_IsSteamRunning`, `SteamAPI_Shutdown`. For
 - The overlay hooking an ANGLE/Metal present path remains untested (section 3.6).
 
 Draft code for the bridge (loader, graceful failure, dry-run, cloud/leaderboard refusals) is in `.scratch/steam-research/mac_steam_draft.c` (not committed; compiles against the stub).
+
+## 8. Implementation (M9, verified against the stub 2026-11-19)
+
+### 8.1 What exists
+
+- `native/mac/host/mac_steam.c` and `mac_steam.h` (Mac Build only, globbed by `build_native.py`, whole file behind `ISAAC_NATIVE`).
+- One hook: `scripts/recomp/host/src/host_shims_steam.c`, `imp_steam_api__SteamInternal_ContextInit`, calls `mac_steam_context_init()` under `#if defined(ISAAC_NATIVE) && ISAAC_NATIVE`. It returns 0 when Steam is off, and the old code below it then runs unchanged. The Browser Build compiles the same file without the hook. `host_shims_misc.c` (RegisterCallback and friends) is untouched.
+- Bring-up is lazy, at the first ContextInit. Order: the bridge is OFF unless `ISAAC_STEAM=1` (opt-in since 2026-11-19: a live bridge registers with the user's Steam client as app 250900), then `dlopen` of `<exe dir>/../Frameworks/libsteam_api.dylib`, `<exe dir>/libsteam_api.dylib`, `$ISAAC_STEAM_DYLIB` (the exe dir is resolved with `_NSGetExecutablePath` + `realpath`, no `@executable_path`). The first candidate that exists decides: if it will not load, the `dlerror` text is the reason (for example "incompatible architecture"). Then `SteamAPI_IsSteamRunning`, `setenv SteamAppId/SteamGameId=250900` when unset, `SteamAPI_InitFlat`, `SteamInternal_FindOrCreateUserInterface(SteamAPI_GetHSteamUser(), "STEAMUSERSTATS_INTERFACE_VERSION013")` (fallback `SteamAPI_SteamUserStats_v013`). Any failure logs one `[mac][steam] disabled: <reason>` and Steam stays off; `SteamAPI_Shutdown` runs from `atexit` when live.
+- `SteamAPI_RestartAppIfNecessary` and every `SteamAPI_ISteamRemoteStorage_*` symbol are never resolved.
+
+### 8.2 Behaviour when live
+
+- Slot `0xbf93c8` (UserStats013): `initData+4 = 1`, `initData+8 = guest object`, ContextInit returns `slot+8` (7.1 item 3). The guest vtable has 45 slots; every slot first points at an "unmapped" token (logs the caller, answers 0, purge 0).
+- Live methods, exact purges from 7.2: +0x04 GetStat(8), +0x0c SetStat(8), +0x14 GetAchievement(8), +0x18 SetAchievement(4), +0x24 StoreStats(0), +0x30 IndicateAchievementProgress(12), +0xac GetAchievementProgressLimits(12). Writes (SetStat, SetAchievement, StoreStats, Indicate) log every call with the native result; `ISAAC_STEAM_DRYRUN=1` logs `DRYRUN ...` and answers true without forwarding.
+- Leaderboard offsets +0x54 +0x58 +0x5c +0x60 +0x64 +0x6c +0x74 answer 0 (EDX:EAX = 0) with their exact purges, logged once. +0x78 UploadLeaderboardScore and +0x7c AttachLeaderboardUGC are logged as REFUSED and never forwarded (their flat functions are not resolved either).
+- ISteamUser (`0xc5c510`) is a second guest object when live (fix found by the first stub run): the game's own "Steam is up" flag (`0xc5ab08` bit 0, set in `0xa617e0`) needs BOTH `ContextInit(0xbf93c8)` and `ContextInit(0xc5c510)` non-NULL, and every achievement call is gated on it, so 7.4's "NULL is equivalent" is wrong for a live bridge. One token (purge 4) serves +0x08 GetSteamID (writes a zero CSteamID) and +0x38 GetAuthTicketForWebApi (REFUSED, answers 0, never forwarded); the offset is decoded from the caller's `call [eax+d8]`. All other ISteamUser slots point at the unmapped token.
+- UserStats +0x50 is `ResetAllStats(bool)` (purge 4, caller `0x009aa878`: the game calls it with true when the stat `version` is not 1000). It was missing from 7.2. It is REFUSED (never forwarded; on a real account it would wipe stats and achievements).
+- Every other accessor slot, including RemoteStorage (`0xc5c3a4`), is the NULL arm (`[slot] = 0`, return `slot`), as 7.4 targets. That is a change from the fake context ONLY when live; when Steam is off the old behaviour (fake context for `0xbf93c8` and `0xc5c510`) is byte-for-byte what ran before. ISteamUser basics (GetSteamID) were left out: the only verified use is the Epic ticket path, which must not be forwarded.
+- Callbacks: registrations keep being recorded in `host_shims_misc.c`. `ManualDispatch_Init` is NOT called and nothing is dispatched (7.1 item 6: no achievement call needs a callback). TODO for leaderboards: ManualDispatch_Init, per-frame RunFrame + GetNextCallback/FreeLastCallback, pack-4 to pack-8 conversion, then the guest object's `Run`.
+- Extras: `ISAAC_STEAM=0` forces Steam off. `ISAAC_STEAM_SELFTEST=1` drives GetAchievement, SetAchievement and StoreStats through the live tokens on a fabricated stack (name `ISAAC_SELFTEST_NOOP`) and logs result and purge; use with `ISAAC_STEAM_DRYRUN=1` against a real client.
+
+### 8.3 Known compromise: token pool
+
+A vtable slot must be a shim token whose identity is the method, and the generated table has no spare rows. `gen_shims.py` is outside the M9 file list, so when the bridge is live `mac_steam.c` re-binds `fn` and `arg_bytes` of 19 rows of `isaac_imports[]` (17 UserStats methods + the unmapped token + the ISteamUser token): first the 8 `CSteamAPIContext_*` tokens (dead when live, because the fake context is not built), then rows that are `NEVER_CALLED` with 0 call sites (7 `luaopen_*`, 3 `vcruntime140` rows, `DefWindowProcA`; the first run failed with `no re-bindable shim tokens` before the vcruntime and DefWindowProcA rows were admitted). Exactly 19 exist, so one more method needs the `gen_shims.py` follow-up. Nothing is touched when Steam is off. Clean follow-up: add 19 PROVIDED rows to `gen_shims.py`, regenerate, delete `pool_bind()`. If the pool is too small the bridge reports `disabled: no re-bindable shim tokens`.
+
+### 8.4 Verifier steps and results
+
+The bridge is off unless `ISAAC_STEAM=1`, so every live step sets it. Run with `scripts/mac/run.sh <scratch support dir> <log>` (see RUNBOOK section 5); `ISAAC_STEAM*` variables pass through. Before each live run, `output/Frameworks/libsteam_api.dylib` and `output/mac/libsteam_api.dylib` must not exist, and the log line `[mac][steam] dlopen ok (...)` must name the stub. Build: `python3 scripts/mac/build_native.py --jobs 3`. Common checks on every step: frame count reached with `guard intact`, no `[isaac][TRAP]`, no `UNMAPPED`, `grep -c CLOUD-WRITE` = 0.
+
+Results, 2026-11-19, dev binary only, stub `.scratch/steam-research/libsteam_api_stub.dylib`, scratch folders under `.scratch/m9/`:
+
+1. **Default off** (`HEADLESS=1 FRAMES=600`, nothing set): PASS. `[mac][steam] disabled: off by default; ISAAC_STEAM=1 turns it on`, then the old `fake context` lines for `0xbf93c8` and `0xc5c510`, `reached 773 frames (wanted 600); guard intact`. With `ISAAC_STEAM=1` and no dylib: PASS, `disabled: dlopen failed (libsteam_api.dylib not found; tried: <exe>/../Frameworks/..., <exe>/libsteam_api.dylib)`.
+2. **Stub, live** (`ISAAC_STEAM=1 ISAAC_STEAM_DYLIB=<stub> ISAAC_STEAM_SELFTEST=1`): PASS after two fixes. First run: `disabled: no re-bindable shim tokens` (pool short by 2 rows), then a live run showed `UserStats UNMAPPED slot called from 0x009aa878` (ResetAllStats, see 8.2). Final run: `dlopen ok (...libsteam_api_stub.dylib)`, `[stub-steam] IsSteamRunning`, `InitFlat appid=250900`, `FindOrCreateUserInterface STEAMUSERSTATS_INTERFACE_VERSION013`, `live (app 250900, dryrun=0)`, selftest `purge=8 (want 8)`, `purge=4 (want 4)`, `purge=0 (want 0)`, `ContextInit(slot=0x00bf93c8) -> live ISteamUserStats013`, `ContextInit(slot=0x00c5c510) -> live ISteamUser`, `ISteamUser +0x38 GetAuthTicketForWebApi REFUSED`, the game's own `GetStat version -> value=7`, `ResetAllStats(+0x50) REFUSED`, `SetStat version=1000 -> 1`, `StoreStats -> 1`; `reached 618 frames; guard intact`.
+3. **Dry run** (+ `ISAAC_STEAM_DRYRUN=1`): PASS. `DRYRUN SetAchievement ISAAC_SELFTEST_NOOP`, `DRYRUN StoreStats`, `DRYRUN SetStat version=1000`; 0 `[stub-steam] SetAchievement/StoreStats/SetStat` lines after the dry-run marker; 773 frames, guard intact.
+4. **Game's own SetAchievement**: PASS via the game's own `PersistentGameData::TryUnlock`, NOT via the console. `lab_unlock_all.lua` (`LAB=lab_unlock_all.lua FRESH=1 SCRIPT='until=Room 1.2(Start Room):enter'`; the Layer only runs with at least one mod in the support folder, a dummy mod and a minimal `modscan.lua` were enough) logged `game achievements 1..637: 31 already unlocked, 606 newly unlocked, 0 failed` and the log has 637 `[mac][steam] SetAchievement <id> -> 1` (ids 1, 2 ... 637; the API name is the decimal id) and 638 `StoreStats -> 1`; 1507 frames, guard intact, 0 TRAP, 0 UNMAPPED, 0 CLOUD-WRITE. The console `achievement 1` / `achievement 2` (grave, typed, Enter, with `DBG=true`; windowed screenshots show the command accepted) produced no Steam call at all: the game never reached `0x929790` (no `unlock steam achievement` log, no ContextInit). Achievement 1 is unlocked from the start, but 2 is not, so the console command is not a trigger for this path (untested why; open).
+5. **Wrong arch** (x86_64 build of the stub in `.scratch/m9/x86.dylib`): PASS. `disabled: dlopen failed (dlopen(...x86.dylib...): ... incompatible architecture (have 'x86_64', need 'arm64e, arm64e.v1, arm64, arm64'))`, old fake context lines, 773 frames, guard intact.
+6. **Real dylib, Steam not running**: NOT RUN (user's: needs a copy of Steam's dylib; do not copy anything out of Steam's folders without the user).
+7. **Cloud guard**: PASS. `grep -c CLOUD-WRITE` = 0 in the logs of steps 2, 3, 4, 5; nothing resolves a RemoteStorage symbol; the stub never ran an upload canary.
+8. **Real client**: NOT RUN (user only). `ISAAC_STEAM=1 ISAAC_STEAM_DRYRUN=1` first. Note `ResetAllStats`, `UploadLeaderboardScore`, `AttachLeaderboardUGC` and the Epic auth ticket are refused by design.
+
+Stub (`.scratch/steam-research/libsteam_api_stub.dylib`, arm64, install name `@rpath/libsteam_api.dylib`, 28 exports): everything the bridge resolves, the ManualDispatch set, ClearAchievement, and canaries (`UploadLeaderboardScore`, `AttachLeaderboardUGC`, `ISteamRemoteStorage_File{Write,Delete,Share,WriteAsync}`) that log `CLOUD-WRITE` if ever called.

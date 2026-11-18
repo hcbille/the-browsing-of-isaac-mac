@@ -594,7 +594,7 @@ index ee93d31..a10c303 100644
              isaac_log("[isaac][crt] __stdio_common_vsscanf: format with %u "
                        "conversions exceeds the 8-arg dispatch "
 diff --git a/scripts/recomp/host/src/host_shims_fs.c b/scripts/recomp/host/src/host_shims_fs.c
-index 818d851..3672c86 100644
+index 818d851..c648fb9 100644
 --- a/scripts/recomp/host/src/host_shims_fs.c
 +++ b/scripts/recomp/host/src/host_shims_fs.c
 @@ -54,7 +54,11 @@
@@ -609,7 +609,69 @@ index 818d851..3672c86 100644
      uint8_t  is_dir;
      uint8_t  live;            /* slot in use (a file may be empty or lazy: data == NULL) */
      uint8_t  lazy;            /* bytes not loaded yet: src names the host file */
-@@ -253,6 +257,9 @@ EM_JS(int, isaac_fs_lazy_read_js, (const char *src, uint8_t *dst, uint32_t len),
+@@ -100,9 +104,23 @@ static void fs_hash_insert(uint32_t slot) {
+     while (g_fs_hash[h]) h = (h + 1u) & (FS_HASH - 1u);
+     g_fs_hash[h] = slot + 1u;
+ }
+-static void fs_hash_rebuild(void) {
+-    memset(g_fs_hash, 0, sizeof g_fs_hash);
+-    for (uint32_t i = 0; i < FS_SLOTS; ++i) if (g_fs[i].live) fs_hash_insert(i);
++/* Take one live slot out of the open-addressing table (backward-shift delete:
++ * the table stays exactly what inserting the remaining entries would give a
++ * lookup). Called before the slot's key is cleared. Replaces a full rebuild per
++ * delete, which made a boot that deletes thousands of files with a large mod
++ * installed take minutes (61k entries x every DeleteFileA/RemoveDirectoryA). */
++static void fs_hash_remove(uint32_t slot) {
++    const uint32_t M = FS_HASH - 1u;
++    uint32_t i = fs_hash_key(g_fs[slot].key) & M;
++    while (g_fs_hash[i] && g_fs_hash[i] != slot + 1u) i = (i + 1u) & M;
++    if (!g_fs_hash[i]) return;                       /* not indexed */
++    for (uint32_t j = (i + 1u) & M; g_fs_hash[j]; j = (j + 1u) & M) {
++        uint32_t home = fs_hash_key(g_fs[g_fs_hash[j] - 1u].key) & M;
++        /* move j back into the hole at i unless its home lies cyclically in (i, j] */
++        int stays = (i <= j) ? (home > i && home <= j) : (home > i || home <= j);
++        if (!stays) { g_fs_hash[i] = g_fs_hash[j]; i = j; }
++    }
++    g_fs_hash[i] = 0;
+ }
+ static uint32_t g_file_used[FS_FILE_RG];       /* 0 = free */
+ /* open-file registry: guest FILE* -> token -> file index */
+@@ -208,6 +226,14 @@ static fs_entry *fs_find(const char *key) {
+     return NULL;
+ }
+ 
++/* Directory listing index: parent dir slot -> its direct children, as linked
++ * lists in increasing slot order (the order the old full scan produced).
++ * Built lazily on the first listing after a create or rename (g_fs_gen);
++ * deletes only clear `live`, which a listing checks. */
++static uint32_t g_fs_gen = 1u;
++static uint32_t g_kid_gen;                   /* generation the index was built for */
++static uint32_t g_kid_head[FS_SLOTS], g_kid_tail[FS_SLOTS], g_kid_next[FS_SLOTS];   /* slot + 1, 0 = none */
++
+ static uint32_t g_fs_next_free;              /* rotating hint for fs_new */
+ static uint32_t g_fs_high;                   /* round 95: one past the highest slot ever used; scans stop there */
+ static fs_entry *fs_new(const char *key, int is_dir) {
+@@ -221,6 +247,7 @@ static fs_entry *fs_new(const char *key, int is_dir) {
+             g_fs[i].is_dir = (uint8_t)is_dir;
+             g_fs[i].live = 1;
+             fs_hash_insert(i);
++            ++g_fs_gen;
+             g_fs_next_free = (i + 1u) % FS_SLOTS;
+             if (i + 1u > g_fs_high) g_fs_high = i + 1u;
+             return &g_fs[i];
+@@ -234,8 +261,10 @@ static void fs_free_entry(fs_entry *e) {
+     if (e->data) free(e->data);
+     if (e->src) free(e->src);
+     if (e->wc) fs_window_drop(e);
++    fs_hash_remove((uint32_t)(e - g_fs));    /* needs the key: before the memset */
+     memset(e, 0, sizeof *e);
+-    fs_hash_rebuild();                        /* deletes are rare; keep the index exact */
++    /* No g_fs_gen bump: a listing skips slots that are no longer live, and a
++     * slot that is reused gets a new key through fs_new, which does bump it. */
+ }
+ 
+ /* ---- lazy bytes (round 12f) -------------------------------------------- */
+@@ -253,6 +282,9 @@ EM_JS(int, isaac_fs_lazy_read_js, (const char *src, uint8_t *dst, uint32_t len),
      for (var i = src; HEAPU8[i]; i++) s += String.fromCharCode(HEAPU8[i]);
      return Module.isaacLazyRead(s, dst, len) ? 1 : 0;
  });
@@ -619,7 +681,7 @@ index 818d851..3672c86 100644
  #else
  static int isaac_fs_lazy_read_js(const char *src, uint8_t *dst, uint32_t len) {
      (void)src; (void)dst; (void)len; return 0;
-@@ -298,6 +305,9 @@ EM_JS(int, isaac_fs_lazy_pread_js, (const char *src, uint8_t *dst, uint32_t off,
+@@ -298,6 +330,9 @@ EM_JS(int, isaac_fs_lazy_pread_js, (const char *src, uint8_t *dst, uint32_t off,
       * bytes in place; a number is the answer at once. */
      return (typeof n === "number" || (n && typeof n.then === "function")) ? n : -1;
  });
@@ -629,7 +691,7 @@ index 818d851..3672c86 100644
  #else
  static int isaac_fs_lazy_pread_avail(void) { return 0; }
  static int isaac_fs_lazy_pread_js(const char *src, uint8_t *dst, uint32_t off, uint32_t len) {
-@@ -353,6 +363,9 @@ EM_JS(int, isaac_fs_unlink_js, (const char *key, const char *src), {
+@@ -353,6 +388,9 @@ EM_JS(int, isaac_fs_unlink_js, (const char *key, const char *src), {
      for (var j = src; HEAPU8[j]; j++) s += String.fromCharCode(HEAPU8[j]);
      return Module.isaacUnlink(k, s) ? 1 : 0;
  });
@@ -639,7 +701,7 @@ index 818d851..3672c86 100644
  #else
  static int isaac_fs_persist_js(const char *key, const char *src, const uint8_t *data, uint32_t len) {
      (void)key; (void)src; (void)data; (void)len; return 0;
-@@ -745,6 +758,21 @@ int isaac_fs_seed(const char *path, const uint8_t *data, uint32_t len) {
+@@ -745,6 +783,21 @@ int isaac_fs_seed(const char *path, const uint8_t *data, uint32_t len) {
      return 1;
  }
  
@@ -661,7 +723,7 @@ index 818d851..3672c86 100644
  /* Only a successful call transfers ownership of the caller's malloc buffer.
   * A NULL buffer is valid for an empty file, but not for nonempty data. */
  int isaac_fs_seed_adopt(const char *path, uint8_t *data, uint32_t len) {
-@@ -790,6 +818,10 @@ const uint8_t *isaac_fs_peek(const char *path, uint32_t *len) {
+@@ -790,6 +843,10 @@ const uint8_t *isaac_fs_peek(const char *path, uint32_t *len) {
      char key[256];
      if (!path || !fs_key(path, key, sizeof key)) return NULL;
      fs_entry *e = fs_find(key);
@@ -672,6 +734,91 @@ index 818d851..3672c86 100644
      if (!e || e->is_dir || e->windowed) return NULL;
      if (e->lazy && !fs_materialise(e)) return NULL;
      if (e->ranged) return NULL;                  /* round 107: read in place, never held whole */
+@@ -966,21 +1023,62 @@ static void fs_strip_wildcard(char *p) {
+  * sets ERROR_FILE_NOT_FOUND) / -2 when the directory has no entries or the
+  * snapshot table is full (ERROR_NO_MORE_FILES). Shared by the A and W
+  * FindFirstFile shims so both see exactly the same tree. */
++static void fs_kids_build(void) {
++    memset(g_kid_head, 0, sizeof g_kid_head);
++    memset(g_kid_tail, 0, sizeof g_kid_tail);
++    for (unsigned i = 0; i < g_fs_high; ++i) {
++        if (!g_fs[i].live) continue;
++        const char *k = g_fs[i].key;
++        const char *sl = strrchr(k, '/');
++        if (!sl) continue;
++        char pk[256];
++        size_t n = (size_t)(sl - k);
++        memcpy(pk, k, n); pk[n] = 0;
++        fs_entry *p = fs_find(pk);
++        if (!p) continue;
++        uint32_t ps = (uint32_t)(p - g_fs);
++        g_kid_next[i] = 0;
++        if (g_kid_tail[ps]) g_kid_next[g_kid_tail[ps] - 1u] = i + 1u; else g_kid_head[ps] = i + 1u;
++        g_kid_tail[ps] = i + 1u;
++    }
++    g_kid_gen = g_fs_gen;
++}
++
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++/* Boot status for the Launcher: a short, recognisable name from a file-table key
++ * ("[c:/isaac/]mods/<folder>/..." -> folder, else the first path component). */
++static void fs_boot_status(const char *key) {
++    extern void mac_boot_status(const char *text, int force);
++    const char *k = key;
++    const char *m = strstr(k, "/mods/");
++    int mod = 0;
++    if (m && m[6]) { k = m + 6; mod = 1; }
++    else {
++        if (strncmp(k, "c:/isaac/", 9) == 0) k += 9;
++        while (*k == '/') ++k;
++    }
++    size_t n = strcspn(k, "/");
++    if (!n) return;
++    if (n > 48) n = 48;
++    char buf[96];
++    snprintf(buf, sizeof buf, mod ? "Reading mod: %.*s" : "Reading game files: %.*s", (int)n, k);
++    mac_boot_status(buf, 0);
++}
++#endif
++
+ static int fs_find_open(const char *key) {
+     fs_entry *dir = fs_find(key);
+     if (!dir || !dir->is_dir) return -1;
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    fs_boot_status(key);
++#endif
+     uint32_t sid = 0xFFFFFFFFu;
+     for (unsigned s = 0; s < FS_FIND_RG; ++s) if (!g_find_used[s]) { sid = s; break; }
+     if (sid == 0xFFFFFFFFu) return -2;
+-    size_t pref = strlen(key);
++    if (g_kid_gen != g_fs_gen) fs_kids_build();
+     uint32_t cnt = 0;
+-    for (unsigned i = 0; i < g_fs_high && cnt < FS_FIND_MAX; ++i) {
+-        if (!g_fs[i].live) continue;
+-        const char *k = g_fs[i].key;
+-        if (strncmp(k, key, pref) == 0 && k[pref] == '/' &&
+-            !strchr(k + pref + 1, '/'))
+-            g_find_ids[sid][cnt++] = i;
+-    }
++    for (uint32_t j = g_kid_head[dir - g_fs]; j && cnt < FS_FIND_MAX; j = g_kid_next[j - 1u])
++        if (g_fs[j - 1u].live) g_find_ids[sid][cnt++] = j - 1u;   /* deleted since the build */
+     if (!cnt) return -2;
+     if (cnt == FS_FIND_MAX)
+         isaac_log("[isaac][fs] the listing of '%s' stopped at %u entries (FS_FIND_MAX); the rest are not listed", key, cnt);
+@@ -1422,9 +1520,13 @@ void imp_kernel32__MoveFileExA(CpuState *restrict cpu) {
+     fs_entry *e = fs_find(ka);
+     if (!e) { fs_err_set(2u); cpu->EAX = 0; return; }
+     fs_entry *d = fs_find(kb);
++    if (d == e) { fs_err_set(0); cpu->EAX = 1; return; }   /* same file */
+     if (d) fs_free_entry(d);
++    fs_hash_remove((uint32_t)(e - g_fs));    /* re-index under the new key */
+     strncpy(e->key, kb, sizeof e->key - 1);
+     e->key[sizeof e->key - 1] = 0;
++    fs_hash_insert((uint32_t)(e - g_fs));
++    ++g_fs_gen;
+     fs_err_set(0);
+     cpu->EAX = 1;
+ }
 diff --git a/scripts/recomp/host/src/host_shims_gaps.c b/scripts/recomp/host/src/host_shims_gaps.c
 index 304f892..646348e 100644
 --- a/scripts/recomp/host/src/host_shims_gaps.c
@@ -921,6 +1068,25 @@ index 7933f49..ce09811 100644
          cpu->EAX = 0;
          isaac_w32(ISAAC_TEB_VA + 0x34, 3u);         /* ERROR_PATH_NOT_FOUND */
          return;
+diff --git a/scripts/recomp/host/src/host_shims_steam.c b/scripts/recomp/host/src/host_shims_steam.c
+index 8eb0646..2a799f7 100644
+--- a/scripts/recomp/host/src/host_shims_steam.c
++++ b/scripts/recomp/host/src/host_shims_steam.c
+@@ -113,6 +113,14 @@ static void steam_log_slot_once(uint32_t slot, const char *how) {
+ 
+ void imp_steam_api__SteamInternal_ContextInit(CpuState *restrict cpu) {
+     uint32_t slot = isaac_arg(cpu, 0);
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    /* Mac Build: the live Steam bridge (native/mac/host/mac_steam.c, M9).
++     * Returns 0 when Steam is off, and the code below then runs unchanged. */
++    {
++        extern int mac_steam_context_init(CpuState *restrict cpu, uint32_t slot);
++        if (mac_steam_context_init(cpu, slot)) return;
++    }
++#endif
+     steam_build_context();
+     if (steam_slot_is_fake(slot)) {
+         if (isaac_is_guest_va(slot)) isaac_w32(slot, STEAM_OBJ_VA);
 diff --git a/scripts/recomp/host/src/host_shims_win.c b/scripts/recomp/host/src/host_shims_win.c
 index 372e76d..d50d3db 100644
 --- a/scripts/recomp/host/src/host_shims_win.c
@@ -2629,6 +2795,75 @@ index 0000000..4f17796
 +  end
 +  B.log("lab_unlock: unlocked " .. n .. " mod achievement(s) in save slot " .. slot)
 +end)
+diff --git a/scripts/recomp/rgon/lab_unlock_all.lua b/scripts/recomp/rgon/lab_unlock_all.lua
+new file mode 100644
+index 0000000..494b2fb
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_unlock_all.lua
+@@ -0,0 +1,63 @@
++-- lab_unlock_all.lua (development only; ISAAC_RGON_LAB=lab_unlock_all.lua)
++-- Unlocks every game achievement (1..637, the game's own PersistentGameData::TryUnlock, so the game
++-- writes it into the chosen save slot itself) and every mod achievement (the layer's unlock_modded,
++-- as lab_unlock.lua), once, in the main menu once a save slot is chosen.
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab unlock all", 1)
++local done = false
++local LAST = 637   -- Repentance+ has 637 achievements (ids 1..637); 638..0x281 are unused slots
++local function run()
++  local pgd = Isaac.GetPersistentGameData()
++  local slot = B.r32(B.r32(0x00c7169c) + 0x10)
++  local was, new, bad = 0, 0, 0
++  for id = 1, LAST do
++    local ok, u = pcall(pgd.Unlocked, pgd, id)
++    if ok and u then was = was + 1
++    else
++      local ok2, r = pcall(pgd.TryUnlock, pgd, id, true)
++      if ok2 and r then new = new + 1 else bad = bad + 1 end
++    end
++  end
++  local have = 0
++  for id = 1, LAST do if pgd:Unlocked(id) then have = have + 1 end end
++  local mods = 0
++  local set = T.xml_entries(XMLNode.ACHIEVEMENT)
++  for _, e in ipairs(set and set.list or {}) do
++    local id = math.tointeger(tonumber(e.id))
++    if e.sourceid and id and T.unlock_modded(id) then mods = mods + 1 end
++  end
++  B.log(string.format("lab_unlock_all: slot %d: game achievements 1..%d: %d already unlocked, %d newly unlocked, %d failed; %d unlocked in total now; %d mod achievement(s) newly unlocked",
++    slot, LAST, was, new, bad, have, mods))
++end
++-- Epiphany keeps its own unlocks (Tarnished characters, the Tarnished menu page, its items) in its mod save,
++-- not in game or XML achievements; its own console command `unlock-all` is Epiphany:UnlockAll(). Run that once,
++-- after its save manager has loaded the chosen slot's data.
++local epi_done = false
++local function epiphany()
++  if epi_done then return end
++  local E = rawget(_G, "Epiphany")
++  if type(E) ~= "table" or type(E.UnlockAll) ~= "function" then epi_done = true; return end
++  local sm = E.SaveManager
++  if not (sm and sm.Utility and sm.Utility.IsDataInitialized and sm.Utility.IsDataInitialized(true)) then return end
++  epi_done = true
++  local ok, err = pcall(E.UnlockAll, E)
++  local menu = ok and E.GetAchievement and E:GetAchievement("TARNISHED_MENU", true) or -1
++  B.log(string.format("lab_unlock_all: Epiphany UnlockAll %s; TARNISHED_MENU = %s",
++    ok and "ok" or ("failed: " .. tostring(err)), tostring(menu)))
++end
++local n = 0
++mod:AddCallback(ModCallbacks.MC_MAIN_MENU_RENDER, function()
++  n = n + 1
++  if done then epiphany() end
++  if not done and n % 120 == 1 then B.log(string.format("lab_unlock_all: menu frame %d, ready=%d, slot=%d", n, B.r32(0x00c72a20), B.r32(0x00c7169c) ~= 0 and B.r32(B.r32(0x00c7169c) + 0x10) or -1)) end
++  if done or B.r32(0x00c72a20) == 0 then return end
++  local slot = B.r32(B.r32(0x00c7169c) + 0x10)
++  if slot == 0 then return end
++  done = true
++  run()
++end)
++mod:AddCallback(ModCallbacks.MC_POST_GAME_STARTED, function()
++  if not done then done = true; run() end
++  epiphany()
++end)
 diff --git a/scripts/recomp/rgon/lab_vp.lua b/scripts/recomp/rgon/lab_vp.lua
 new file mode 100644
 index 0000000..ea3c555
@@ -2651,7 +2886,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..39d9905 100644
+index 4175f07..2a24305 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -2708,6 +2943,23 @@ index 4175f07..39d9905 100644
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)
+@@ -907,6 +917,16 @@ if ALLOW ~= true and B.env("ISAAC_RGON_AUTO") ~= "0" then
+     log("gate: no scan of the installed mods (modscan.lua): REPENTOGON is shown to the mods of the layer's own list only")
+   end
+ end
++-- The host looks a mod up by its folder name, lowercased. A Steam Workshop
++-- folder carries the item's id ("fiendfolio-reloaded_3778123093") where the
++-- list above names the mod's directory alone, so a miss is tried again without
++-- a trailing "_<digits>". The host's lua_getfield honours __index.
++if type(ALLOW) == "table" then
++  setmetatable(ALLOW, { __index = function(t, k)
++    local base = type(k) == "string" and k:match("^(.-)_%d+$")
++    if base and base ~= "" then return rawget(t, base) end
++  end })
++end
+ R.Allowed = ALLOW
+ B.gate(R, ALLOW)
+ 
 diff --git a/scripts/recomp/rgon/tools/hook_table.py b/scripts/recomp/rgon/tools/hook_table.py
 index 0d1d8bd..8070a63 100644
 --- a/scripts/recomp/rgon/tools/hook_table.py

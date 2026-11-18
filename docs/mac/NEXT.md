@@ -23,7 +23,18 @@ at the top of `docs/mac/PROGRESS.md`.
   "Game side" notes in `docs/mac/launcher.md`. Awaiting a Verifier.
 - The Launcher (`native/mac/launcher/`): UI, save import, Workshop sync and the Swift mod scan.
 
-## Next step
+## Done 2026-11-19
+
+- The app runs end to end from its own bundle. ANGLE loads from the app's Frameworks folder. Play reached the
+  first room with 95 mods. The user still has to check a double-click from Finder (real save folder).
+- Boot with Fiend Folio takes 10 s instead of 181 s (file-table delete fix). The Launcher's startup window
+  shows the game's `[mac][boot] status:` steps (user-checked).
+- Fiend Folio RELOADED sees REPENTOGON: the gate retries a Workshop folder name without its `_<id>`.
+- Upstream PRs: chiikabu/the-browsing-of-isaac#23 (file table) and #24 (gate).
+- `scripts/mac/run.sh` and `fresh.sh` promoted. The Steam bridge is off unless `ISAAC_STEAM=1` (M9 not
+  verified, and builds bundle the real Steam library).
+
+## Next step (as of 2026-11-19: RUNBOOK section 11 step 3, M9 with the stub)
 
 1. Verifier: re-run the Integration checks (headless M1 3,000 frames, Vanilla Launch, `--lua-debug`,
    `--debug-console`, off-mod greying and toggling), then the M6 save and M7 Workshop cases against the real game.
