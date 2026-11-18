@@ -108,7 +108,7 @@ index 03f7af3..ca94beb 100644
      /* Every fixed guest-side region must actually be on the guest side. */
      struct { const char *name; uint32_t lo, hi; } gr[] = {
 diff --git a/scripts/recomp/host/src/host_lua.c b/scripts/recomp/host/src/host_lua.c
-index d845225..71a5dfd 100644
+index d845225..b75b538 100644
 --- a/scripts/recomp/host/src/host_lua.c
 +++ b/scripts/recomp/host/src/host_lua.c
 @@ -64,7 +64,13 @@ _Static_assert(sizeof(lua_Integer) == 8, "lua_Integer must be long long");
@@ -125,7 +125,22 @@ index d845225..71a5dfd 100644
  /* LUA_COMPAT_5_2 changes the exported surface. Upstream's own Makefile ships
   * it ON; this DLL was built with it OFF, so following upstream's default
   * breaks the ABI. */
-@@ -1737,10 +1743,76 @@ int isaac_lua_gc(lua_State *L, int what, int data) {
+@@ -79,9 +85,12 @@ _Static_assert(LUA_EXTRASPACE == 4, "LUA_EXTRASPACE must be 4 (32-bit build)");
+ 
+ #define L_ARG(n)   ((lua_State *)isaac_g(isaac_arg(cpu, (n))))
+ #define I_ARG(n)   ((int)isaac_arg(cpu, (n)))
+-#define S_ARG(n)   (isaac_is_guest_va(isaac_arg(cpu, (n)))                     \
++/* Guest 0 is NULL in every build: natively address 0 is a readable page, so
++ * without the explicit test a NULL const char* (the load mode, say) arrives
++ * as "" instead of NULL. */
++#define S_ARG(n)   ((isaac_arg(cpu, (n)) && isaac_is_guest_va(isaac_arg(cpu, (n)))) \
+                         ? (const char *)isaac_g(isaac_arg(cpu, (n))) : NULL)
+-#define P_ARG(n)   ((void *)isaac_g(isaac_arg(cpu, (n))))
++#define P_ARG(n)   (isaac_arg(cpu, (n)) ? (void *)isaac_g(isaac_arg(cpu, (n))) : NULL)
+ 
+ /* A 64-bit by-value argument occupies two stack slots. */
+ static lua_Integer i64_arg(const CpuState *cpu, unsigned slot) {
+@@ -1737,10 +1746,76 @@ int isaac_lua_gc(lua_State *L, int what, int data) {
      return r;
  }
  LUA_SHIM(lua_gc)      { cpu->EAX = (uint32_t)isaac_lua_gc(L_ARG(0), I_ARG(1), I_ARG(2)); }
@@ -326,10 +341,10 @@ index caa9da0..d779e54 100644
      g_isaac_ovf[g_isaac_ovf_n][1] = size;
      ++g_isaac_ovf_n;
 diff --git a/scripts/recomp/host/src/host_shims_misc.c b/scripts/recomp/host/src/host_shims_misc.c
-index 7933f49..a4e5f0b 100644
+index 7933f49..ce09811 100644
 --- a/scripts/recomp/host/src/host_shims_misc.c
 +++ b/scripts/recomp/host/src/host_shims_misc.c
-@@ -16,7 +16,9 @@
+@@ -16,13 +16,29 @@
  
  #include <math.h>
  #include <time.h>
@@ -339,7 +354,36 @@ index 7933f49..a4e5f0b 100644
  #include <stdarg.h>
  #include <stdio.h>
  #include <stdlib.h>
-@@ -284,14 +286,28 @@ void imp_kernel32__GetTempPathA(CpuState *restrict cpu) {
+ #include <string.h>
+ #include <unistd.h>   /* getcwd */
+ 
++/* The Guest's working directory is the virtual filesystem's root ("/", as
++ * under Emscripten, whose cwd is "/"). The native driver chdirs into the real
++ * instance dir for the Host Lua loader, but the real path must never reach the
++ * Guest: it would build "<real path>/mods" keys that miss the RAM filesystem. */
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++static char *guest_getcwd(char *buf, size_t n) {
++    if (n < 2) return NULL;
++    buf[0] = '/'; buf[1] = 0;
++    return buf;
++}
++#else
++#define guest_getcwd getcwd
++#endif
++
+ 
+ /* ---------------------------------------------------------- strings ------ */
+ /* char *strncpy(char *dst, const char *src, size_t n) -- 73 sites, depth 0.
+@@ -238,7 +254,7 @@ static uint32_t module_file_name(CpuState *cpu, int wide) {
+         return 0;
+     }
+     char cwd[1024], path[2048];
+-    if (!getcwd(cwd, sizeof cwd)) { cpu->EAX = 0; return 0; }
++    if (!guest_getcwd(cwd, sizeof cwd)) { cpu->EAX = 0; return 0; }
+     snprintf(path, sizeof path, "%s\\isaac.exe", cwd);
+     if (!isaac_is_guest_va(lpBuffer) || !isaac_is_guest_va(lpBuffer + nSize - 1)) {
+         cpu->EAX = 0;
+@@ -284,14 +300,28 @@ void imp_kernel32__GetTempPathA(CpuState *restrict cpu) {
   * a platform primitive per the port policy; zeroing honours GMEM_ZEROINIT. */
  void imp_kernel32__GlobalAlloc(CpuState *restrict cpu) {
      uint32_t flags = isaac_arg(cpu, 0), size = isaac_arg(cpu, 1);
@@ -368,6 +412,15 @@ index 7933f49..a4e5f0b 100644
      cpu->EAX = 0;
  }
  void imp_kernel32__GlobalLock(CpuState *restrict cpu) {
+@@ -382,7 +412,7 @@ void imp_kernel32__GetEnvironmentVariableA(CpuState *restrict cpu) {
+ void imp_kernel32__GetCurrentDirectoryA(CpuState *restrict cpu) {
+     uint32_t nSize = isaac_arg(cpu, 0), lpBuffer = isaac_arg(cpu, 1);
+     char cwd[1024];
+-    if (!getcwd(cwd, sizeof cwd)) {
++    if (!guest_getcwd(cwd, sizeof cwd)) {
+         cpu->EAX = 0;
+         isaac_w32(ISAAC_TEB_VA + 0x34, 3u);         /* ERROR_PATH_NOT_FOUND */
+         return;
 diff --git a/scripts/recomp/host/src/host_shims_win.c b/scripts/recomp/host/src/host_shims_win.c
 index 372e76d..8864b1b 100644
 --- a/scripts/recomp/host/src/host_shims_win.c
@@ -404,7 +457,7 @@ index 372e76d..8864b1b 100644
      int32_t ev[4];
      for (unsigned n = 0; n < 64; ++n) {
 diff --git a/scripts/recomp/lift/boot_integration.c b/scripts/recomp/lift/boot_integration.c
-index 6aa6b68..e50d951 100644
+index 6aa6b68..133df95 100644
 --- a/scripts/recomp/lift/boot_integration.c
 +++ b/scripts/recomp/lift/boot_integration.c
 @@ -35,7 +35,7 @@ int isaac_place_image(const uint8_t *blob, uint32_t len) {
@@ -433,6 +486,27 @@ index 6aa6b68..e50d951 100644
    uint32_t n = ISAAC_GUARD_SIZE / 4, bad = 0, first = 0;
    for (uint32_t i = 0; i < n; ++i) {
      if (p[i] != (GUARD_PAT ^ i)) {
+@@ -94,6 +94,12 @@ int isaac_layout_check(void) {
+          host_probe, ISAAC_HOST_BASE_VA);
+   printf("  host malloc     0x%08x\n", heap_probe);
+   printf("  dispatch entries %u\n", G_NDISPATCH);
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++  /* Mac Build: the Host is its own mapping outside the Guest region, so the
++   * shared-memory placement rule below does not apply (the probes above are
++   * printed truncated, for comparison only). */
++  (void)host_probe; (void)heap_probe;
++#else
+   if (host_probe < ISAAC_HOST_BASE_VA) {
+     printf("  FAIL host static data is below 0x%08x -- a guest pointer can "
+            "reach it\n", ISAAC_HOST_BASE_VA);
+@@ -103,6 +109,7 @@ int isaac_layout_check(void) {
+     printf("  FAIL host heap is below 0x%08x\n", ISAAC_HOST_BASE_VA);
+     ++bad;
+   }
++#endif
+   if (ISAAC_SHIM_BASE + ISAAC_SHIM_STRIDE * isaac_import_count
+       > ISAAC_GUARD_VA) {
+     printf("  FAIL shim tokens overrun the guard\n");
 diff --git a/scripts/recomp/lift/recomp_rt.c b/scripts/recomp/lift/recomp_rt.c
 index 9748f68..a71282d 100644
 --- a/scripts/recomp/lift/recomp_rt.c

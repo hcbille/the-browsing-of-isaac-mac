@@ -23,7 +23,9 @@ git -C "$dst" apply "$here/patches/host-native.patch"
 
 mkdir -p "$dst/native/mac" "$dst/scripts/mac" "$dst/docs/adr" "$dst/docs/mac"
 cp -R "$here/native/mac/." "$dst/native/mac/"
-cp "$here/scripts/mac/build_native.py" "$dst/scripts/mac/"
+for f in "$here"/scripts/mac/*; do
+    [ "$(basename "$f")" = apply.sh ] || cp "$f" "$dst/scripts/mac/"
+done
 cp -R "$here/docs/adr/." "$dst/docs/adr/"
 cp -R "$here/docs/mac/." "$dst/docs/mac/"
 cp "$here/GLOSSARY.md" "$dst/"

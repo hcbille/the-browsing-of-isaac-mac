@@ -48,6 +48,9 @@ LUA_CFLAGS = ARCH + ["-O2", "-std=gnu99", "-fno-strict-aliasing", "-w",
 # The main thread runs the Guest's call chains on the native stack.
 LDFLAGS = ARCH + ["-Wl,-stack_size,0x10000000", "-lm"]
 
+# ANGLE (libEGL / libGLESv2 with the Metal backend; docs/mac/graphics-spike.md).
+ANGLE_DIR = Path(os.environ.get("ANGLE_DIR", REPO.parent / "toolchain" / "angle"))
+
 
 def compile_one(src: Path, obj: Path, flags: list[str]) -> tuple[Path, int, str]:
     if obj.exists() and obj.stat().st_mtime >= src.stat().st_mtime:
@@ -70,6 +73,9 @@ def main() -> int:
         if not need.exists():
             print("missing %s (run build_boot.py and lua_build.py first)" % need)
             return 2
+    if not (ANGLE_DIR / "libGLESv2.dylib").exists():
+        print("missing %s/libGLESv2.dylib (set ANGLE_DIR; see docs/mac/graphics-spike.md)" % ANGLE_DIR)
+        return 2
 
     inc = ["-I", str(HOST / "include"), "-I", str(HOST / "generated"),
            "-I", str(LIFT), "-I", str(lift_dir), "-I", str(LUA_SRC)]
@@ -107,7 +113,8 @@ def main() -> int:
 
     exe = args.out / "isaac-mac"
     t1 = time.time()
-    r = subprocess.run(["clang", *sorted(map(str, objs)), *LDFLAGS, "-o", str(exe)],
+    angle = ["-L", str(ANGLE_DIR), "-lGLESv2", "-Wl,-rpath," + str(ANGLE_DIR)]
+    r = subprocess.run(["clang", *sorted(map(str, objs)), *LDFLAGS, *angle, "-o", str(exe)],
                        capture_output=True, text=True)
     err = (r.stderr or "").strip()
     if r.returncode:

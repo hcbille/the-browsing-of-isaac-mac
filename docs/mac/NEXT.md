@@ -23,8 +23,8 @@
 
 ## Next
 
-1. First native link and headless boot (`isaac-mac <segs> <bundle> boot`, then
-   `main`); fix what the linker and the first faults report.
+M1 (headless main) is done, see PROGRESS.md.
+
 2. Window, GL context and present through SDL3 + ANGLE (replace the WebGL
    backend's surface; the GL calls themselves are GLES already).
 3. Input from SDL events into `isaac_input_key` / `_mouse_*`; pads into the

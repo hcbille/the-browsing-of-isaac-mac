@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <pthread.h>
 #include <unistd.h>
 
 #include "isaac_host.h"
@@ -30,6 +31,7 @@ int isaac_run_main(void);
 int isaac_fs_seed_adopt(const char *path, uint8_t *data, uint32_t len);
 int isaac_fs_seed_lazy(const char *path, uint32_t len);
 
+uint32_t isaac_frames_presented(void);
 extern const char *g_mac_instance_dir;
 extern const char *g_mac_save_dir;
 
@@ -123,6 +125,20 @@ static void restore_saves(const char *dir, const char *rel, int *n) {
     closedir(d);
 }
 
+/* ISAAC_MAC_RUN_FRAMES=N: a watchdog thread ends the run cleanly once N frames
+ * have been presented, after checking the guard canary, so a headless run has
+ * a deterministic stop and a verdict. Unset: the game runs until it exits. */
+static void *frame_watchdog(void *arg) {
+    uint32_t want = (uint32_t)(uintptr_t)arg;
+    while (isaac_frames_presented() < want) usleep(20000);
+    uint32_t bad = isaac_guard_check();
+    printf("[mac] reached %u frames (wanted %u); guard %s\n", isaac_frames_presented(), want,
+           bad ? "CORRUPTED" : "intact");
+    fflush(NULL);
+    _exit(bad ? 3 : 0);
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr, "usage: %s <isaac.segs.bin> <instance dir> [boot|main] [save dir]\n", argv[0]);
@@ -130,8 +146,16 @@ int main(int argc, char **argv) {
     }
     const char *segs = argv[1];
     const char *stage = argc > 3 ? argv[3] : "main";
-    g_mac_instance_dir = argv[2];
-    g_mac_save_dir = argc > 4 ? argv[4] : NULL;
+    /* The driver chdirs into the instance, so both dirs must be absolute. */
+    static char inst_abs[4096], save_abs[4096];
+    if (!realpath(argv[2], inst_abs)) { perror("[mac] instance dir"); return 1; }
+    g_mac_instance_dir = inst_abs;
+    g_mac_save_dir = NULL;
+    if (argc > 4) {
+        mkdir(argv[4], 0755);
+        if (!realpath(argv[4], save_abs)) { perror("[mac] save dir"); return 1; }
+        g_mac_save_dir = save_abs;
+    }
 
     if (!isaac_native_reserve()) return 1;
     printf("[mac] Guest region at %p\n", (void *)recomp_mem_base);
@@ -160,11 +184,17 @@ int main(int argc, char **argv) {
     }
     if (chdir(g_mac_instance_dir) != 0) perror("[mac] chdir to the instance");
 
+    setvbuf(stdout, NULL, _IOLBF, 0);
     int boot_rc = isaac_run_boot(1);
     uint32_t g = isaac_guard_check();
     printf("[mac] isaac_run_boot -> %d, guard %s\n", boot_rc, g ? "CORRUPTED" : "intact");
     if (strcmp(stage, "boot") == 0) return boot_rc == 1 ? 0 : 1;
 
+    const char *wf = getenv("ISAAC_MAC_RUN_FRAMES");
+    if (wf && atoi(wf) > 0) {
+        pthread_t t;
+        if (pthread_create(&t, NULL, frame_watchdog, (void *)(uintptr_t)atoi(wf)) == 0) pthread_detach(t);
+    }
     int main_rc = isaac_run_main();
     printf("[mac] main returned %d\n", main_rc);
     return main_rc == 0 ? 0 : 1;

@@ -7,7 +7,8 @@
  * isaac_va in the Host).
  *
  * The region is mapped read-write up front without reserving swap; pages cost
- * nothing until touched. Below ISAAC_HOST_BASE_VA is the Guest map the Browser
+ * nothing until touched (address 0 included: readable, like WebAssembly).
+ * Below ISAAC_HOST_BASE_VA is the Guest map the Browser
  * Build uses (image, stack, TEB/PEB, shim slots, heap arena, guard). Above
  * MAC_OVF_BASE, Host code that must hand the Guest memory (the heap's overflow
  * segments) takes it from a bump allocator.
@@ -36,8 +37,10 @@ int isaac_native_reserve(void) {
         return 0;
     }
     recomp_mem_base = (uint8_t *)p;
-    /* Guest address 0 must fault, as it does on Windows. */
-    mprotect(p, 0x10000, PROT_NONE);
+    /* Guest address 0 stays readable and zero, as it is in the Browser Build's
+     * WebAssembly memory. The Host was verified there and reads through Guest
+     * NULL in places (alcOpenDevice(NULL) reads its name from 0), so making
+     * page 0 fault, as Windows would, crashed a path the browser runs fine. */
     return 1;
 }
 
