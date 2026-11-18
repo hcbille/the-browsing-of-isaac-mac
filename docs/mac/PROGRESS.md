@@ -16,7 +16,7 @@ implementers; any "(pending Verifier)" in their headings is out of date.
 | M5 Window | **Verified** (clean rebuild; integer x1/x2 nearest with pure-black bars at 1280x800, 1100x700, 2000x1200; fill aspect-preserving; fullscreen by F, Cmd+Ctrl+F and the Options menu in both modes, options.ini matches; mouse maps through the letterbox, presses in bars ignored; precedence flag > JSON > env; headless M1 3,000 frames; 60.0 fps; evidence `.scratch/verify5/`) | M5 commit | pending |
 | M6 Saves | **Verified** (progress survives restart; import cases cloud-present, absent and Mac-save-present pass; fixture Steam folders untouched; evidence `.scratch/verify67/`) | d12bb6c | 3fad2d6 |
 | M7 Mods | **Verified** (95 mods synced, checker mod off; MODS menu lists 95, off greyed; Launcher and in-game toggles agree; update keeps `disable.it`; unsubscribe keeps the mod, marked, Remove moves to Trash after confirm). Side notes: Launcher sorts by folder name but the game menu sorts by display name; `fired's_angels_and_statues` main.lua logs a Lua error (M8) | d12bb6c | 3fad2d6 |
-| M8 Layer | Swift mod scan byte-identical to JS `createModScan` on all 95 mods; `gen_layer_info.py` written; Layer served at `mods/repentogon/` and gate log written by the game. Epiphany stops in `epiphany_menu.lua:35` ("no animation named Overlay"). Not verified | uncommitted | none |
+| M8 Layer | Round 2 done, **not complete**. Verified 2026-11-18 (Verifier: Epiphany Basement I to Caves I, 95 mods with no new Lua error, headless 3000 frames). 5 of 11 REPENTOGON-using mods Shown (Unique Items API hidden again: `MC_MENU_INPUT_ACTION` and `MC_PRE_GLOWING_HOURGLASS_LOAD` not counted until seen firing); Epiphany's Tarnished page works (`Sprite:Continue`, user-checked). Shown: Epiphany, Door Overhaul, Enhanced Boss Bars, miniMAPI, Music Mod Callback (5 of 11; round 1 had 3). Real floor changes by the game's own trapdoor (`lab_trapdoor.lua`): 95 mods on, 3 changes to Caves II, and Epiphany alone Basement I to Dark Room (10 changes, 11,500 frames), no Lua error except `! fired's_angels_and_statues` (the mod's own bug, same under Vanilla Launch). Three engine hooks added. Still hidden: Custom Stage API, External Item Descriptions, and 3 by the rule. Epiphany still misses 112 names; its characters not yet seen on the wheel; `MC_MENU_INPUT_ACTION` never seen firing | uncommitted | none |
 | M9 Steam | Design only: `docs/mac/steam-bridge.md`; stub dylib at `.scratch/steam-research/` | none | none |
 | M10 Launcher | First piece built (SwiftUI, `native/mac/launcher/`, contracts in `docs/mac/launcher.md`), tested against a fake game only. Not verified | uncommitted | none |
 | M11 App + build.sh | Not started (Launcher `build.sh --app` makes an unbundled wrapper only) | none | none |
@@ -326,6 +326,26 @@ positional audio or panning, because the backend hooks receive no positions
 either: no panner or position code in it); the atexit `[mac][audio] final`
 line never prints because the RUN_FRAMES watchdog and exit path use `_exit`.
 
+## M8 Layer, round 2: engine hooks, more mods Shown, real floor changes
+
+- Audio: `mac_audio.c` `isaac_mac_audio_tick` no longer calls `SDL_GetAudioStreamQueued` with `g_mu` held (lock-order inversion with `stream_cb`, a hang at frame 871). Windowed run of 20,500 frames (about 5.7 minutes), 340 audio reports, no stall (`.scratch/m8/audio-long.log`).
+- Floor changes: `lab_trapdoor.lua` spawns a trapdoor two tiles from the player in each start room, waits for it to open (state 1), puts the player on it; the game's own logic does the rest. Console notes: Escape closes the console (grave types a backtick), `gridspawn 9000` is the trapdoor and its place is random, an existing `gamestate1.dat` makes Enter pick Continue (`.scratch/m8/fresh.sh`).
+- Hooks (lift pipeline edited: `lift_patches.py`, `hook_table.py`, `hook_slots.lua`; `apply_wrap_patches` on the lifted tree, `build_native.py` recompiles two TUs): slot 171 `NightmareScene::Render`, 172 `Game::SaveState`, 173 `LuaCallbackCaller::CallInputAction`. Details and addresses: `docs/mac/layer-gaps.md` section 3b.
+- Layer Lua: `MC_MAIN_MENU_RENDER`, `HasMirrorDimension`, `MainMenu`, `NightmareScene`, `WorldToMenuPosition`, menu offsets measured (labs `lab_scan`, `lab_vp`, `lab_menu`), enum tables counted as implemented, wheel ids checked (Isaac is entry 1; 0 is random).
+- Measurement: `lab_names.lua` on the 95 mods: 657 names, 138 callbacks; gate JSON `.scratch/m8/gate-all2.json`.
+- Not done: Custom Stage API and External Item Descriptions (structures to measure), Epiphany's remaining 112 names, Epiphany's characters on the wheel (not reached even with every mod achievement unlocked), a Browser Build rebuild and run (only the host sources' syntax check), a Verifier.
+
+## M8 Layer, round 1 (Layer engineer): Epiphany runs, real gap list
+
+Scratch under `.scratch/m8/` (support dirs `supE` = Epiphany + Custom Stage API, `supAll` = the 95 Workshop mods; `run.sh <support dir> <log>` with `FRAMES`, `SCRIPT`, `SHOT`, `DBG`, `VAN`, `ISAAC_RGON_LAB`; `stage2.txt`/`long.txt` are the scripts; logs `e*.log`, `r*.log`, `all*.log`, `long1.log`; shots `q*.png`, `L*.png`; `implemented.txt`, `callbacks.txt`, `gate-all.json`).
+
+- **Root cause of Epiphany's stop**: not a Mac Host gap. REPENTOGON's `Sprite(path, load)` constructor was missing from the Layer, so Epiphany's menu sprites were empty; then `Sprite.Color` is a const copy in the game, `BlendMode`/`ColorModifier`/menus and a dozen more names, one after the other (list and fixes: `docs/mac/layer-gaps.md` section 3). All in the Layer's Lua (`api_sprite.lua`, new `api_gaps.lua`, new `api_menus.lua`, `api_data.lua`), so the Browser Build gets them too.
+- **Mod-less Layer save file**: `host_rgon.c` bridge `save_read`/`save_write` + `isaac_fs_store` (`host_shims_fs.c`); `api_data.lua` uses it only under `ISAAC_NATIVE` (flag `B.SAVEFILE`) when the layer registered no mod. Test: `lab_store.lua`, file `rgon-layer-1.dat` written in the first launch, read back in the second (`.scratch/m8/st1.log`, `st2.log`). Browser Build keeps its mod data; the browser host sources compile (`emcc -fsyntax-only` of `host_rgon.c`, `host_shims_fs.c`); the browser itself was not run.
+- **Real measurement**: `lab_names.lua` run on all 95 mods: 547 names, 131 callbacks implemented; gate: 3 shown (Epiphany, Door Overhaul, Enhanced Boss Bars), 8 hidden. Epiphany 311 used, 120 missing.
+- **Fired's Angels and Statues** (`main.lua:18`): the mod's own bug, the global `AngelStatueMod` is never defined (identical under Vanilla Launch).
+- `stage_layer.py --help` prints the usage instead of making a folder named `--help`.
+- Not done: Epiphany's remaining 120 names (mostly new engine hooks), the hidden mods' small names, Epiphany's character menu seen in a window, a full Epiphany run beyond floor 4 / to the end, and the Verifier.
+
 ## Integration (M6/M7/M8 game side): implemented and tested headless and windowed (pending Verifier)
 
 Nothing committed. Last build compiled clean (`python scripts/mac/build_native.py --jobs 3`).
@@ -356,12 +376,12 @@ Scratch support dir `.scratch/fin/sup` with three test mods (`probe_1` on, `offm
    - `content/` of an off mod: it is never served (by the seeding rule above), so its `items.xml` cannot take effect. The game still prints `LOADED MOD //mods/offmod_2/content/` for it, so that line only says the game listed the folder, not that its content is loaded. What the game itself would do with a served `content/` next to `disable.it` was not tested (the seeding rule makes it moot).
 
 ### Half-done / open
-- Epiphany main.lua stops at `epiphany_menu.lua:35` ("no animation named Overlay", `no member named 'A'`), and a `ISAACSAVEMANAGER_POST_DATA_LOAD` error follows: Layer/engine gap for M8, not investigated.
-- The Layer's own mod shell (main.lua, `RegisterMod("REPENTOGON (browser)")`) is not run, so the Layer's save file (mod achievements, innate items, api_data.lua) has no mod to hang on: needs a Layer change.
+- (Resolved in M8 round 1, see the M8 section below: Epiphany's `epiphany_menu.lua:35` stop was REPENTOGON's `Sprite(path, load)` constructor missing from the Layer.)
+- (Resolved in M8 round 1: the Layer keeps its save data in `rgon-layer-<slot>.dat` through the Host when it has no mod.)
 - Gate ids come from folder names; the Launcher's sanitised ids vs chunk-name folder names could differ for odd names.
 - Windowed runs can be killed with rc 137 on the 8 GB machine; a rerun was fine (none happened in the final runs).
 - Tests run with the scratch mods only; Epiphany and the 95 Workshop mods were not re-run after the last edits.
 
 ### Next steps
 1. Verifier re-runs the checks above (and the save and Workshop tests of M6/M7 against the real game).
-2. Give the Layer a mod-less save hook; fix Epiphany's menu error (M8).
+2. (Done in M8 round 1.)

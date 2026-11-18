@@ -206,6 +206,16 @@ int main(int argc, char **argv) {
            segs, g_mac_instance_dir, g_mac_save_dir ? g_mac_save_dir : "(none: nothing persists)", g_mac_mods_dir ? g_mac_mods_dir : "(none)");
     if (g_mac_cfg.launch_settings) printf("[mac] launch: settings %s\n", g_mac_cfg.launch_settings);
     printf("[mac] launch: vanilla=%d debug_console=%d lua_debug=%d\n", g_mac_cfg.vanilla, g_mac_cfg.debug_console, g_mac_cfg.lua_debug);
+    /* The game's QueryPerformanceCounter: the real clock in a windowed run (the Theora video
+     * player times its frames with it, and the audio runs on the real clock, so a deterministic
+     * clock - one tick per query plus each Sleep - played the intro far too fast). Headless runs
+     * keep the deterministic clock so they repeat exactly. ISAAC_MAC_CLOCK=wall|deterministic overrides. */
+    {
+        extern void isaac_time_set_mode(int mode);
+        const char *c = getenv("ISAAC_MAC_CLOCK");
+        int wall = c && *c ? (strcmp(c, "wall") == 0) : !isaac_mac_headless();
+        isaac_time_set_mode(wall);
+    }
     /* Layer: built into the app, never listed as a mod. Vanilla Launch turns it off through
      * the one switch host_rgon.c honours (ISAAC_RGON=0) and the file layer stops serving it. */
     if (g_mac_cfg.vanilla) {

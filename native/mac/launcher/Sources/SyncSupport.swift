@@ -41,7 +41,8 @@ struct SyncDirs {
         func list(_ k: String) -> [URL] {
             (env[k] ?? "").split(separator: ":").map { URL(fileURLWithPath: String($0)) }
         }
-        let cfg = SyncConfig.load(support.appendingPathComponent("sync-config.json"))
+        let cfg = SyncConfig.merged([SyncConfig.load(support.appendingPathComponent("sync-config.json")),
+                                     SyncConfig.load(Paths.bundledSyncConfig)])
         return SyncDirs(
             support: support,
             mods: Paths.modsDir,
@@ -49,8 +50,8 @@ struct SyncDirs {
             steamUserdata: url("REPENTANCE_MAC_STEAM_USERDATA") ?? steam.appendingPathComponent("userdata"),
             steamWorkshop: url("REPENTANCE_MAC_WORKSHOP_DIR")
                 ?? steam.appendingPathComponent("steamapps/workshop/content/250900"),
-            workshopFallbacks: list("REPENTANCE_MAC_WORKSHOP_FALLBACK") + cfg.workshopFallback.map { URL(fileURLWithPath: $0) },
-            saveSearch: list("REPENTANCE_MAC_SAVE_SEARCH") + cfg.saveSearch.map { URL(fileURLWithPath: $0) })
+            workshopFallbacks: SyncConfig.unique(list("REPENTANCE_MAC_WORKSHOP_FALLBACK") + cfg.workshopFallback.map { URL(fileURLWithPath: $0) }),
+            saveSearch: SyncConfig.unique(list("REPENTANCE_MAC_SAVE_SEARCH") + cfg.saveSearch.map { URL(fileURLWithPath: $0) }))
     }
 }
 
@@ -66,6 +67,15 @@ struct SyncConfig: Decodable {
         workshopFallback = try c.decodeIfPresent([String].self, forKey: .workshopFallback) ?? []
         saveSearch = try c.decodeIfPresent([String].self, forKey: .saveSearch) ?? []
     }
+    /// Precedence order of the arguments: earlier wins (it comes first in each list; lists are searched in order).
+    /// Used for `<support>/sync-config.json` first, then the bundle's `Resources/sync-config.json`.
+    static func merged(_ cfgs: [SyncConfig]) -> SyncConfig {
+        var m = SyncConfig()
+        m.workshopFallback = unique(cfgs.flatMap { $0.workshopFallback })
+        m.saveSearch = unique(cfgs.flatMap { $0.saveSearch })
+        return m
+    }
+    static func unique<T: Hashable>(_ a: [T]) -> [T] { var seen = Set<T>(); return a.filter { seen.insert($0).inserted } }
     static func load(_ url: URL) -> SyncConfig {
         guard let d = try? Data(contentsOf: url), let c = try? JSONDecoder().decode(SyncConfig.self, from: d) else { return SyncConfig() }
         return c

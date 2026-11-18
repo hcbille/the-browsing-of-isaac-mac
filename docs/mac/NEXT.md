@@ -28,6 +28,8 @@ at the top of `docs/mac/PROGRESS.md`.
 1. Verifier: re-run the Integration checks (headless M1 3,000 frames, Vanilla Launch, `--lua-debug`,
    `--debug-console`, off-mod greying and toggling), then the M6 save and M7 Workshop cases against the real game.
 2. Commit the integration work on `mac-native`, publish.
-3. M8: fix Epiphany's `epiphany_menu.lua:35` error ("no animation named Overlay"), give the Layer a mod-less save
-   hook, re-measure gaps with a real `implemented.txt`, grow the Layer (Epiphany first).
+3. M8 (rounds 1 and 2 done, see PROGRESS.md and `docs/mac/layer-gaps.md`): 5 of 11 REPENTOGON-using mods Shown (verified 2026-11-18), Epiphany runs Basement I to
+   Dark Room with no Lua error, three engine hooks added. Next: Custom Stage API and External Item Descriptions (structures to
+   measure), Epiphany's remaining callbacks (more hooks by the same recipe), its characters on the wheel in a window, where the
+   menu reads input for `MC_MENU_INPUT_ACTION`; then a Verifier (and a Browser Build rebuild and run, never done for the new hooks).
 4. Then M9 (`docs/mac/steam-bridge.md`), M10 against the real game, M11, M12.

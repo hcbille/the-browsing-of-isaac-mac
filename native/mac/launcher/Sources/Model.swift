@@ -28,6 +28,11 @@ enum Paths {
         if let p = env["REPENTANCE_MAC_LAYER_INFO"], !p.isEmpty { return URL(fileURLWithPath: p) }
         return Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/layer-info.json")
     }
+    /// The build's own `Resources/sync-config.json` (scripts/mac/build.sh); lowest-precedence config.
+    static var bundledSyncConfig: URL {
+        if let p = env["REPENTANCE_MAC_BUNDLED_SYNC_CONFIG"], !p.isEmpty { return URL(fileURLWithPath: p) }
+        return Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/sync-config.json")
+    }
     static var gameExecutable: URL {
         if let p = env["REPENTANCE_MAC_GAME_EXE"], !p.isEmpty { return URL(fileURLWithPath: p) }
         return Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/isaac-mac")

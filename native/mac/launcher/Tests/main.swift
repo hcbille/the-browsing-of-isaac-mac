@@ -239,5 +239,21 @@ do {
     check((try JSONDecoder().decode(LauncherSettings.self, from: Data("{\"scale_mode\":\"weird\"}".utf8))).scaleMode == "integer", "unknown scale_mode falls back to integer")
 }
 
+// ---- sync-config merge: env > support > bundled > defaults ----
+do {
+    func cfg(_ w: [String], _ v: [String]) -> SyncConfig { var c = SyncConfig(); c.workshopFallback = w; c.saveSearch = v; return c }
+    let m = SyncConfig.merged([cfg(["/s/w"], ["/s/g"]), cfg(["/b/w", "/s/w"], ["/b/g"])])
+    check(m.workshopFallback == ["/s/w", "/b/w"] && m.saveSearch == ["/s/g", "/b/g"], "sync-config merge: support first, then bundled, duplicates dropped")
+    check(SyncConfig.merged([SyncConfig(), cfg(["/b/w"], [])]).workshopFallback == ["/b/w"], "sync-config merge: bundled alone is used")
+    check(SyncConfig.merged([]).workshopFallback.isEmpty, "sync-config merge: nothing configured = built-in defaults only")
+    let base = root.appendingPathComponent("cfgmerge")
+    let sup = base.appendingPathComponent("support"), bundled = base.appendingPathComponent("bundled.json")
+    write(sup.appendingPathComponent("sync-config.json"), "{\"workshop_fallback\":[\"/s/w\"]}")
+    write(bundled, "{\"workshop_fallback\":[\"/b/w\"],\"save_search\":[\"/b/g\"]}")
+    let a = SyncConfig.merged([SyncConfig.load(sup.appendingPathComponent("sync-config.json")), SyncConfig.load(bundled)])
+    check(a.workshopFallback == ["/s/w", "/b/w"] && a.saveSearch == ["/b/g"], "sync-config merge from files: bundled fills what support lacks")
+    check(SyncConfig.load(base.appendingPathComponent("missing.json")).workshopFallback.isEmpty, "missing config file = empty")
+}
+
 print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

@@ -444,10 +444,18 @@ index d845225..9a4796a 100644
  LUA_SHIM(luaL_loadbufferx) {
      /* round 102: the REPENTOGON-compatible layer, if its mod is installed and
 diff --git a/scripts/recomp/host/src/host_rgon.c b/scripts/recomp/host/src/host_rgon.c
-index 25bd680..11cb13e 100644
+index 25bd680..87eaa68 100644
 --- a/scripts/recomp/host/src/host_rgon.c
 +++ b/scripts/recomp/host/src/host_rgon.c
-@@ -383,8 +383,14 @@ static int gate_index(lua_State *L) {
+@@ -63,6 +63,7 @@ void isaac_lua_guest_invoke(uint32_t fn, CpuState *cpu, const uint32_t *args, un
+ void isaac_lua_host_enter(uintptr_t here, uint32_t guest_esp);
+ void isaac_lua_host_leave(uintptr_t here);
+ const uint8_t *isaac_fs_peek(const char *path, uint32_t *len);
++int isaac_fs_store(const char *path, const uint8_t *data, uint32_t len);
+ uint32_t isaac_guest_alloc(uint32_t n);
+ void     isaac_guest_free(uint32_t p);
+ 
+@@ -383,8 +384,14 @@ static int gate_index(lua_State *L) {
      lua_pushnil(L);
      return 1;
  }
@@ -462,6 +470,71 @@ index 25bd680..11cb13e 100644
      lua_pushglobaltable(L);                                   /* 3 */
      lua_pushnil(L); lua_setfield(L, 3, "REPENTOGON");         /* the lookup must miss */
      if (!lua_getmetatable(L, 3)) { lua_newtable(L); lua_pushvalue(L, -1); lua_setmetatable(L, 3); }   /* 4 */
+@@ -416,6 +423,43 @@ static int l_load(lua_State *L) {
+     if (luaL_loadbufferx(L, (const char *)src, n, chunk, "t") != LUA_OK) { lua_pushnil(L); lua_insert(L, -2); return 2; }
+     return 1;
+ }
++/* save_read(name) -> the text of the layer's own save file, or nil; save_write(name, text) -> true.
++ * Round 123 (M8): a file of the game's save folder that belongs to the layer, for a layer that has
++ * no mod of its own to keep save data in (the Mac Build does not run the layer's main.lua). It is
++ * written through the file layer's persist hooks as if the game had, so the Browser Build's page
++ * and the Mac Build's save folder each keep it like any other save file. `name` is a plain file
++ * name; the layer puts the save slot in it. */
++#define RGON_SAVE_DIR "documents/my games/binding of isaac repentance+/"
++static int save_path(lua_State *L, char *path, size_t cap) {
++    const char *name = luaL_checkstring(L, 1);
++    size_t n = strlen(name);
++    if (n == 0 || n > 64) return 0;
++    for (size_t i = 0; i < n; ++i) {
++        char c = name[i];
++        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')) return 0;
++    }
++    if (name[0] == '.') return 0;
++    snprintf(path, cap, RGON_SAVE_DIR "%s", name);
++    return 1;
++}
++static int l_save_read(lua_State *L) {
++    char path[160];
++    uint32_t n = 0;
++    if (!save_path(L, path, sizeof path)) return luaL_error(L, "rgon: save_read of a bad name");
++    const uint8_t *src = isaac_fs_peek(path, &n);
++    if (!src) { lua_pushnil(L); return 1; }
++    lua_pushlstring(L, (const char *)src, n);
++    return 1;
++}
++static int l_save_write(lua_State *L) {
++    char path[160];
++    size_t n = 0;
++    if (!save_path(L, path, sizeof path)) return luaL_error(L, "rgon: save_write of a bad name");
++    const char *text = luaL_checklstring(L, 2, &n);
++    if (n > (4u << 20)) return luaL_error(L, "rgon: save_write of %d bytes", (int)n);
++    lua_pushboolean(L, isaac_fs_store(path, (const uint8_t *)text, (uint32_t)n));
++    return 1;
++}
+ static int l_env(lua_State *L) {
+     const char *v = getenv(luaL_checkstring(L, 1));
+     if (v) lua_pushstring(L, v); else lua_pushnil(L);
+@@ -428,7 +472,7 @@ static const luaL_Reg BRIDGE[] = {
+     {"w8", l_w8}, {"w16", l_w16}, {"w32", l_w32}, {"wf32", l_wf32}, {"wf64", l_wf64},
+     {"f2i", l_f2i}, {"i2f", l_i2f}, {"str", l_str}, {"stdstr", l_stdstr},
+     {"alloc", l_alloc}, {"free", l_free}, {"call", l_call}, {"cfn", l_cfn}, {"obj", l_obj},
+-    {"hook", l_hook}, {"gate", l_gate}, {"log", l_log}, {"load", l_load}, {"env", l_env}, {"xmm", l_xmm}, {"registry", l_registry},
++    {"hook", l_hook}, {"gate", l_gate}, {"log", l_log}, {"load", l_load}, {"save_read", l_save_read}, {"save_write", l_save_write}, {"env", l_env}, {"xmm", l_xmm}, {"registry", l_registry},
+     {"reg", l_reg},
+     {NULL, NULL},
+ };
+@@ -442,6 +486,11 @@ void isaac_rgon_push_bridge(lua_State *L) {
+     /* round 110: this engine runs instruction hooks (lift_patches.py
+      * RGON_INSN_HOOKS) and has reg(); a layer asks before it defines one */
+     lua_pushinteger(L, 1); lua_setfield(L, -2, "INSN");
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    /* round 123: the Mac Build does not run the layer's mod shell (main.lua), so its save data goes
++     * to a file of its own (save_read / save_write); the Browser Build keeps it in its mod's data */
++    lua_pushinteger(L, 1); lua_setfield(L, -2, "SAVEFILE");
++#endif
+     /* round 103: Lua's own os library, for the layer to hand mods the four
+      * functions of it REPENTOGON gives them (date, time, clock, difftime). The
+      * game opens seven libraries by name and os is not one of them, so there
 diff --git a/scripts/recomp/host/src/host_shims_crt.c b/scripts/recomp/host/src/host_shims_crt.c
 index ee93d31..a10c303 100644
 --- a/scripts/recomp/host/src/host_shims_crt.c
@@ -521,7 +594,7 @@ index ee93d31..a10c303 100644
              isaac_log("[isaac][crt] __stdio_common_vsscanf: format with %u "
                        "conversions exceeds the 8-arg dispatch "
 diff --git a/scripts/recomp/host/src/host_shims_fs.c b/scripts/recomp/host/src/host_shims_fs.c
-index 818d851..a2277a2 100644
+index 818d851..3672c86 100644
 --- a/scripts/recomp/host/src/host_shims_fs.c
 +++ b/scripts/recomp/host/src/host_shims_fs.c
 @@ -54,7 +54,11 @@
@@ -566,7 +639,29 @@ index 818d851..a2277a2 100644
  #else
  static int isaac_fs_persist_js(const char *key, const char *src, const uint8_t *data, uint32_t len) {
      (void)key; (void)src; (void)data; (void)len; return 0;
-@@ -790,6 +803,10 @@ const uint8_t *isaac_fs_peek(const char *path, uint32_t *len) {
+@@ -745,6 +758,21 @@ int isaac_fs_seed(const char *path, const uint8_t *data, uint32_t len) {
+     return 1;
+ }
+ 
++/* Round 123 (M8): a file written by the host itself, as if the game had written
++ * and closed it: the entry is replaced and handed to the persist hooks, so the
++ * node driver, the page (IndexedDB) and the Mac Build (its save folder) keep it
++ * like any other save. The REPENTOGON-compatible layer's own save file
++ * (host_rgon.c, save_write) is the one user: the layer has no mod of its own
++ * in the Mac Build, so no Isaac.SaveModData to hang its data on. */
++int isaac_fs_store(const char *path, const uint8_t *data, uint32_t len) {
++    if (!isaac_fs_seed(path, data, len)) return 0;
++    char key[256];
++    fs_entry *e = fs_key(path, key, sizeof key) ? fs_find(key) : NULL;
++    if (!e) return 0;
++    fs_persist(e);
++    return 1;
++}
++
+ /* Only a successful call transfers ownership of the caller's malloc buffer.
+  * A NULL buffer is valid for an empty file, but not for nonempty data. */
+ int isaac_fs_seed_adopt(const char *path, uint8_t *data, uint32_t len) {
+@@ -790,6 +818,10 @@ const uint8_t *isaac_fs_peek(const char *path, uint32_t *len) {
      char key[256];
      if (!path || !fs_key(path, key, sizeof key)) return NULL;
      fs_entry *e = fs_find(key);
@@ -1007,6 +1102,20 @@ index 6aa6b68..133df95 100644
    if (ISAAC_SHIM_BASE + ISAAC_SHIM_STRIDE * isaac_import_count
        > ISAAC_GUARD_VA) {
      printf("  FAIL shim tokens overrun the guard\n");
+diff --git a/scripts/recomp/lift/lift_patches.py b/scripts/recomp/lift/lift_patches.py
+index 659f7ce..5f5b325 100644
+--- a/scripts/recomp/lift/lift_patches.py
++++ b/scripts/recomp/lift/lift_patches.py
+@@ -1419,6 +1419,9 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
+     (98, 0x004199d0, "Room::RenderEntityPass_004199d0"),    # ret 0x8; asm
+     (99, 0x008151e0, "Room::GetShopItemPrice"),    # ret 0x10; asm
+     (169, 0x0094d500, "Menu_Character::UpdateRotations"),    # ret 0x0; sig Menu_Character::UpdateRotations
++    (171, 0x00920940, "NightmareScene::Render"),    # ret 0x0; asm (round 123)
++    (172, 0x006f9000, "Game::SaveState"),    # ret 0x4; sig Game::SaveState (round 123)
++    (173, 0x00874910, "LuaCallbackCaller::CallInputAction"),    # ret 0x14; sig LuaCallbackCaller::CallInputAction (round 123)
+     (100, 0x006a93a0, "Entity::Init"),    # ret 0x10; sig Init; vtable 0x00b6730c slot 1
+     (101, 0x00755470, "Entity_Player::Init"),    # ret 0x10; vtable 0x00b6bdd0 slot 1
+     (102, 0x006b8b20, "Entity_NPC::Init"),    # ret 0x10; vtable 0x00b67468 slot 1
 diff --git a/scripts/recomp/lift/recomp_rt.c b/scripts/recomp/lift/recomp_rt.c
 index 9748f68..a71282d 100644
 --- a/scripts/recomp/lift/recomp_rt.c
@@ -1020,3 +1129,1605 @@ index 9748f68..a71282d 100644
    uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
    switch (leaf) {
      case 0x00000000u:
+diff --git a/scripts/recomp/rgon/README.md b/scripts/recomp/rgon/README.md
+index 1bd7c84..2cdccbf 100644
+--- a/scripts/recomp/rgon/README.md
++++ b/scripts/recomp/rgon/README.md
+@@ -38,6 +38,8 @@ The parts, in the order `rgon.lua` loads them:
+ | `api_misc.lua` | Timers, `Isaac.IsInGame`, completion marks of a mod's characters, `Console`, `os`. |
+ | `api_innate.lua` | Innate items (`AddInnateCollectible` and its family). |
+ | `api_extra.lua` | Round 109: `GetActiveMaxCharge`/`GetActiveMinUsableCharge` of a slot, `RoomTransition`, `EntityLaser:SetInitSound`, `MultiShotParams`. |
++| `api_gaps.lua` | Round 123 (M8): `ColorModifier`, `BlendMode` and `LayerState:GetBlendMode`, a writable `Sprite.Color`, EntityConfigPlayer's paths and starting items, item pools from itempools.xml, giant book ids, `Isaac.GetString`, `Console.RegisterMacro`, the player's custom cache tags, stat modifiers and the inert suplex/costume accessors. |
++| `api_menus.lua` | Round 123 (M8): `MenuManager`, `CharacterMenu` (the menu manager at `0x00c72a20`, REPENTOGON's layout checked at run time), and the small globals Epiphany reaches (`SaveMenu`, `ItemOverlay`, `RoomTransition`, `BossPoolManager`, `RoomConfigHolder`) accepted as inert. |
+ | `api_hooks.lua` | The callbacks that are a handler before or after a game function, and (round 110) the ones an instruction hook fires: MC_EVALUATE_STAT, MC_PRE/POST_PLAYER_USE_BOMB, MC_POST_FIRE_SPLIT_TEAR. |
+ | `hook_slots.lua` | Generated: each hooked function's slot and what it pops. |
+ 
+@@ -146,6 +148,8 @@ the wheel's portrait drawing) a locked character's portrait shows its frame 1.
+ What is unlocked is kept, per save slot, in the layer's own save file (the save
+ data of its mod, `REPENTOGON (browser)`, written once after a save slot's
+ callbacks and after each later change), and read again when a slot is chosen.
++With no mod of its own (the Mac Build does not run `main.lua`) the same text is kept in the game's save
++folder as `rgon-layer-<slot>.dat`, through the bridge's `save_read` / `save_write` (round 123; `B.SAVEFILE`).
+ `test_ach.lua` checks all of it with the content mod
+ `tools/test_ach_mod.mjs` makes (see 21.141 in docs/recomp-architecture.md).
+ 
+diff --git a/scripts/recomp/rgon/api_data.lua b/scripts/recomp/rgon/api_data.lua
+index 18c0be6..e981d5c 100644
+--- a/scripts/recomp/rgon/api_data.lua
++++ b/scripts/recomp/rgon/api_data.lua
+@@ -184,6 +184,10 @@ local function nodes_of(file, tags)
+   return out
+ end
+ 
++T.nodes_of = nodes_of
++T.xml_parse = parse
++T.read_file = read_file
++
+ -- A kind of node: where it is, and how an entry of a mod's (which has no id
+ -- of its own in the file) gets the id the game gave it.
+ local function by_name(f, key)
+@@ -205,9 +209,19 @@ kind("TRINKET", "items.xml", { "trinket" }, by_name(Isaac.GetTrinketIdByName))
+ kind("NULLITEM", "items.xml", { "null" }, by_name(function(n) return Isaac.GetNullItemIdByName(n) end))
+ kind("CARD", "pocketitems.xml", { "card", "rune" }, by_name(Isaac.GetCardIdByName, "hud"))
+ kind("PILL", "pocketitems.xml", { "pilleffect" }, by_name(Isaac.GetPillEffectByName))
+-kind("PLAYER", "players.xml", { "player" }, function(node)
++kind("PLAYER", "players.xml", { "player" }, function(node, last_game_id, nth)
+   local n = node.attr.name
+   if not n then return nil end
++  -- The game gives each <player> of a mod the next number, in load order (its player vector,
++  -- 0x148 bytes each: the name at +4). A name is not enough to find it: a mod may name several
++  -- characters alike (Epiphany's placeholder "NotDone" entries, which make the lookup by name
++  -- answer the first one's number for each), and then the characters after them have no entry.
++  -- So the record the order points at is taken when it holds the name, and the lookup by name
++  -- is the fallback.
++  local pcfg = T.player_config
++  local want = last_game_id + 1 + nth
++  local at = pcfg and pcfg(want)
++  if at and B.stdstr(at + 4) == n then return want end
+   local ok, id = pcall(Isaac.GetPlayerTypeByName, n, node.attr.bskinparent ~= nil)
+   if ok and mathtype(id) == "integer" and id >= 0 then return id end
+   return nil
+@@ -239,6 +253,7 @@ local function entries(k)
+   set = { list = {}, by_id = {}, by_name = {} }
+   loaded[k] = set
+   local next_free = 0
++  local nth = 0                              -- how many of a mod's entries came before this one
+   local nodes = nodes_of(spec.file, spec.tags)
+   for _, node in ipairs(nodes) do
+     local a = node.attr
+@@ -246,7 +261,8 @@ local function entries(k)
+     if not node.source then
+       if id and id > next_free then next_free = id end
+     elseif spec.id then
+-      id = spec.id(node)                     -- the id the game gave a mod's item, card, character ...
++      id = spec.id(node, next_free, nth)     -- the id the game gave a mod's item, card, character ...
++      nth = nth + 1
+     elseif spec.name == "ACHIEVEMENT" then
+       next_free = next_free + 1              -- a mod's achievements follow the game's, in load order
+       id = next_free
+@@ -264,6 +280,13 @@ local function entries(k)
+     if a.name and set.by_name[a.name] == nil then set.by_name[a.name] = entry end
+   end
+   set.first_free = next_free + 1
++  -- A mod's characters have their numbers only once the game has read the mod's content
++  -- (a mod whose script runs before that asks too early): answer, and ask the game again next time.
++  if spec.name == "PLAYER" and T.player_config then
++    local mods = false
++    for _, entry in ipairs(set.list) do if entry.sourceid then mods = true break end end
++    if mods and not T.player_config(next_free + 1) then loaded[k] = nil end
++  end
+   return set
+ end
+ T.xml_entries = entries
+@@ -428,7 +451,21 @@ local function parse_save(text)
+   if name then sec[name] = table.concat(buf, "\n") end
+   return sec
+ end
++-- Round 123 (M8): with no mod of its own (the Mac Build does not run main.lua) the layer keeps the
++-- same text in a file of the game's save folder, one per save slot (B.save_read / B.save_write, which
++-- go through the game's own file layer as a save file does). The Browser Build keeps its mod's data.
++local function slot_file()
++  if not B.SAVEFILE or layer_mod or not B.save_write then return nil end
++  local slot = r32(r32(0x00c7169c) + 0x10)
++  if slot == 0 or slot > 9 then return nil end
++  return "rgon-layer-" .. slot .. ".dat"
++end
+ local function read_save()
++  local file = slot_file()
++  if file then
++    local ok, text = pcall(B.save_read, file)
++    return parse_save(ok and text or nil)
++  end
+   if not layer_mod then return {} end
+   -- LoadModData alone (an empty string when there is no file): measured in a dist
+   -- whose mods are its instance tree (dev_dist.py), HasModData answered false for a
+@@ -437,7 +474,8 @@ local function read_save()
+   return parse_save(ok2 and text or nil)
+ end
+ local function write_save(sec)
+-  if not layer_mod then return false end
++  local file = slot_file()
++  if not layer_mod and not file then return false end
+   local names = {}
+   for k in pairs(sec) do names[#names + 1] = k end
+   table.sort(names)
+@@ -446,6 +484,11 @@ local function write_save(sec)
+     out[#out + 1] = "== " .. k
+     out[#out + 1] = sec[k]
+   end
++  if file then
++    local wok, werr = pcall(B.save_write, file, table.concat(out, "\n"))
++    if not wok or werr ~= true then log("api_data: the layer's save file was not written: " .. tostring(werr)) end
++    return wok and werr == true
++  end
+   local ok, err = pcall(Isaac.SaveModData, layer_mod, table.concat(out, "\n"))
+   if not ok then log("api_data: the layer's save file was not written: " .. tostring(err)) end
+   return ok
+@@ -1079,6 +1122,8 @@ do
+     end
+     family(tags, "AddCustomTag", "HasCustomTag", "GetCustomTags")
+     family(cache, "AddCustomCacheTag", "HasCustomCacheTag", "GetCustomCacheTags")
++    -- api_gaps.lua's player custom cache: "<c|t|n>:<id>" -> { tag = true }
++    function T.custom_cache_items() seed() return cache end
+     -- ItemConfig:GetTaggedItems(tag) -> every item with that custom tag
+     method("ItemConfig", "GetTaggedItems", function(self, tag)
+       seed()
+diff --git a/scripts/recomp/rgon/api_gaps.lua b/scripts/recomp/rgon/api_gaps.lua
+new file mode 100644
+index 0000000..fa23819
+--- /dev/null
++++ b/scripts/recomp/rgon/api_gaps.lua
+@@ -0,0 +1,538 @@
++-- api_gaps.lua -- gaps the Mac Build's gate log named for the Target Mods (milestone M8),
++-- Epiphany first. Each piece says what in the log it answers.
++--
++--   Sprite.Color as a reference        epiphany_menu.lua:35 `sprite.Color.A = 0`: "no member named 'A'"
++--   BlendMode, LayerState:GetBlendMode  epiphany_menu.lua:40: a layer's blend mode is read and changed
++--
++-- (Sprite(path, load), the constructor, is in api_sprite.lua.)
++
++local T = ...
++local B, R, method, this, wrap = T.B, T.R, T.method, T.this, T.wrap
++local ptr, r32, w32, log, cfn = B.ptr, B.r32, B.w32, B.log, B.cfn
++local type, error, setmetatable, rawget, rawset, tostring = type, error, setmetatable, rawget, rawset, tostring
++local mathtype = math.type
++
++-- Sprite.Color: the game hands out a const Color (a copy-free view that cannot be written),
++-- REPENTOGON a reference. A sprite's colour is at +0xa8 (rgon.lua, GetLayer: checked against
++-- the game's own getter), so the getter is replaced by one that wraps that address in the
++-- ordinary Color class: `sprite.Color.A = 0` then changes the sprite, as it does there.
++do
++  local cls, const = T.class_tables("Sprite")
++  local done = false
++  for _, tbl in ipairs({ cls, const }) do
++    local pg = type(tbl) == "table" and rawget(tbl, "__propget")
++    if type(pg) == "table" and rawget(pg, "Color") ~= nil then
++      rawset(pg, "Color", cfn(function(self) return wrap("Color", this(self, "Sprite.Color") + 0xa8) end))
++      done = true
++    end
++  end
++  if done then R.Implemented["Sprite.Color"] = true
++  else log("api_gaps: Sprite.Color was not where it was expected; left as the game has it") end
++end
++
++-- BlendMode: five ints, equation +0, RGB source +4, RGB destination +8, alpha source +0xc,
++-- alpha destination +0x10, at +0x78 of a layer state (REPENTOGON's LayerState: the layer
++-- state's neighbours, 0x74 visible, 0x8c render flags, 0x90 crop, are where this build has
++-- them, rgon.lua GetLayer). A BlendMode read from a layer is that memory, so a change reaches
++-- the layer as the game's own code reads it; BlendMode.New makes a block of its own.
++do
++  local FIELD = { Equation = 0, RGBSourceFactor = 4, RGBDestinationFactor = 8, AlphaSourceFactor = 0xc, AlphaDestinationFactor = 0x10 }
++  local NFACTORS, NEQUATIONS = 15, 5
++  local PRESETS = {                                  -- BlendType -> equation, rgb src, rgb dst, alpha src, alpha dst
++    [0] = { 0, 1, 0, 1, 0 },                         -- CONSTANT
++    { 0, 1, 7, 1, 7 },                               -- NORMAL (premultiplied alpha)
++    { 0, 1, 1, 1, 1 },                               -- ADDITIVE
++    { 0, 0, 2, 0, 2 },                               -- MULTIPLICATIVE
++    { 0, 4, 7, 4, 7 },                               -- OVERLAY
++  }
++  local owned = setmetatable({}, { __mode = "k" })   -- object -> its own block
++
++  local function addr(self)
++    local a = type(self) == "table" and rawget(self, "_a")
++    if not a then error("rgon: BlendMode used without its object", 3) end
++    return a
++  end
++  local function checked(v, limit, what, level)
++    if mathtype(v) ~= "integer" and type(v) ~= "number" then error("bad argument (number expected) for " .. what, level) end
++    v = math.floor(v)
++    if v < 0 or v >= limit then error("bad argument: invalid " .. what, level) end
++    return v
++  end
++  local function setall(a, e, rs, rd, as, ad)
++    w32(a, e) w32(a + 4, rs) w32(a + 8, rd) w32(a + 0xc, as) w32(a + 0x10, ad)
++  end
++
++  local METHODS = {}
++  function METHODS.SetMode(self, ...)
++    local a = addr(self)
++    local n = select("#", ...)
++    if n >= 2 then
++      local rs, rd, as, ad, e = ...
++      setall(a,
++        e == nil and r32(a) or checked(e, NEQUATIONS, "blend equation", 2),
++        rs == nil and r32(a + 4) or checked(rs, NFACTORS, "blend factor", 2),
++        rd == nil and r32(a + 8) or checked(rd, NFACTORS, "blend factor", 2),
++        as == nil and r32(a + 0xc) or checked(as, NFACTORS, "blend factor", 2),
++        ad == nil and r32(a + 0x10) or checked(ad, NFACTORS, "blend factor", 2))
++    else
++      local p = PRESETS[math.floor((...))]
++      if p then setall(a, p[1], p[2], p[3], p[4], p[5]) end   -- an unknown mode is ignored
++    end
++  end
++
++  local MT = {
++    __type = "BlendMode", __name = "BlendMode",
++    __index = function(self, k)
++      local f = FIELD[k]
++      if f then return r32(addr(self) + f) end
++      return METHODS[k]
++    end,
++    __newindex = function(self, k, v)
++      local f = FIELD[k]
++      if not f then error("no member named '" .. tostring(k) .. "'", 2) end
++      w32(addr(self) + f, checked(v, k == "Equation" and NEQUATIONS or NFACTORS, k == "Equation" and "blend equation" or "blend factor", 2))
++    end,
++    __eq = function(a, b) return rawget(a, "_a") == rawget(b, "_a") end,
++    __tostring = function(self) return "BlendMode(" .. r32(addr(self)) .. "," .. r32(addr(self) + 4) .. "," .. r32(addr(self) + 8)
++      .. "," .. r32(addr(self) + 0xc) .. "," .. r32(addr(self) + 0x10) .. ")" end,
++    __gc = function(self) local a = rawget(self, "_own") if a then B.free(a) end end,
++  }
++  local function at(a, own) return setmetatable({ _a = a, _own = own }, MT) end
++
++  -- what rgon.lua's LayerState:GetBlendMode calls
++  R.BlendModeAt = function(a) return at(a) end
++
++  local BM = {}
++  function BM.New(rs, rd, as, ad, e)
++    local a = B.alloc(0x14)
++    setall(a,
++      e == nil and 0 or checked(e, NEQUATIONS, "blend equation", 2),
++      rs == nil and 1 or checked(rs, NFACTORS, "blend factor", 2),
++      rd == nil and 0 or checked(rd, NFACTORS, "blend factor", 2),
++      as == nil and 1 or checked(as, NFACTORS, "blend factor", 2),
++      ad == nil and 0 or checked(ad, NFACTORS, "blend factor", 2))
++    return at(a, a)
++  end
++  function BM.NewFromType(t)
++    local p = PRESETS[math.floor(t or -1)]
++    if not p then error("bad argument #1 to 'NewFromType': Invalid blend type", 2) end
++    local a = B.alloc(0x14)
++    setall(a, p[1], p[2], p[3], p[4], p[5])
++    return at(a, a)
++  end
++  if rawget(_G, "BlendMode") == nil then rawset(_G, "BlendMode", BM) end
++  R.Implemented["BlendMode.New"] = true
++  R.Implemented["BlendMode.NewFromType"] = true
++  R.Implemented["BlendMode.SetMode"] = true
++  for k in pairs(FIELD) do R.Implemented["BlendMode." .. k] = true end
++end
++
++-- ColorModifier(R = 1, G = 1, B = 1, A = 0, Brightness = 0, Contrast = 1): a colour correction.
++-- A value of the Lua side: six numbers with + - (two of them) and * / (by a number, the
++-- ColorModifier on the left), as REPENTOGON's. epiphany_menu.lua:138.
++do
++  local FIELDS = { "R", "G", "B", "A", "Brightness", "Contrast" }
++  local MT = { __type = "ColorModifier", __name = "ColorModifier" }
++  local function new(r, g, b, a, br, c)
++    return setmetatable({ R = r, G = g, B = b, A = a, Brightness = br, Contrast = c }, MT)
++  end
++  local function num(v, what) if type(v) ~= "number" then error("bad argument (number expected) for ColorModifier " .. what, 3) end return v end
++  MT.__index = function(_, k) return nil end
++  MT.__newindex = function(t, k, v)
++    for _, f in ipairs(FIELDS) do if f == k then rawset(t, k, num(v, k)) return end end
++    error("no member named '" .. tostring(k) .. "'", 2)
++  end
++  local function isc(v) return type(v) == "table" and getmetatable(v) == MT end
++  local function both(a, b, f)
++    if not isc(a) or not isc(b) then error("bad argument: ColorModifier expected", 3) end
++    return new(f(a.R, b.R), f(a.G, b.G), f(a.B, b.B), f(a.A, b.A), f(a.Brightness, b.Brightness), f(a.Contrast, b.Contrast))
++  end
++  MT.__add = function(a, b) return both(a, b, function(x, y) return x + y end) end
++  MT.__sub = function(a, b) return both(a, b, function(x, y) return x - y end) end
++  MT.__mul = function(a, k)
++    if type(a) == "number" then error("Cannot left multiply a ColorModifier with a number", 2) end
++    if not isc(a) or type(k) ~= "number" then error("bad argument: ColorModifier * number expected", 2) end
++    return new(a.R * k, a.G * k, a.B * k, a.A * k, a.Brightness * k, a.Contrast * k)
++  end
++  MT.__div = function(a, k)
++    if type(a) == "number" then error("Cannot left divide a ColorModifier with a number", 2) end
++    if not isc(a) or type(k) ~= "number" then error("bad argument: ColorModifier / number expected", 2) end
++    if k == 0 then error("Divide by zero", 2) end
++    return new(a.R / k, a.G / k, a.B / k, a.A / k, a.Brightness / k, a.Contrast / k)
++  end
++  MT.__eq = function(a, b)
++    return a.R == b.R and a.G == b.G and a.B == b.B and a.A == b.A and a.Brightness == b.Brightness and a.Contrast == b.Contrast
++  end
++  MT.__tostring = function(s) return string.format("ColorModifier(%g,%g,%g,%g,%g,%g)", s.R, s.G, s.B, s.A, s.Brightness, s.Contrast) end
++  if rawget(_G, "ColorModifier") == nil then
++    rawset(_G, "ColorModifier", setmetatable({}, { __call = function(_, r, g, b, a, br, c)
++      return new(r == nil and 1 or num(r, "R"), g == nil and 1 or num(g, "G"), b == nil and 1 or num(b, "B"),
++                 a == nil and 0 or num(a, "A"), br == nil and 0 or num(br, "Brightness"), c == nil and 1 or num(c, "Contrast"))
++    end }))
++    R.Implemented["ColorModifier.ColorModifier"] = true
++  end
++  T.ColorModifier = { new = new, is = isc }
++end
++
++-- EntityConfigPlayer: the fields of a character's config that players.xml fills and the
++-- layer's own table (api_data.lua) leaves out: costume, name and portrait paths, starting
++-- items. Read from the config record in the game's memory (T.player_config: 0x148 bytes each,
++-- `ri32(at) == the player type`), at REPENTOGON's offsets for the record; the two this build
++-- is known to share (achievement +0xe8, hidden +0x128) and the name at +4 are the check:
++-- a record whose name is not the one players.xml gave is not read.
++do
++  local pc = T.player_config
++  local sample = EntityConfig and EntityConfig.GetPlayer and EntityConfig.GetPlayer(0)
++  local PC = sample and getmetatable(sample) and getmetatable(sample).__index
++  if type(PC) == "table" and pc then
++    local ri32, stdstr = B.ri32, B.stdstr
++    local checked = {}
++    local function rec(self, what)
++      local at = pc(self._id)
++      if not at then return nil end
++      if checked[self._id] == nil then
++        checked[self._id] = (stdstr(at + 4) == (self._x.name or "")) or false
++        if not checked[self._id] then log("api_gaps: the config record of player " .. self._id .. " does not hold its name; " .. what .. " answers its default") end
++      end
++      return checked[self._id] and at or nil
++    end
++    local function int(name, off, default)
++      PC[name] = function(self) local at = rec(self, name) return at and ri32(at + off) or default end
++      R.Implemented["EntityConfigPlayer." .. name] = true
++    end
++    local function str(name, off)
++      PC[name] = function(self) local at = rec(self, name) return at and stdstr(at + off) or "" end
++      R.Implemented["EntityConfigPlayer." .. name] = true
++    end
++    str("GetNameImagePath", 0x34)
++    str("GetPortraitPath", 0x4c)
++    str("GetExtraPortraitPath", 0x7c)
++    str("GetBirthrightDescription", 0xf4)
++    int("GetCostumeID", 0xac, -1)
++    int("GetSkinColor", 0xe4, 0)
++    int("GetTrinket", 0xe0, 0)
++    int("GetCard", 0xc8, 0)
++    int("GetPill", 0xcc, 0)
++    int("GetPocketActive", 0xf0, 0)
++    int("GetBrokenHearts", 0xec, 0)
++    PC.GetCollectibles = function(self)
++      local at = rec(self, "GetCollectibles")
++      local out = {}
++      if at then
++        local first, last = B.r32(at + 0xd4), B.r32(at + 0xd8)
++        for a = first, last - 4, 4 do out[#out + 1] = ri32(a) end
++      end
++      return out
++    end
++    R.Implemented["EntityConfigPlayer.GetCollectibles"] = true
++  else
++    log("api_gaps: EntityConfig.GetPlayer is not the layer's own; the config's extra fields are left out")
++  end
++end
++
++-- Console.RegisterMacro(name, commands): REPENTOGON's console lists it for `macro <name>`.
++-- Kept; the game's console here has no `macro` to run it.
++do
++  local C = rawget(_G, "Console")
++  if type(C) == "table" and rawget(C, "RegisterMacro") == nil then
++    local macros = {}
++    function C.RegisterMacro(name, commands)
++      if type(name) ~= "string" then error("bad argument #1 to 'RegisterMacro' (string expected, got " .. type(name) .. ")", 2) end
++      if type(commands) ~= "table" then error("bad argument #2 to 'RegisterMacro' (table expected, got " .. type(commands) .. ")", 2) end
++      macros[name] = commands
++      T.unsupported("Console.RegisterMacro", "the macro is kept; the console cannot run it")
++    end
++  end
++end
++
++-- Item pools from itempools.xml: Isaac.GetPoolIdByName(name), ItemPool:GetCollectiblesFromPool(pool),
++-- ItemPool:GetNumItemPools(). The game's own pools are ItemPoolType 0 and up in the file's order (checked
++-- against the enum's names); a pool a mod's itempools.xml names that the game has not is a custom pool and
++-- gets the numbers after them, in load order. The game itself has no such pool: an id of one is the layer's
++-- (accepted, not supported: nothing in the game draws from it). Weights are the file's own, as the pools start.
++do
++  local XML = rawget(_G, "XMLNode")
++  local function norm(s) return (tostring(s):gsub("^POOL_", ""):gsub("[_%s]", ""):lower()) end
++  local pools                       -- norm name -> { id, name, items = { {id, weight, decreaseby, removeon} } }
++  local order
++  local function build()
++    if pools then return pools end
++    pools, order = {}, {}
++    local enum = {}
++    for k, v in pairs(rawget(_G, "ItemPoolType") or {}) do if type(v) == "number" then enum[norm(k)] = v end end
++    local top = -1
++    for _, v in pairs(enum) do if v > top then top = v end end
++    local nodes = T.nodes_of and T.nodes_of("itempools.xml", { "Pool", "pool" }) or {}
++    local custom = top
++    for _, node in ipairs(nodes) do
++      local name = node.attr.name
++      if name then
++        local key = norm(name)
++        local p = pools[key]
++        if not p then
++          local id = enum[key]
++          if not id then custom = custom + 1 id = custom end
++          p = { id = id, name = name, items = {}, custom = enum[key] == nil }
++          pools[key] = p
++          order[#order + 1] = p
++        end
++        for _, it in ipairs(node) do
++          local a = it.attr
++          local id = math.tointeger(tonumber(a.id or a.collectible or ""))
++          if id then
++            p.items[#p.items + 1] = { id, tonumber(a.weight) or 1.0, tonumber(a.decreaseby) or 1.0, tonumber(a.removeon) or 0.1 }
++          end
++        end
++      end
++    end
++    return pools
++  end
++  T.static(Isaac, "Isaac", "GetPoolIdByName", function(name)
++    if type(name) ~= "string" then error("bad argument #1 to 'GetPoolIdByName' (string expected, got " .. type(name) .. ")", 2) end
++    local p = build()[norm(name)]
++    return p and p.id or -1
++  end)
++  T.method("ItemPool", "GetCollectiblesFromPool", function(self, pool)
++    if math.type(pool) ~= "integer" then error("bad argument #1 to 'GetCollectiblesFromPool' (integer expected, got " .. type(pool) .. ")", 2) end
++    build()
++    local out = {}
++    for _, p in ipairs(order) do
++      if p.id == pool then
++        for _, it in ipairs(p.items) do
++          out[#out + 1] = { itemID = it[1], initialWeight = it[2], weight = it[2], decreaseBy = it[3], removeOn = it[4], isUnlocked = true }
++        end
++      end
++    end
++    return out
++  end)
++  T.method("ItemPool", "GetNumItemPools", function() build() return #order end)
++  R.Unsupported = R.Unsupported or {}
++  R.Unsupported["ItemPool custom pools"] = "a pool only a mod's itempools.xml names has an id here; the game does not draw from it"
++end
++
++-- Isaac.GetGiantBookIdByName(name): giantbook.xml's entries. The game's own carry their id; a mod's follow the
++-- highest, in load order. -1 when there is none. (ItemOverlay.Show, which draws the book, is in api_menus.lua.)
++do
++  local XN = rawget(_G, "XMLNode")
++  local ids
++  local function build()
++    if ids then return ids end
++    ids = {}
++    local set = XN and XN.GIANTBOOK and T.xml_entries and T.xml_entries(XN.GIANTBOOK)
++    if not set then return ids end
++    local top = 0
++    for _, e in ipairs(set.list) do
++      local id = math.tointeger(tonumber(e.id))
++      if id and id > top then top = id end
++    end
++    for _, e in ipairs(set.list) do
++      local id = math.tointeger(tonumber(e.id))
++      if not id and e.sourceid then top = top + 1 id = top end
++      if id and e.name and ids[e.name:lower()] == nil then ids[e.name:lower()] = id end
++    end
++    return ids
++  end
++  T.static(Isaac, "Isaac", "GetGiantBookIdByName", function(name)
++    if type(name) ~= "string" then error("bad argument #1 to 'GetGiantBookIdByName' (string expected, got " .. type(name) .. ")", 2) end
++    return build()[name:lower()] or -1
++  end)
++end
++
++-- EntityPlayer custom cache (REPENTOGON): :AddCustomCacheTag(tag | {tags}, evaluate = false),
++-- :HasCustomCacheTag(tag), :RemoveCustomCacheTag(tag), :GetCustomCacheTags(), :GetCustomCacheValue(tag).
++-- A tag is "evaluated" by firing MC_EVALUATE_CUSTOM_CACHE (player, tag, value), param = tag, the value starting
++-- at 0.0 and each function's return replacing it; the result is what GetCustomCacheValue answers. Tags are the
++-- ones added to the player and those of the items the player holds (items.xml customcache). The game evaluates
++-- at EvaluateItems; here that is the first MC_EVALUATE_CACHE of a frame for the player, and at once when
++-- AddCustomCacheTag is asked to.
++do
++  local M = ModCallbacks
++  local added, values, stamp = {}, {}, {}      -- player hash -> { tag = true } / { tag = number } / frame
++  local function hash(p) return GetPtrHash(p) end
++  local function tag_list(v, what)
++    local out = {}
++    if type(v) == "string" then out[1] = v
++    elseif type(v) == "table" then for _, t in ipairs(v) do if type(t) == "string" then out[#out + 1] = t end end
++    else error("bad argument #1 to '" .. what .. "' (string or table expected, got " .. type(v) .. ")", 3) end
++    return out
++  end
++  local function tags_of(player)
++    local all = {}
++    for t in pairs(added[hash(player)] or {}) do all[t] = true end
++    local items = T.custom_cache_items and T.custom_cache_items() or {}
++    for k, set in pairs(items) do
++      local kind, id = k:sub(1, 1), math.tointeger(tonumber(k:sub(3)))
++      local held = false
++      if kind == "c" then held = player:HasCollectible(id, true)
++      elseif kind == "t" then held = player:HasTrinket(id, true)
++      elseif kind == "n" then held = player:GetEffects():HasNullEffect(id) end
++      if held then for t in pairs(set) do all[t] = true end end
++    end
++    return all
++  end
++  local function evaluate(player)
++    local vals = {}
++    for tag in pairs(tags_of(player)) do
++      local v = 0.0
++      if M.MC_EVALUATE_CUSTOM_CACHE then
++        local r = T.run(M.MC_EVALUATE_CUSTOM_CACHE, tag, player, tag, v)
++        if type(r) == "number" then v = r + 0.0 end
++      end
++      vals[tag] = v
++    end
++    values[hash(player)] = vals
++  end
++  local P = "EntityPlayer"
++  T.method(P, "AddCustomCacheTag", function(self, tags, now)
++    local a = added[hash(self)] or {}
++    added[hash(self)] = a
++    for _, t in ipairs(tag_list(tags, "AddCustomCacheTag")) do a[t] = true end
++    if now then evaluate(self) end
++  end)
++  T.method(P, "RemoveCustomCacheTag", function(self, tags)
++    local a = added[hash(self)]
++    if a then for _, t in ipairs(tag_list(tags, "RemoveCustomCacheTag")) do a[t] = nil end end
++  end)
++  T.method(P, "HasCustomCacheTag", function(self, tag)
++    if type(tag) ~= "string" then error("bad argument #1 to 'HasCustomCacheTag' (string expected, got " .. type(tag) .. ")", 2) end
++    return tags_of(self)[tag] == true
++  end)
++  T.method(P, "GetCustomCacheTags", function(self)
++    local out = {}
++    for t in pairs(tags_of(self)) do out[#out + 1] = t end
++    table.sort(out)
++    return out
++  end)
++  T.method(P, "GetCustomCacheValue", function(self, tag)
++    if type(tag) ~= "string" then error("bad argument #1 to 'GetCustomCacheValue' (string expected, got " .. type(tag) .. ")", 2) end
++    local v = values[hash(self)]
++    return v and v[tag] or 0.0
++  end)
++  if T.listen then
++    T.listen(M.MC_EVALUATE_CACHE, function(_, player)
++      local h, f = hash(player), Isaac.GetFrameCount()
++      if stamp[h] == f then return end
++      stamp[h] = f
++      evaluate(player)
++    end, -math.huge)
++  end
++end
++
++-- EntityPlayer stat modifiers (REPENTOGON: the fields Experimental Treatment and Void use) and the suplex
++-- and costume accessors. Their places in this build's player are not measured (api_player.lua leaves them
++-- out until they are), so they are the layer's own, per player:
++--   :Get/Set{Damage,FireDelay,Luck,ShotSpeed,Speed,TearRange}Modifier -- kept, and applied when the stats are
++--      evaluated (the last MC_EVALUATE_CACHE of the player's frame): Damage +m, Luck +m, ShotSpeed +0.2m,
++--      MoveSpeed +0.2m, TearRange +2.5m, tears per second +0.5m. Not the game's own field: Experimental
++--      Treatment's and Void's own changes to it are not seen here.
++--   :GetSuplexState and :SetSuplex{State,AimCountdown,LandPosition,TargetPosition} -- kept; the game's own
++--      Suplex! does not read them (accepted, not supported). :GetMarkedTarget answers nil.
++--   :IsItemCostumeVisible / :IsNullItemCostumeVisible -- false (the game's costume list is not read).
++do
++  local M = ModCallbacks
++  local P = "EntityPlayer"
++  local mods = {}                                  -- player hash -> { name = number }
++  local function slot(p) local h = GetPtrHash(p) local m = mods[h] if not m then m = {} mods[h] = m end return m end
++  local STATS = { Damage = true, FireDelay = true, Luck = true, ShotSpeed = true, Speed = true, TearRange = true }
++  for name in pairs(STATS) do
++    T.method(P, "Get" .. name .. "Modifier", function(self) return slot(self)[name] or 0.0 end)
++    T.method(P, "Set" .. name .. "Modifier", function(self, v)
++      if type(v) ~= "number" then error("bad argument #1 to 'Set" .. name .. "Modifier' (number expected, got " .. type(v) .. ")", 2) end
++      slot(self)[name] = v + 0.0
++      self:AddCacheFlags(CacheFlag.CACHE_ALL)
++      T.unsupported("EntityPlayer:Set" .. name .. "Modifier", "kept per player and applied at the stat evaluation; the game's own field is not set")
++    end)
++  end
++  if T.listen and M.MC_EVALUATE_CACHE then
++    T.listen(M.MC_EVALUATE_CACHE, function(_, player, flag)
++      local m = mods[GetPtrHash(player)]
++      if not m then return end
++      if flag == CacheFlag.CACHE_DAMAGE and m.Damage then player.Damage = player.Damage + m.Damage
++      elseif flag == CacheFlag.CACHE_LUCK and m.Luck then player.Luck = player.Luck + m.Luck
++      elseif flag == CacheFlag.CACHE_SHOTSPEED and m.ShotSpeed then player.ShotSpeed = player.ShotSpeed + 0.2 * m.ShotSpeed
++      elseif flag == CacheFlag.CACHE_SPEED and m.Speed then player.MoveSpeed = player.MoveSpeed + 0.2 * m.Speed
++      elseif flag == CacheFlag.CACHE_RANGE and m.TearRange then player.TearRange = player.TearRange + 2.5 * m.TearRange
++      elseif flag == CacheFlag.CACHE_FIREDELAY and m.FireDelay then
++        local tps = 30 / (player.MaxFireDelay + 1) + 0.5 * m.FireDelay
++        if tps > 0.05 then player.MaxFireDelay = 30 / tps - 1 end
++      end
++    end, math.huge)
++  end
++
++  local suplex = {}
++  local function sp(p) local h = GetPtrHash(p) local s = suplex[h] if not s then s = { state = 0, aim = 0 } suplex[h] = s end return s end
++  T.method(P, "GetSuplexState", function(self) return sp(self).state end)
++  T.method(P, "SetSuplexState", function(self, v) sp(self).state = v T.unsupported("EntityPlayer:SetSuplexState", "kept; the game's own Suplex! does not read it") end)
++  T.method(P, "SetSuplexAimCountdown", function(self, v) sp(self).aim = v end)
++  T.method(P, "SetSuplexLandPosition", function(self, v) sp(self).land = v end)
++  T.method(P, "SetSuplexTargetPosition", function(self, v) sp(self).target = v end)
++  T.method(P, "GetMarkedTarget", function() return nil end)
++  T.method(P, "IsItemCostumeVisible", function() return false end)
++  T.method(P, "IsNullItemCostumeVisible", function() return false end)
++  for _, n in ipairs({ "GetSuplexState", "SetSuplexState", "SetSuplexAimCountdown", "SetSuplexLandPosition", "SetSuplexTargetPosition",
++                       "GetMarkedTarget", "IsItemCostumeVisible", "IsNullItemCostumeVisible" }) do R.Implemented[P .. "." .. n] = nil end
++end
++
++-- Isaac.GetString(category, key): the game's string table (resources/stringtable.sta: a category holds keys,
++-- a key one <string> per language in the file's language order). English is always answered (the game's
++-- language option is not read); a key it has none of answers "StringTable::InvalidKey", as REPENTOGON's does.
++do
++  local text
++  local cats = {}
++  local function unesc(s)
++    return (s:gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&quot;", '"'):gsub("&apos;", "'"):gsub("&amp;", "&"))
++  end
++  T.static(Isaac, "Isaac", "GetString", function(category, key)
++    if type(category) ~= "string" then error("bad argument #1 to 'GetString' (string expected, got " .. type(category) .. ")", 2) end
++    if type(key) ~= "string" then error("bad argument #2 to 'GetString' (string expected, got " .. type(key) .. ")", 2) end
++    if text == nil then text = T.read_file and T.read_file("resources/stringtable.sta") or false end
++    if not text then return "StringTable::InvalidKey" end
++    local c = cats[category]
++    if c == nil then
++      local a, e = text:find('<category name="' .. category .. '">', 1, true)
++      if a then
++        local z = text:find("</category>", e, true)
++        c = { e, z or #text }
++      else
++        c = false
++      end
++      cats[category] = c
++    end
++    if not c then return "StringTable::InvalidKey" end
++    local a, e = text:find('<key name="' .. key .. '">', c[1], true)
++    if not a or a > c[2] then return "StringTable::InvalidKey" end
++    local s = text:match("<string>(.-)</string>", e)
++    if not s then return "StringTable::InvalidKey" end
++    return unesc(s)
++  end)
++end
++
++-- Level:HasMirrorDimension(): the floor has the mirror world (dimension 1 holding the mirrored floor): Downpour II
++-- and Dross II (Curse of the Labyrinth makes the first floor of each the one that has it), not in Greed Mode.
++-- The game's own rule as miniMAPI states it for itself (cache.lua); the game gives the layer no field for it.
++T.method("Level", "HasMirrorDimension", function(self)
++  if Game():IsGreedMode() then return false end
++  local alt = self:GetStageType()
++  if alt ~= StageType.STAGETYPE_REPENTANCE and alt ~= StageType.STAGETYPE_REPENTANCE_B then return false end
++  local stage = self:GetAbsoluteStage()
++  if stage == LevelStage.STAGE1_2 then return self:GetCurses() & LevelCurse.CURSE_OF_LABYRINTH == 0 end
++  return stage == LevelStage.STAGE1_1 and self:GetCurses() & LevelCurse.CURSE_OF_LABYRINTH ~= 0
++end)
++
++-- EntityPlayer:AddNullItemEffect(id, applyCostume = false, cooldown, additive = true) and the same for trinkets and
++-- collectibles (REPENTOGON's shortcuts of TemporaryEffects:Add*Effect with a cooldown). The effect is added through the
++-- game's own TemporaryEffects; the cooldown arguments are not applied (the game's own duration holds).
++do
++  local P = "EntityPlayer"
++  local function effect(name, fname)
++    T.method(P, name, function(self, id, costume)
++      if math.type(id) ~= "integer" then error("bad argument #1 to '" .. name .. "' (integer expected, got " .. type(id) .. ")", 2) end
++      self:GetEffects()[fname](self:GetEffects(), id, costume and true or false)
++    end)
++  end
++  effect("AddNullItemEffect", "AddNullEffect")
++  effect("AddTrinketEffect", "AddTrinketEffect")
++  effect("AddCollectibleEffect", "AddCollectibleEffect")
++  R.Unsupported = R.Unsupported or {}
++  R.Unsupported["EntityPlayer:Add*Effect cooldown"] = "the cooldown and additive arguments are not applied"
++end
+diff --git a/scripts/recomp/rgon/api_hooks.lua b/scripts/recomp/rgon/api_hooks.lua
+index 92f9c5b..57b0edd 100644
+--- a/scripts/recomp/rgon/api_hooks.lua
++++ b/scripts/recomp/rgon/api_hooks.lua
+@@ -883,8 +883,16 @@ do
+ end
+ 
+ -- MC_PRE_RENDER (1135): (), before Manager::Render() 0x009555c0 (slot 84), once per frame drawn
++-- MC_MAIN_MENU_RENDER (1023, round 123): (), after the same Manager::Render, while the main menu (not a run)
++-- is what is drawn
+ if M.MC_PRE_RENDER then
+-  on("Manager::Render", { M.MC_PRE_RENDER }, function() run(M.MC_PRE_RENDER, nil) end, nil)
++  local MENU = M.MC_MAIN_MENU_RENDER
++  local ids = { M.MC_PRE_RENDER }
++  if MENU then ids[2] = MENU end
++  on("Manager::Render", ids, function() if listening[M.MC_PRE_RENDER] then run(M.MC_PRE_RENDER, nil) end end,
++    MENU and function()
++      if listening[MENU] and not Isaac.IsInGame() and r32(0x00c72a20) ~= 0 then run(MENU, nil) end
++    end or nil)
+ end
+ 
+ -- MC_POST_PLAYER_ADD_EFFECT (1273): (player, item, addCostume, count), param = item
+@@ -1719,7 +1727,78 @@ else
+   log("api_hooks: this engine has no instruction hooks; MC_EVALUATE_STAT, MC_PRE/POST_PLAYER_USE_BOMB and MC_POST_FIRE_SPLIT_TEAR do not fire")
+ end
+ 
++------------------------------------------------------------------------------
++-- round 123 (M8): the nightmare scene and the glowing hourglass
++------------------------------------------------------------------------------
++-- MC_POST_NIGHTMARE_SCENE_RENDER (1102): (), after NightmareScene::Render() 0x00920940 (slot 171, called once per
++--   drawn frame by Manager::Render while the stage change's scene is shown).
++if M.MC_POST_NIGHTMARE_SCENE_RENDER then
++  on("NightmareScene::Render", { M.MC_POST_NIGHTMARE_SCENE_RENDER }, nil, function()
++    if listening[M.MC_POST_NIGHTMARE_SCENE_RENDER] then run(M.MC_POST_NIGHTMARE_SCENE_RENDER, nil) end
++  end)
++end
++
++-- MC_MENU_INPUT_ACTION (1464): LuaCallbackCaller::CallInputAction 0x00874910 (slot 173) runs the callback id stored in
++--   the caller ([this+4], MC_INPUT_ACTION by default); outside a run it is changed to 1464, as REPENTOGON does, while
++--   something listens on 1464 (the engine's own state for MC_INPUT_ACTION is switched on with it, rgon.lua).
++if M.MC_MENU_INPUT_ACTION then
++  local MENU = M.MC_MENU_INPUT_ACTION
++  on("LuaCallbackCaller::CallInputAction", { MENU }, function(self)
++    if listening[MENU] and not Isaac.IsInGame() then w32(self + 4, MENU) end
++  end, nil)
++  -- Armed, but never seen to run in this build's menus (the menu does not ask this function, round 123), so it is
++  -- not counted as implemented: the gate must not treat it as covered.
++  R.NotSeenFiring = R.NotSeenFiring or {}
++  R.NotSeenFiring[MENU] = "the hook is armed; the menus of this build never call CallInputAction"
++end
++
++-- MC_PRE_GLOWING_HOURGLASS_SAVE (1302), MC_POST_GLOWING_HOURGLASS_SAVE (1300): (slot), around Game::SaveState(state)
++--   0x006f9000 (slot 172); MC_PRE_GLOWING_HOURGLASS_LOAD (1303), MC_POST_GLOWING_HOURGLASS_LOAD (1301): around
++--   Game::RestoreState(state, startGame) 0x006bb790 (slot 21). The slot is 0 or 1 when the state is one of the game's two
++--   glowing hourglass states, -1 when it is any other (REPENTOGON's: the pre-save callback is told -1 as well, the
++--   others only fire for a hourglass state). The two states are the game's own array at game+0x269ec, 0x20660 bytes
++--   each (Game::GetGlowingHourglassState 0x00706780 reads them there: `lea ecx, [eax+0x269ec]; add ecx, index*0x20660`).
++do
++  local GAME_PTR, FIRST, SIZE = 0x00c71678, 0x269ec, 0x20660
++  local function hourglass_slot(state)
++    local game = r32(GAME_PTR)
++    if game == 0 or state < game + FIRST then return -1 end
++    local k = (state - (game + FIRST)) // SIZE
++    if k < 2 then return k end
++    return -1
++  end
++  T.hourglass_slot = hourglass_slot
++  local PRE_S, POST_S, PRE_L, POST_L = M.MC_PRE_GLOWING_HOURGLASS_SAVE, M.MC_POST_GLOWING_HOURGLASS_SAVE,
++    M.MC_PRE_GLOWING_HOURGLASS_LOAD, M.MC_POST_GLOWING_HOURGLASS_LOAD
++  if PRE_S and POST_S then
++    on("Game::SaveState", { PRE_S, POST_S }, function(self, esp)
++      local slot = hourglass_slot(r32(esp + 4))
++      if listening[PRE_S] then run(PRE_S, nil, slot) end
++      return { slot }
++    end, function(self, esp, eax, k)
++      if k and k[1] ~= -1 and listening[POST_S] then run(POST_S, nil, k[1]) end
++    end)
++  end
++  if PRE_L and POST_L then
++    on("Game::RestoreState", { PRE_L, POST_L }, function(self, esp)
++      local slot = hourglass_slot(r32(esp + 4))
++      if slot == -1 then return nil end
++      if listening[PRE_L] then run(PRE_L, nil, slot) end
++      return { slot }
++    end, function(self, esp, eax, k)
++      if k and listening[POST_L] then run(POST_L, nil, k[1]) end
++    end)
++    -- Armed, but a Glowing Hourglass use was not seen to restore through this hook in a run (round 123: the run with
++    -- `giveitem c422` and the item used did not reach the restore before the guest heap filled), so the two load
++    -- callbacks are not counted as implemented. The save callbacks were seen firing (slots 0 and -1).
++    R.NotSeenFiring = R.NotSeenFiring or {}
++    R.NotSeenFiring[PRE_L], R.NotSeenFiring[POST_L] = "armed; a hourglass restore was not seen to run through it", "armed; a hourglass restore was not seen to run through it"
++  end
++end
++
+ install()
++-- hooks that are armed but were not seen firing are not implemented names (define marked them)
++for id in pairs(R.NotSeenFiring or {}) do R.Implemented[id] = nil end
+ T.rearm()
+ 
+ ------------------------------------------------------------------------------
+diff --git a/scripts/recomp/rgon/api_menus.lua b/scripts/recomp/rgon/api_menus.lua
+new file mode 100644
+index 0000000..d4a0357
+--- /dev/null
++++ b/scripts/recomp/rgon/api_menus.lua
+@@ -0,0 +1,332 @@
++-- api_menus.lua -- the main menu's Lua surface (round 123, milestone M8): MenuManager, CharacterMenu,
++-- SaveMenu, and the small globals Epiphany reaches at load or in a run (ItemOverlay, RoomTransition,
++-- BossPoolManager, RoomConfigHolder). Epiphany's own character menu is built on them
++-- (scripts/epiphany/core/epiphany_menu.lua); epiphany_menu.lua:392 stopped on `CharacterMenu` being nil.
++--
++-- Where things are: the game's menu manager is the pointer at 0x00c72a20 (lab_menu.lua: stored once at
++-- 0x00959def), and its selected menu is at +0x40, measured here. REPENTOGON's layout of the manager and of the
++-- character menu agrees with this build wherever it has been measured (selected entry +0x10, "unlocked" byte
++-- +5, tainted page +0xdb4, the mod character map at 0x00c79884, api_hooks.lua), so the rest of that layout is
++-- taken the same way and each sprite it names is checked when asked for: a sprite points at itself at +0x30 and
++-- +0x50 (api_game.lua's inner_sprite check), and one that does not is answered with nil, said once.
++--
++--   MenuManager (g_MenuManager)      +0x40 selected menu, +0x44 view position (two floats), +0x4c shadow sprite,
++--                                    +0xf7bc lerp flag, +0xf7c0 / +0xf7d8 / +0xf7f0 current, target and lerp colour
++--                                    corrections (six floats each)
++--   Menu_Character (manager+0x1534)  +0 status, +5 unlocked, +8 difficulty, +0x10 selected entry, +0x24 wheel depth,
++--                                    +0x28 scroll speed, +0x2c wheel width, +0xb18 character count, +0xdb4 page
++--                                    shown (0 normal, 1 tainted), the page sprites (SPRITES below)
++-- Accepted, not supported (said once in the log): everything that would change what the game draws beyond what
++-- those fields do: Game:SetColorModifier, ItemOverlay.Show, RoomTransition.StartBossIntro, a menu's jump to
++-- another menu.
++
++local T = ...
++local B, R, wrap = T.B, T.R, T.wrap
++local ptr, r8, r32, ri32, rf32, w8, w32, wf32, log = B.ptr, B.r8, B.r32, B.ri32, B.rf32, B.w8, B.w32, B.wf32, B.log
++local type, error, rawget, rawset, tostring, pairs = type, error, rawget, rawset, tostring, pairs
++local mathtype = math.type
++local unsupported = T.unsupported or function() end
++
++local MM_PTR = 0x00c72a20
++local MENU_CHARACTER = 0x1534      -- REPENTOGON has 0x1530; this build's sprites of the menu are found 4 higher (lab_scan.lua)
++local function manager() local p = r32(MM_PTR) return p ~= 0 and p or nil end
++T.menu_manager = manager
++local function need_manager(what)
++  local mm = manager()
++  if not mm then error(what .. ": the main menu does not exist (it is only there outside a run's first frames)", 3) end
++  return mm
++end
++local function implemented(cls, names) for _, n in pairs(names) do R.Implemented[cls .. "." .. n] = true end end
++
++local told = {}
++local function once(key, text) if not told[key] then told[key] = true log("api_menus: " .. text) end end
++
++-- a sprite that lives inside the manager or one of its menus (an ANM2 object, 0x114 bytes)
++local function sprite_at(a, what)
++  if r32(a + 0x30) ~= a or r32(a + 0x50) ~= a then
++    once(what, what .. ": no sprite where it was expected; answered with nil")
++    return nil
++  end
++  return wrap("Sprite", a)
++end
++
++------------------------------------------------------------------------------
++-- MenuManager
++------------------------------------------------------------------------------
++local MainMenuType = rawget(_G, "MainMenuType") or {}
++do
++  local MM = {}
++  local function cm_read(a)
++    return T.ColorModifier.new(rf32(a), rf32(a + 4), rf32(a + 8), rf32(a + 12), rf32(a + 16), rf32(a + 20))
++  end
++  local function cm_write(a, c)
++    wf32(a, c.R) wf32(a + 4, c.G) wf32(a + 8, c.B) wf32(a + 12, c.A) wf32(a + 16, c.Brightness) wf32(a + 20, c.Contrast)
++  end
++  -- true while the main menu is what the game is running: the manager is there and no run is going
++  function MM.IsActive() return manager() ~= nil end
++  function MM.GetActiveMenu()
++    return ri32(need_manager("MenuManager.GetActiveMenu") + 0x40)
++  end
++  function MM.SetActiveMenu(menu)
++    local mm = need_manager("MenuManager.SetActiveMenu")
++    if mathtype(menu) ~= "integer" then error("bad argument #1 to 'SetActiveMenu' (integer expected, got " .. type(menu) .. ")", 2) end
++    unsupported("MenuManager.SetActiveMenu", "the selected menu is set; the game does not run the move between menus")
++    if menu >= 1 and menu <= 22 then w32(mm + 0x40, menu) end
++  end
++  function MM.GetViewPosition() local mm = need_manager("MenuManager.GetViewPosition") return Vector(rf32(mm + 0x44), rf32(mm + 0x48)) end
++  function MM.SetViewPosition(v) local mm = need_manager("MenuManager.SetViewPosition") wf32(mm + 0x44, v.X) wf32(mm + 0x48, v.Y) end
++  function MM.GetShadowSprite() return sprite_at(need_manager("MenuManager.GetShadowSprite") + 0x4c, "MenuManager.GetShadowSprite") end
++  -- REPENTOGON itself has lost these two in this version of the game
++  function MM.GetBackWidgetSprite() once("back", "MenuManager.GetBackWidgetSprite: REPENTOGON has no such sprite in this version either; nil") return nil end
++  function MM.GetSelectWidgetSprite() once("select", "MenuManager.GetSelectWidgetSprite: REPENTOGON has no such sprite in this version either; nil") return nil end
++  function MM.GetCurrentColorModifier() return cm_read(need_manager("MenuManager.GetCurrentColorModifier") + 0xf7c0) end
++  function MM.GetTargetColorModifier() return cm_read(need_manager("MenuManager.GetTargetColorModifier") + 0xf7d8) end
++  function MM.GetColorModifierLerpAmount() return cm_read(need_manager("MenuManager.GetColorModifierLerpAmount") + 0xf7f0) end
++  -- REPENTOGON's: the target is set; with lerp the step is |(target - current) * rate / 2| per component, else the
++  -- current one is the target at once
++  function MM.SetColorModifier(c, lerp, rate)
++    local mm = need_manager("MenuManager.SetColorModifier")
++    if not T.ColorModifier.is(c) then error("bad argument #1 to 'SetColorModifier' (ColorModifier expected)", 2) end
++    if lerp == nil then lerp = true end
++    rate = rate or 0.015
++    cm_write(mm + 0xf7d8, c)
++    if lerp then
++      local cur = cm_read(mm + 0xf7c0)
++      local d = (c - cur) * (rate / 2)
++      d.R, d.G, d.B, d.A, d.Brightness, d.Contrast = math.abs(d.R), math.abs(d.G), math.abs(d.B), math.abs(d.A), math.abs(d.Brightness), math.abs(d.Contrast)
++      cm_write(mm + 0xf7f0, d)
++      w8(mm + 0xf7bc, 1)
++    else
++      cm_write(mm + 0xf7c0, c)
++      w8(mm + 0xf7bc, 0)
++    end
++  end
++  -- Isaac.WorldToMenuPosition(menu, position): where a point of a menu is on screen (REPENTOGON's arithmetic)
++  T.static(Isaac, "Isaac", "WorldToMenuPosition", function(menu, pos)
++    local mm = need_manager("Isaac.WorldToMenuPosition")
++    if mathtype(menu) ~= "integer" or menu < 1 or menu > 22 then error("Invalid Menu Id " .. tostring(menu), 2) end
++    local bx, by = rf32(mm + 0x44) + 39, rf32(mm + 0x48) + 15
++    return Vector(bx - rf32(mm + 0xf704 + menu * 8) + pos.X, by - rf32(mm + 0xf704 + menu * 8 + 4) + pos.Y)
++  end)
++  local mask = 0
++  function MM.GetInputMask() return mask end
++  function MM.SetInputMask(m)
++    if mathtype(m) ~= "integer" then error("bad argument #1 to 'SetInputMask' (integer expected, got " .. type(m) .. ")", 2) end
++    mask = m
++    unsupported("MenuManager.SetInputMask", "the mask is kept and returned; the game's menus ignore it")
++  end
++  if rawget(_G, "MenuManager") == nil or rawget(_G, "MenuManager") == false then rawset(_G, "MenuManager", MM) end
++  implemented("MenuManager", { "IsActive", "GetActiveMenu", "GetViewPosition", "SetViewPosition", "GetShadowSprite",
++    "GetCurrentColorModifier", "GetTargetColorModifier", "GetColorModifierLerpAmount", "SetColorModifier" })
++  T.MenuManager = MM
++end
++
++------------------------------------------------------------------------------
++-- CharacterMenu
++------------------------------------------------------------------------------
++-- The wheel's entries: id 0 is the random pick, ids 1 to 17 the game's characters in this order (normal page; the
++-- tainted page has the same ids and the tainted types 21 to 37 in the same order), from 0x12 up the mod map's
++-- (api_hooks.lua). Checked against the menu: Isaac is entry 1 (lab_menu.lua: sel=1 on his page), and three steps
++-- right of him is Judas (screenshot), as the order has it.
++do
++  local VANILLA = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 15, 16, 18, 19 }   -- ids 1 to 17 (0 is the random pick)
++  local VANILLA_ID = {}
++  for id, pt in pairs(VANILLA) do VANILLA_ID[pt] = id end
++  local MOD_MAP, MOD_MAP_END = 0x00c79884, 0x00c79888
++  local function menu() return need_manager("CharacterMenu") + MENU_CHARACTER end
++  local function mod_pairs()
++    local first, last = r32(MOD_MAP), r32(MOD_MAP_END)
++    return first, (last - first) // 8
++  end
++  local function type_for(id, tainted)
++    if id <= 0 then return -1 end
++    if id <= 17 then local pt = VANILLA[id] return tainted and pt + 21 or pt end
++    if id >= 0x12 then
++      local first, n = mod_pairs()
++      if id - 0x12 >= n then return nil end
++      return ri32(first + (id - 0x12) * 8 + (tainted and 4 or 0))
++    end
++    return nil
++  end
++  local CM = {}
++  function CM.GetSelectedCharacterID() return ri32(menu() + 0x10) end
++  function CM.SetSelectedCharacterID(id)
++    if mathtype(id) ~= "integer" then error("bad argument #1 to 'SetSelectedCharacterID' (integer expected, got " .. type(id) .. ")", 2) end
++    w32(menu() + 0x10, id)
++  end
++  function CM.GetSelectedCharacterMenu() return ri32(menu() + 0xdb4) end
++  function CM.SetSelectedCharacterMenu(page)
++    if mathtype(page) ~= "integer" then error("bad argument #1 to 'SetSelectedCharacterMenu' (integer expected, got " .. type(page) .. ")", 2) end
++    w32(menu() + 0xdb4, page ~= 0 and 1 or 0)
++    unsupported("CharacterMenu.SetSelectedCharacterMenu", "the page flag is set; the game's turn of the page (its animation) does not run")
++  end
++  function CM.GetPlayerTypeFromCharacterMenuID(id, tainted)
++    if mathtype(id) ~= "integer" then error("bad argument #1 to 'GetPlayerTypeFromCharacterMenuID' (integer expected, got " .. type(id) .. ")", 2) end
++    if tainted == nil then tainted = CM.GetSelectedCharacterMenu() ~= 0 end
++    local pt = type_for(id, tainted and true or false)
++    if pt == nil and id > 17 then once("menuid" .. id, "CharacterMenu: no character for menu id " .. id) end
++    return pt or -1
++  end
++  function CM.GetCharacterMenuIDFromPlayerType(pt)
++    if mathtype(pt) ~= "integer" then error("bad argument #1 to 'GetCharacterMenuIDFromPlayerType' (integer expected, got " .. type(pt) .. ")", 2) end
++    if VANILLA_ID[pt] then return VANILLA_ID[pt] end
++    if pt >= 21 and VANILLA_ID[pt - 21] and pt <= 37 then return VANILLA_ID[pt - 21] end
++    local first, n = mod_pairs()
++    for i = 0, n - 1 do
++      if ri32(first + i * 8) == pt or ri32(first + i * 8 + 4) == pt then return i + 0x12 end
++    end
++    return -1
++  end
++  function CM.GetSelectedCharacterPlayerType()
++    local id = CM.GetSelectedCharacterID()
++    return CM.GetPlayerTypeFromCharacterMenuID(id, CM.GetSelectedCharacterMenu() ~= 0)
++  end
++  function CM.GetNumCharacters() return ri32(menu() + 0xb18) end
++  function CM.GetIsCharacterUnlocked() return r8(menu() + 5) ~= 0 end
++  function CM.SetIsCharacterUnlocked(v) w8(menu() + 5, v and 1 or 0) end
++  function CM.GetActiveStatus() return ri32(menu()) end
++  function CM.SetActiveStatus(s)
++    if mathtype(s) ~= "integer" then error("bad argument #1 to 'SetActiveStatus' (integer expected, got " .. type(s) .. ")", 2) end
++    w32(menu(), s)
++  end
++  function CM.GetDifficulty() return ri32(menu() + 8) end
++  function CM.SetDifficulty(d)
++    if mathtype(d) ~= "integer" then error("bad argument #1 to 'SetDifficulty' (integer expected, got " .. type(d) .. ")", 2) end
++    w32(menu() + 8, d)
++  end
++  function CM.GetCharacterWheelDepth() return rf32(menu() + 0x24) end
++  function CM.SetCharacterWheelDepth(v) wf32(menu() + 0x24, v) end
++  function CM.GetScrollSpeed() return rf32(menu() + 0x28) end
++  function CM.SetScrollSpeed(v) wf32(menu() + 0x28, v) end
++  function CM.GetCharacterWheelWidth() return rf32(menu() + 0x2c) end
++  function CM.SetCharacterWheelWidth(v) wf32(menu() + 0x2c, v) end
++  local SPRITES = {
++    GetBigCharPageSprite = 0x40, GetDifficultyOverlaySprite = 0x154, GetGreedDecoSprite = 0x268, GetBGSprite = 0x37c,
++    GetDifficultyPageSprite = 0x5ac, GetSeedPageSprite = 0x6c0, GetWinStreakPageSprite = 0x7d4, GetEasterEggPageSprite = 0x8e8,
++    GetSeedUnlockPageSprite = 0xa04, GetCharacterPortraitSprite = 0xb20, GetSeedEntrySprite = 0xc50,
++    GetPageSwapWidgetSprite = 0xdb8, GetTaintedBGDecoSprite = 0xecc,
++  }
++  for name, off in pairs(SPRITES) do
++    CM[name] = function() return sprite_at(menu() + off, "CharacterMenu." .. name) end
++  end
++  -- the completion widget (+0x490) has no sprite of its own that was found
++  function CM.GetCompletionMarksSprite() once("marks", "CharacterMenu.GetCompletionMarksSprite: not found in this build; nil") return nil end
++  if rawget(_G, "CharacterMenu") == nil or rawget(_G, "CharacterMenu") == false then rawset(_G, "CharacterMenu", CM) end
++  for name in pairs(CM) do if name ~= "GetCompletionMarksSprite" then R.Implemented["CharacterMenu." .. name] = true end end
++  T.CharacterMenu = CM
++end
++
++------------------------------------------------------------------------------
++-- the rest of what Epiphany asks for at load or in a run
++------------------------------------------------------------------------------
++-- SaveMenu.GetDeletePopupSprite: the save menu's popup (api not located in this build): nil, which Epiphany's
++-- save manager tests for.
++do
++  local SM = {}
++  function SM.GetDeletePopupSprite() once("deletepopup", "SaveMenu.GetDeletePopupSprite: not found in this build; nil") return nil end
++  if rawget(_G, "SaveMenu") == nil or rawget(_G, "SaveMenu") == false then rawset(_G, "SaveMenu", SM) end
++end
++
++-- RoomTransition: the game's own (Game():GetRoomTransition()) is not reached; the transition mode is 0 (none)
++-- unless the game is between rooms, which Game:IsPaused() and the room's frame count cannot tell from here
++do
++  local RT = {}
++  function RT.GetTransitionMode() return 0 end
++  function RT.StartBossIntro(boss) unsupported("RoomTransition.StartBossIntro", "no boss intro is started") end
++  function RT.GetVersusScreenSprite() once("versus", "RoomTransition.GetVersusScreenSprite: not found in this build; an empty sprite") return Sprite() end
++  if rawget(_G, "RoomTransition") == nil or rawget(_G, "RoomTransition") == false then rawset(_G, "RoomTransition", RT) end
++end
++
++-- ItemOverlay.Show(giantbook, delay, player): the big item book banner
++do
++  local IO = {}
++  function IO.Show(id) unsupported("ItemOverlay.Show", "the giant book banner is not shown") end
++  function IO.Hide() end
++  function IO.IsShowing() return false end
++  if rawget(_G, "ItemOverlay") == nil or rawget(_G, "ItemOverlay") == false then rawset(_G, "ItemOverlay", IO) end
++end
++
++-- Game:GetCurrentColorModifier / GetTargetColorModifier / GetLerpColorModifier / SetColorModifier and
++-- Room:UpdateColorModifier: the game's colour correction. Kept in Lua (the game's own is not touched), so a
++-- mod reads back what it set.
++do
++  local cur = nil
++  local function neutral() return T.ColorModifier.new(1, 1, 1, 0, 0, 1) end
++  local function m(cls, name, f) T.method(cls, name, f) end
++  m("Game", "GetCurrentColorModifier", function() return cur or neutral() end)
++  m("Game", "GetTargetColorModifier", function() return cur or neutral() end)
++  m("Game", "GetLerpColorModifier", function() return neutral() * 0 end)
++  m("Game", "SetColorModifier", function(self, c, lerp, rate)
++    if not T.ColorModifier.is(c) then error("bad argument #1 to 'SetColorModifier' (ColorModifier expected)", 2) end
++    cur = T.ColorModifier.new(c.R, c.G, c.B, c.A, c.Brightness, c.Contrast)
++    unsupported("Game:SetColorModifier", "the colour correction is kept and read back; the game's own is not changed")
++  end)
++  m("Room", "UpdateColorModifier", function() end)
++  -- kept in Lua and not the game's own: not counted as implemented
++  for _, n in ipairs({ "Game.GetCurrentColorModifier", "Game.GetTargetColorModifier", "Game.GetLerpColorModifier",
++                       "Game.SetColorModifier", "Room.UpdateColorModifier" }) do R.Implemented[n] = nil end
++end
++
++-- BossPoolManager.GetPool(stage) and RoomConfigHolder.GetRoomByStageTypeAndVariant: the game's boss pools and
++-- room tables. A pool is answered empty and a room as none, which Epiphany's room generation handles (it
++-- falls back to the game's own pick).
++do
++  local BP = {}
++  function BP.GetPool(stage) once("bosspool", "BossPoolManager.GetPool: the game's boss pools are not read; an empty pool") return {} end
++  if rawget(_G, "BossPoolManager") == nil or rawget(_G, "BossPoolManager") == false then rawset(_G, "BossPoolManager", BP) end
++  local RH = {}
++  function RH.GetRoomByStageTypeAndVariant() once("roomconfig", "RoomConfigHolder.GetRoomByStageTypeAndVariant: the room tables are not read; nil") return nil end
++  if rawget(_G, "RoomConfigHolder") == nil or rawget(_G, "RoomConfigHolder") == false then rawset(_G, "RoomConfigHolder", RH) end
++end
++
++------------------------------------------------------------------------------
++-- NightmareScene (the stage transition's scene, inside the manager)
++------------------------------------------------------------------------------
++-- REPENTOGON's layout, the scene at manager+0x21628 here (0x21498 there) (size 0x5ec), its background sprite at +0x20, bubble +0x134,
++-- progress bar +0x248, the player's extra portrait +0x4d4, the progress bar map (ints) at +0x36c, a Dogma flag at
++-- +0x5e8. The sprites are checked when asked for (self pointers at +0x30 and +0x50); one that is not where it
++-- is expected is answered with nil, and the first lookup says where the scene would have to be.
++do
++  local SCENE = 0x21628   -- REPENTOGON has 0x21498; its background sprite is found at +0x21648 here (lab_scan.lua)
++  local NS = {}
++  local function scene()
++    local g = r32(0x00c7169c)
++    if g == 0 then error("NightmareScene: the manager does not exist", 3) end
++    return g + SCENE
++  end
++  local function spr(off, name) return function() return sprite_at(scene() + off, "NightmareScene." .. name) end end
++  NS.GetBackgroundSprite = spr(0x20, "GetBackgroundSprite")
++  NS.GetBubbleSprite = spr(0x134, "GetBubbleSprite")
++  NS.GetProgressBarSprite = spr(0x248, "GetProgressBarSprite")
++  NS.GetPlayerExtraPortraitSprite = spr(0x4d4, "GetPlayerExtraPortraitSprite")
++  function NS.IsDogmaNightmare() return r8(scene() + 0x5e8) ~= 0 end
++  function NS.GetProgressBarMap()
++    local out, a = {}, scene() + 0x36c
++    for i = 0, 15 do out[i + 1] = ri32(a + i * 4) end
++    return out
++  end
++  if rawget(_G, "NightmareScene") == nil or rawget(_G, "NightmareScene") == false then rawset(_G, "NightmareScene", NS) end
++  T.NightmareScene = NS
++  implemented("NightmareScene", { "GetBackgroundSprite", "GetBubbleSprite", "GetProgressBarSprite", "GetPlayerExtraPortraitSprite",
++    "IsDogmaNightmare", "GetProgressBarMap" })
++end
++
++------------------------------------------------------------------------------
++-- MainMenu (the game menu: New Run, Continue, ...)
++------------------------------------------------------------------------------
++-- Menu_Game at manager+0xb90 as REPENTOGON has it (lab_scan.lua finds its two sprites at +0xba0 and +0xcb4: +0x10
++-- and +0x124 into it); the selected element at +4.
++do
++  local GAME = 0xb90
++  local MMN = {}
++  local function menu() return need_manager("MainMenu") + GAME end
++  function MMN.GetGameMenuSprite() return sprite_at(menu() + 0x10, "MainMenu.GetGameMenuSprite") end
++  function MMN.GetContinueWidgetSprite() return sprite_at(menu() + 0x124, "MainMenu.GetContinueWidgetSprite") end
++  function MMN.GetSelectedElement() return ri32(menu() + 4) end
++  function MMN.SetSelectedElement(e)
++    if mathtype(e) ~= "integer" then error("bad argument #1 to 'SetSelectedElement' (integer expected, got " .. type(e) .. ")", 2) end
++    w32(menu() + 4, e)
++  end
++  if rawget(_G, "MainMenu") == nil or rawget(_G, "MainMenu") == false then rawset(_G, "MainMenu", MMN) end
++  implemented("MainMenu", { "GetGameMenuSprite", "GetContinueWidgetSprite", "GetSelectedElement", "SetSelectedElement" })
++end
+diff --git a/scripts/recomp/rgon/api_more.lua b/scripts/recomp/rgon/api_more.lua
+index 468ce51..a7ce9b1 100644
+--- a/scripts/recomp/rgon/api_more.lua
++++ b/scripts/recomp/rgon/api_more.lua
+@@ -547,3 +547,23 @@ method("Entity", "ToDelirium", function(self)
+ end)
+ R.Unsupported = R.Unsupported or {}
+ R.Unsupported["Entity:ToDelirium"] = "answers with the NPC; Delirium's own functions are not there"
++
++------------------------------------------------------------------------------
++-- Sprite:Continue([continueOverlay = true]) (REPENTOGON): resume the current animation from the frame it
++-- is on, after SetFrame or Stop left it paused (Epiphany's Tarnished page: SetFrame("Appear", 1) then
++-- Continue(), epiphany_menu.lua:288; without it the page swap stops there). Done with the game's own
++-- functions only: Play(name, true) starts the animation at frame 0, Update() moves it one frame, so the
++-- frame it was on is reached again with the animation playing. An animation that is already playing is
++-- left alone. The overlay is restarted the same way when it was not playing (its frame is not kept: only
++-- the main animation's frame is walked back to).
++------------------------------------------------------------------------------
++method("Sprite", "Continue", function(self, continueOverlay)
++  local anim = self:GetAnimation()
++  if anim and anim ~= "" and not self:IsPlaying(anim) then
++    local f = self:GetFrame()
++    local ov = continueOverlay ~= false and self.GetOverlayAnimation and self:GetOverlayAnimation() or ""
++    self:Play(anim, true)
++    if ov ~= "" and not self:IsOverlayPlaying(ov) then self:PlayOverlay(ov, true) end
++    for _ = 1, math.max(0, math.min(f, 10000)) do self:Update() end
++  end
++end)
+diff --git a/scripts/recomp/rgon/api_sprite.lua b/scripts/recomp/rgon/api_sprite.lua
+index 806bce2..51b6b16 100644
+--- a/scripts/recomp/rgon/api_sprite.lua
++++ b/scripts/recomp/rgon/api_sprite.lua
+@@ -200,3 +200,27 @@ local function null(name, state)
+ end
+ null("GetNullFrame", STATE)
+ null("GetOverlayNullFrame", OVERLAY)
++
++-- Sprite(anm2Path [, load = true]): REPENTOGON's constructor. The game's own
++-- takes no argument and makes an empty sprite, so a mod that builds
++-- `Sprite("gfx/x.anm2", true)` and goes on to SetFrame / GetLayer got a sprite
++-- with no animations ("no animation named X") and a Color without members.
++-- The constructor in the static table's metatable is wrapped: make the sprite
++-- the game's way, then Load the path it was given.
++do
++  local smt = getmetatable(Sprite)
++  local orig = type(smt) == "table" and rawget(smt, "__call")
++  if orig then
++    rawset(smt, "__call", function(self, path, load)
++      local s = orig(self)
++      if path ~= nil then
++        if type(path) ~= "string" then error("bad argument #1 to 'Sprite' (string expected, got " .. type(path) .. ")", 2) end
++        s:Load(path, load ~= false)
++      end
++      return s
++    end)
++    R.Implemented["Sprite.Sprite"] = true
++  else
++    log("api_sprite: the Sprite constructor is not where it was expected; Sprite(path, load) is left out")
++  end
++end
+diff --git a/scripts/recomp/rgon/hook_slots.lua b/scripts/recomp/rgon/hook_slots.lua
+index 2187a0e..7132034 100644
+--- a/scripts/recomp/rgon/hook_slots.lua
++++ b/scripts/recomp/rgon/hook_slots.lua
+@@ -100,6 +100,9 @@ return {
+   ["Room::RenderEntityPass_004199d0"] = { 98, 0x8 },
+   ["Room::GetShopItemPrice"] = { 99, 0x10 },
+   ["Menu_Character::UpdateRotations"] = { 169, 0x0 },
++  ["NightmareScene::Render"] = { 171, 0x0 },
++  ["Game::SaveState"] = { 172, 0x4 },
++  ["LuaCallbackCaller::CallInputAction"] = { 173, 0x14 },
+   ["Entity::Init"] = { 100, 0x10 },
+   ["Entity_Player::Init"] = { 101, 0x10 },
+   ["Entity_NPC::Init"] = { 102, 0x10 },
+diff --git a/scripts/recomp/rgon/lab_cb.lua b/scripts/recomp/rgon/lab_cb.lua
+new file mode 100644
+index 0000000..66b9db4
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_cb.lua
+@@ -0,0 +1,23 @@
++-- lab_cb.lua (development only; ISAAC_RGON_LAB=lab_cb.lua, round 123): the callbacks the engine hooks of round 123 fire,
++-- logged with their arguments (first few of each), over lab_trapdoor.lua's floor changes.
++local T = ...
++local B = T.B
++local M = ModCallbacks
++local mod = RegisterMod("rgon lab cb", 1)
++local counts = {}
++local function seen(name, ...)
++  counts[name] = (counts[name] or 0) + 1
++  local c = counts[name]
++  if c <= 4 or c % 200 == 0 then
++    local a = {}
++    for i = 1, select("#", ...) do a[#a + 1] = tostring((select(i, ...))) end
++    B.log(string.format("lab_cb: %s #%d f%d (%s) ingame=%s", name, c, Isaac.GetFrameCount(), table.concat(a, ","), tostring(Isaac.IsInGame())))
++  end
++end
++for _, n in ipairs({ "MC_POST_NIGHTMARE_SCENE_RENDER", "MC_MENU_INPUT_ACTION", "MC_MAIN_MENU_RENDER", "MC_PRE_GLOWING_HOURGLASS_SAVE",
++                     "MC_POST_GLOWING_HOURGLASS_SAVE", "MC_PRE_GLOWING_HOURGLASS_LOAD", "MC_POST_GLOWING_HOURGLASS_LOAD" }) do
++  mod:AddCallback(M[n], function(_, ...) seen(n, ...) end)
++end
++mod:AddCallback(M.MC_INPUT_ACTION, function(_, e, hook, action) seen("MC_INPUT_ACTION", hook, action) end)
++local chunk = B.load("lab_trapdoor.lua")
++if chunk then chunk(T) end
+diff --git a/scripts/recomp/rgon/lab_night.lua b/scripts/recomp/rgon/lab_night.lua
+new file mode 100644
+index 0000000..3bc4214
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_night.lua
+@@ -0,0 +1,11 @@
++-- lab_night.lua (development only; ISAAC_RGON_LAB=lab_night.lua, round 123): is the nightmare scene where REPENTOGON's layout puts it,
++-- and what does its background sprite do over a stage change?
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab night", 1)
++local last
++mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++  local ok, s = pcall(NightmareScene.GetBackgroundSprite)
++  local txt = ok and s and (s:GetFilename() .. " anim=" .. s:GetAnimation() .. " frame=" .. s:GetFrame() .. " playing=" .. tostring(s:IsPlaying(s:GetAnimation()))) or ("none " .. tostring(s))
++  if txt ~= last then last = txt B.log("lab_night: f" .. Isaac.GetFrameCount() .. " " .. txt) end
++end)
+diff --git a/scripts/recomp/rgon/lab_scan.lua b/scripts/recomp/rgon/lab_scan.lua
+new file mode 100644
+index 0000000..a7f121f
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_scan.lua
+@@ -0,0 +1,39 @@
++-- lab_scan.lua (development only; ISAAC_RGON_LAB=lab_scan.lua, round 123): the sprites (ANM2 objects: self pointers at +0x30 and +0x50)
++-- inside the menu manager and inside the game's manager, with the file each was loaded from.
++local T = ...
++local B = T.B
++local r32 = B.r32
++local mod = RegisterMod("rgon lab scan", 1)
++local function scan(label, from, to)
++  local n = 0
++  local a = from
++  while a < to do
++    local ok, p30 = pcall(r32, a + 0x30)
++    if ok and p30 == a then
++      local ok2, p50 = pcall(r32, a + 0x50)
++      if ok2 and p50 == a then
++        local ok3, s = pcall(function() return B.stdstr(a + 0x10) end)
++        local ok4, name = pcall(function() return T.wrap("Sprite", a):GetFilename() end)
++        B.log(string.format("lab_scan: %s +0x%x %s", label, a - from, ok4 and name or "?"))
++        n = n + 1
++        a = a + 0x100
++      end
++    end
++    a = a + 4
++  end
++  B.log("lab_scan: " .. label .. " " .. n .. " sprites")
++end
++local done_menu, done_game = false, false
++mod:AddCallback(ModCallbacks.MC_MAIN_MENU_RENDER, function()
++  if done_menu then return end
++  local mm = r32(0x00c72a20)
++  if mm == 0 then return end
++  done_menu = true
++  scan("menu manager", mm, mm + 0xf900)
++end)
++mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++  if done_game then return end
++  done_game = true
++  local g = r32(0x00c7169c)
++  scan("manager", g, g + 0x24000)
++end)
+diff --git a/scripts/recomp/rgon/lab_store.lua b/scripts/recomp/rgon/lab_store.lua
+new file mode 100644
+index 0000000..4c6aa35
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_store.lua
+@@ -0,0 +1,12 @@
++-- lab_store.lua (development only; ISAAC_RGON_LAB=lab_store.lua, round 123)
++-- The layer's own save file with no mod of its own: once a run has started (a save slot is chosen),
++-- say what the store holds, write a section and read it back; run twice to see it come back.
++local T = ...
++local B = T.B
++local M = ModCallbacks
++local mod = RegisterMod("rgon lab store", 1)
++mod:AddCallback(M.MC_POST_GAME_STARTED, function()
++  local before = T.store.get("labtest")
++  local ok = T.store.set("labtest", "written at frame " .. Isaac.GetFrameCount() .. " by run " .. tostring(B.env("ISAAC_LAB_TAG")))
++  B.log("lab_store: SAVEFILE=" .. tostring(B.SAVEFILE) .. " before=" .. tostring(before) .. " set=" .. tostring(ok) .. " after=" .. tostring(T.store.get("labtest")))
++end)
+diff --git a/scripts/recomp/rgon/lab_str.lua b/scripts/recomp/rgon/lab_str.lua
+new file mode 100644
+index 0000000..9e86e3d
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_str.lua
+@@ -0,0 +1,11 @@
++-- lab_str.lua (development only; ISAAC_RGON_LAB=lab_str.lua, round 123): the head of resources/stringtable.sta, as the file layer reads it
++local T = ...
++local B = T.B
++local text = T.read_file("resources/stringtable.sta")
++B.log("lab_str: " .. tostring(text and #text) .. " bytes")
++if text then
++  B.log("lab_str: head " .. text:sub(700, 1900):gsub("[\r\n]", "\\n"))
++  local n = 0
++  for tag in text:gmatch("<([%w_]+)") do n = n + 1 end
++  B.log("lab_str: tags " .. n)
++end
+diff --git a/scripts/recomp/rgon/lab_tarn.lua b/scripts/recomp/rgon/lab_tarn.lua
+new file mode 100644
+index 0000000..2b7141c
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_tarn.lua
+@@ -0,0 +1,40 @@
++-- lab_tarn.lua (development only; ISAAC_RGON_LAB=lab_tarn.lua): why does Epiphany's Tarnished character-menu page never show?
++-- Logs, on change only, the character menu's state and Epiphany's menu module state (Epiphany.MENU), and the
++-- arguments of MC_POST_SAVESLOT_LOAD.
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab tarn", 1)
++local last = {}
++local function chg(key, val)
++  if last[key] ~= val then last[key] = val; B.log("lab_tarn: " .. key .. " = " .. tostring(val)); return true end
++end
++mod:AddCallback(ModCallbacks.MC_POST_SAVESLOT_LOAD, function(_, a, b, c)
++  B.log(string.format("lab_tarn: POST_SAVESLOT_LOAD args %s %s %s", tostring(a), tostring(b), tostring(c)))
++end)
++mod:AddCallback(ModCallbacks.MC_POST_ACHIEVEMENT_UNLOCK, function(_, a)
++  last.ach = (last.ach or 0) + 1
++  if last.ach <= 3 or last.ach % 100 == 0 then B.log("lab_tarn: POST_ACHIEVEMENT_UNLOCK #" .. last.ach .. " id " .. tostring(a)) end
++end)
++local f = 0
++mod:AddCallback(ModCallbacks.MC_MAIN_MENU_RENDER, function()
++  f = f + 1
++  local am = MenuManager.GetActiveMenu()
++  chg("activeMenu", am)
++  if am ~= MainMenuType.CHARACTER then return end
++  local bg = CharacterMenu.GetBGSprite()
++  local ok, anim = pcall(bg.GetAnimation, bg)
++  local fr = ok and bg:GetFrame() or "?"
++  chg("bg", tostring(anim) .. "@" .. tostring(fr))
++  chg("page", CharacterMenu.GetSelectedCharacterMenu())
++  local E = rawget(_G, "Epiphany")
++  local M = E and E.MENU
++  if M then
++    chg("M.lastSaveLoaded", M.lastSaveLoaded)
++    chg("M.current", M.currentMenu and M.currentMenu[M.lastSaveLoaded])
++    chg("M.next", M.nextMenu and M.nextMenu[M.lastSaveLoaded])
++    chg("M.swapping", M.swapping)
++    chg("M.taintedsUnlocked", M:AreTaintedsUnlocked())
++    chg("E.IsMenuUnlocked", E:IsMenuUnlocked())
++    chg("M.accessible", M:IsMenuAccessible())
++  else chg("Epiphany.MENU", "nil") end
++end)
+diff --git a/scripts/recomp/rgon/lab_tarn2.lua b/scripts/recomp/rgon/lab_tarn2.lua
+new file mode 100644
+index 0000000..5862b40
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_tarn2.lua
+@@ -0,0 +1,34 @@
++-- lab_tarn2.lua (development only): which bytes of a sprite's AnimationState does Play / SetFrame / Stop-ish change?
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab tarn2", 1)
++local done = false
++local function dump(tag, s)
++  local p = B.ptr(s) + 0x30
++  local t = {}
++  for i = 0, 0x1f, 4 do t[#t + 1] = string.format("%08x", B.r32(p + i)) end
++  B.log(string.format("lab_tarn2: %-22s state %s | anim=%s fr=%s playing=%s fin=%s", tag, table.concat(t, " "),
++    tostring(s:GetAnimation()), tostring(s:GetFrame()), tostring(s:IsPlaying(s:GetAnimation())), tostring(s:IsFinished(s:GetAnimation()))))
++end
++mod:AddCallback(ModCallbacks.MC_MAIN_MENU_RENDER, function()
++  if done then return end
++  done = true
++  local s = Sprite()
++  s:Load("gfx/005.100_collectible.anm2", true)
++  local names = {}
++  for k in pairs(getmetatable(s).__index or {}) do names[#names + 1] = k end
++  table.sort(names)
++  B.log("lab_tarn2: sprite methods: " .. table.concat(names, " "))
++  dump("loaded", s)
++  s:Play("Idle", true); dump("Play Idle", s)
++  s:Update(); s:Update(); dump("2x Update", s)
++  s:SetFrame("Idle", 1); dump("SetFrame Idle 1", s)
++  s:Update(); dump("Update after SetFrame", s)
++  s:SetFrame("Idle", 0); dump("SetFrame Idle 0", s)
++  s:Play("Idle", false); dump("Play Idle false", s)
++  s:Update(); dump("Update after Play", s)
++  if s.Stop then s:Stop(); dump("Stop", s) end
++  if s.Continue then s:Continue(); dump("Continue", s) end
++  s:SetLastFrame(); dump("SetLastFrame", s)
++  s:Play("Idle", true); s:Update(); dump("Play again", s)
++end)
+diff --git a/scripts/recomp/rgon/lab_trapdoor.lua b/scripts/recomp/rgon/lab_trapdoor.lua
+new file mode 100644
+index 0000000..599f207
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_trapdoor.lua
+@@ -0,0 +1,56 @@
++-- lab_trapdoor.lua (development only; ISAAC_RGON_LAB=lab_trapdoor.lua, round 123)
++-- A real floor change with the game's own trapdoor logic: in each floor's start room, a trapdoor is spawned
++-- (Isaac.GridSpawn) on a free tile two tiles right of the player, left to open, and the player is put on it.
++-- No `stage` command, no StartStageTransition. Logs "lab_trapdoor: ..." lines; ISAAC_LAB_FLOORS = how many floors
++-- to descend (default 3).
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab trapdoor", 1)
++local floors = tonumber(B.env("ISAAC_LAB_FLOORS")) or 3
++local descended, state, wait, trap, last_stage = 0, "idle", 0, nil, nil
++local function say(s) B.log("lab_trapdoor: f" .. Isaac.GetFrameCount() .. " " .. s) end
++mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function()
++  local level, room = Game():GetLevel(), Game():GetRoom()
++  say(string.format("new room idx %d (start %d) type %d", level:GetCurrentRoomIndex(), level:GetStartingRoomIndex(), room:GetType()))
++  if level:GetCurrentRoomIndex() == level:GetStartingRoomIndex() and descended < floors then
++    state, wait, trap = "armed", 0, nil
++  else
++    state = "idle"
++  end
++end)
++mod:AddCallback(ModCallbacks.MC_POST_NEW_LEVEL, function()
++  local level = Game():GetLevel()
++  if last_stage ~= nil and level:GetStage() ~= last_stage then descended = descended + 1 end
++  last_stage = level:GetStage()
++  say(string.format("NEW LEVEL %d: stage %d type %d name '%s' (floor change %d of %d)", descended, level:GetStage(), level:GetStageType(), level:GetName(), descended, floors))
++end)
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  local game, room = Game(), Game():GetRoom()
++  local p = Isaac.GetPlayer(0)
++  if state == "armed" then
++    wait = wait + 1
++    if wait == 40 then
++      local want = room:FindFreePickupSpawnPosition(p.Position + Vector(80, 0), 0, true)
++      trap = Isaac.GridSpawn(GridEntityType.GRID_TRAPDOOR, 0, want, true)
++      local idx = room:GetGridIndex(want)
++      local ge = room:GetGridEntity(idx)
++      say(string.format("spawned trapdoor at %s grid index %d, entity %s", tostring(want), idx, tostring(ge)))
++      if ge then say(string.format("trapdoor state %d type %d", ge.State, ge:GetType())) end
++      state, wait = "opening", 0
++    end
++  elseif state == "opening" then
++    wait = wait + 1
++    local idx = room:GetGridIndex(trap and trap.Position or p.Position)
++    local ge = room:GetGridEntity(idx)
++    if wait % 20 == 0 then say(string.format("waiting: room clear=%s trapdoor state %s", tostring(room:IsClear()), tostring(ge and ge.State))) end
++    if wait >= 90 and ge then
++      p.Position = ge.Position
++      p.Velocity = Vector(0, 0)
++      say(string.format("player put on the trapdoor at %s (state %d)", tostring(ge.Position), ge.State))
++      state, wait = "falling", 0
++    end
++  elseif state == "falling" then
++    wait = wait + 1
++    if wait % 30 == 0 then say(string.format("still here after %d frames, player at %s", wait, tostring(p.Position))) end
++  end
++end)
+diff --git a/scripts/recomp/rgon/lab_unlock.lua b/scripts/recomp/rgon/lab_unlock.lua
+new file mode 100644
+index 0000000..4f17796
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_unlock.lua
+@@ -0,0 +1,20 @@
++-- lab_unlock.lua (development only; ISAAC_RGON_LAB=lab_unlock.lua, round 123): unlocks every achievement a mod defines
++-- (through the layer's own unlock, as PersistentGameData:Unlock does), once, in the main menu, so a mod's characters show
++-- on the character wheel.
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab unlock", 1)
++local done = false
++mod:AddCallback(ModCallbacks.MC_MAIN_MENU_RENDER, function()
++  if done or B.r32(0x00c72a20) == 0 then return end
++  local slot = B.r32(B.r32(0x00c7169c) + 0x10)
++  if slot == 0 then return end
++  done = true
++  local set = T.xml_entries(XMLNode.ACHIEVEMENT)
++  local n = 0
++  for _, e in ipairs(set and set.list or {}) do
++    local id = math.tointeger(tonumber(e.id))
++    if e.sourceid and id and T.unlock_modded(id) then n = n + 1 end
++  end
++  B.log("lab_unlock: unlocked " .. n .. " mod achievement(s) in save slot " .. slot)
++end)
+diff --git a/scripts/recomp/rgon/lab_vp.lua b/scripts/recomp/rgon/lab_vp.lua
+new file mode 100644
+index 0000000..ea3c555
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_vp.lua
+@@ -0,0 +1,15 @@
++-- lab_vp.lua (development only, round 123): the menu manager's view positions and colour-correction block, as floats
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab vp", 1)
++local done = false
++mod:AddCallback(ModCallbacks.MC_MAIN_MENU_RENDER, function()
++  if done then return end
++  local mm = B.r32(0x00c72a20)
++  if mm == 0 then return end
++  done = true
++  B.log(string.format("lab_vp: view +0x44 = %g, %g; selected = %d", B.rf32(mm + 0x44), B.rf32(mm + 0x48), B.ri32(mm + 0x40)))
++  for a = 0xf700, 0xf830, 0x10 do
++    B.log(string.format("lab_vp: +0x%x  %g %g %g %g  | %08x", a, B.rf32(mm + a), B.rf32(mm + a + 4), B.rf32(mm + a + 8), B.rf32(mm + a + 12), B.r32(mm + a)))
++  end
++end)
+diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
+index 4175f07..39d9905 100644
+--- a/scripts/recomp/rgon/rgon.lua
++++ b/scripts/recomp/rgon/rgon.lua
+@@ -72,7 +72,13 @@ end
+ do
+   local chunk, why = B.load("enums_ex.lua")
+   if chunk then
++    local before = {}
++    for k in pairs(_G) do before[k] = true end
+     local ok, err = pcall(chunk)
++    -- round 123: an enum table REPENTOGON adds (BossType, ...) is implemented by being there
++    for k, v in pairs(_G) do
++      if not before[k] and type(k) == "string" and type(v) == "table" then R.Implemented[k] = true end
++    end
+     if not ok then log("enums_ex.lua stopped: " .. tostring(err)) end
+   else
+     log("enums_ex.lua is missing (" .. tostring(why) .. "): the new callbacks have no names")
+@@ -87,7 +93,7 @@ end
+ -- A class the game gives no static table (Game is a function that answers the
+ -- one Game object) is reached through an object of it: an object's metatable
+ -- is its class table, or the const one, and each names the other.
+-local SAMPLE = { Game = function() return Game() end, ItemConfig = function() return Isaac.GetItemConfig() end }
++local SAMPLE = { Game = function() return Game() end, ItemPool = function() return Game():GetItemPool() end, ItemConfig = function() return Isaac.GetItemConfig() end }
+ -- and a class the game registers inside a namespace table has its static table there
+ local INSIDE = { ActiveItemDesc = "PlayerTypes" }
+ local function class_tables(name)
+@@ -196,6 +202,9 @@ do
+     if type(id) == "number" and id >= 1000 then
+       listening[id] = on and true or nil
+       if arm then arm(id) end
++      -- MC_MENU_INPUT_ACTION (round 123) is the game's own input action callback outside a run: the engine
++      -- only asks for MC_INPUT_ACTION when something listens on it, so it is switched on here as well
++      if on and id == ModCallbacks.MC_MENU_INPUT_ACTION then engine_state(ModCallbacks.MC_INPUT_ACTION, true) end
+       return
+     end
+     return engine_state(id, on)
+@@ -459,6 +468,7 @@ do
+   function L:SetWrapSMode(m) w32(at(self) + LS.wrapS, m) end
+   function L:GetWrapTMode() return r32(at(self) + LS.wrapT) end
+   function L:SetWrapTMode(m) w32(at(self) + LS.wrapT, m) end
++  function L:GetBlendMode() return R.BlendModeAt(at(self) + 0x78) end    -- api_gaps.lua: five ints at +0x78
+   function L:GetFlipX() return r8(at(self) + LS.flipX) ~= 0 end
+   function L:SetFlipX(v) w8(at(self) + LS.flipX, v and 1 or 0) end
+   function L:GetFlipY() return r8(at(self) + LS.flipY) ~= 0 end
+@@ -605,10 +615,10 @@ end
+ local T = {
+   B = B, R = R, VA = VA, CLASS = CLASS, SLOT = SLOT, HOOKS = HOOKS, listening = listening,
+   method = method, static = static, property = property, wrap = wrap, this = this, vt_ptr = vt_ptr,
+-  define = define, run = run, class_tables = class_tables, bool_at = bool_at, ALWAYS = ALWAYS,
++  define = define, run = run, class_tables = class_tables, static = static, bool_at = bool_at, ALWAYS = ALWAYS,
+   rearm = function() arm(nil) end,
+ }
+-for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_hooks.lua" }) do
++for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_hooks.lua" }) do
+   local chunk, why = B.load(part)
+   if chunk then
+     local ok, err = pcall(chunk, T)
+diff --git a/scripts/recomp/rgon/tools/hook_table.py b/scripts/recomp/rgon/tools/hook_table.py
+index 0d1d8bd..8070a63 100644
+--- a/scripts/recomp/rgon/tools/hook_table.py
++++ b/scripts/recomp/rgon/tools/hook_table.py
+@@ -206,6 +206,18 @@ HOOKS = [
+      "character it sets [this+5] from Menu_Character_Entry::IsCharacterAvailable (0x0094d64a, 0x0094d657) and "
+      "shows layers 4..15 or 16 of the big page; for a mod's (selected id [this+0x10] >= 0x12, 0x0094d62d) it "
+      "always sets [this+5] = 1 (0x0094d700)"),
++    # round 123 (M8): MC_POST_NIGHTMARE_SCENE_RENDER, MC_PRE/POST_GLOWING_HOURGLASS_SAVE
++    (171, "NightmareScene::Render", 0x00920940, "asm", 0,
++     "thiscall on the scene (manager+0x21628); its only caller is Manager::Render (0x00955b4d), once per drawn "
++     "frame while the scene is shown. REPENTOGON's signature matches nothing here (this build's frame is 0xf0)"),
++    (172, "Game::SaveState", 0x006f9000, "sig", 4,
++     "REPENTOGON's signature matches twice (0x006f9000 and 0x00912b60); this one is in the Game's range next to "
++     "RestoreState (0x006bb790). thiscall(gameState): the glowing hourglass saves into one of the game's two "
++     "states each new room"),
++    (173, "LuaCallbackCaller::CallInputAction", 0x00874910, "sig", 0x14,
++     "REPENTOGON's signature matches once, here; thiscall on the caller ({state, callbackId +4, optionalArg +8}), "
++     "(result*, engine, entity, hook, action), ret 0x14; run by the game's input reads (callers 0x00864c9d, "
++     "0x00864def). Outside a run REPENTOGON changes the callback id the function runs to 1464 (MC_MENU_INPUT_ACTION)"),
+ ]
+ # the entity classes' virtual functions: slots 100 + 12 * k + class index
+ _k = 0

@@ -323,9 +323,11 @@ void isaac_mac_audio_tick(void) {
     } else last_ns = now;
     if (now - last_log_ns >= 1000000000ull) {
         last_log_ns = now;
+        /* never call an SDL audio stream function with g_mu held: the audio thread holds the stream's lock
+         * while it waits for g_mu in stream_cb (a lock-order inversion that hung the game at frame 871) */
+        int queued = g_stream ? SDL_GetAudioStreamQueued(g_stream) : 0;
         SDL_LockMutex(g_mu);
         double rms = g_w_frames ? sqrt(g_w_sumsq / (double)g_w_frames) : 0.0;
-        int queued = g_stream ? SDL_GetAudioStreamQueued(g_stream) : 0;
         if (log_on())
             printf("[mac][audio] mixed %llu frames, %llu cb, queued %.1f ms, voices %d, underruns %llu, overruns %llu, late %llu, last-second peak %.3f rms %.4f\n",
                    (unsigned long long)g_frames_mixed, (unsigned long long)g_cb_count,

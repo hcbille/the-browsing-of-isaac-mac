@@ -275,6 +275,9 @@ blocks the launch.
   `sync-config.json` `workshop_fallback` that has. The machine-specific fallback (for example the
   Windows depot's Workshop folder) is therefore never in the repo; the build or the user writes it:
   `{"workshop_fallback": ["<game dir>/steamapps/workshop/content/250900"], "save_search": ["<game dir>"]}`.
+  The build also writes `Repentance+.app/Contents/Resources/sync-config.json` (same keys; override
+  `REPENTANCE_MAC_BUNDLED_SYNC_CONFIG`). Precedence: environment variables, then `<support>/sync-config.json`,
+  then the bundled file, then the built-in defaults; the lists are concatenated in that order, duplicates dropped.
   No source with mods -> nothing is changed (a missing Steam folder never marks mods unsubscribed).
 - Target folder: `mods/<directory>_<id>` from the item's `metadata.xml` `<directory>` (what the PC game
   names Workshop copies; 76 of the 95 folders match an existing PC mods folder exactly, the rest are
