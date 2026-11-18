@@ -4,9 +4,18 @@
  * Node: reserve the Guest region, place the memory image, seed the game's
  * files into the Host file shim, run the boot path, then main.
  *
- *   isaac-mac <isaac.segs.bin> <instance dir> [boot|main] [save dir]
+ *   isaac-mac [--headless] [--launch-settings <json>] [--vanilla] [--debug-console] [--lua-debug]
+ *             [--segs F] [--bundle D] [--layer-dir D] [--save-dir D] [--mods-dir D]
+ *             [--modscan F] [--gate-log F] [--stage boot|main]
+ *   isaac-mac [--headless] <isaac.segs.bin> <instance dir> [boot|main] [save dir]   (dev form)
  *
- * The instance dir is the bundle (the archives in resources/packed, the Lua
+ * Precedence: flag > launch-settings JSON > REPENTANCE_MAC_* env > default
+ * (segs, bundle and layer default to <exe dir>/../Resources/...). Env:
+ * REPENTANCE_MAC_LAUNCH_SETTINGS, ISAAC_MAC_HEADLESS, ISAAC_MAC_RUN_FRAMES=N
+ * (watchdog: guard check and exit 0 after N presented frames), ISAAC_MAC_SHOT,
+ * ISAAC_MAC_SCRIPT (see mac_gl.c, mac_script.c).
+ *
+ * The bundle (instance dir) is the bundle (the archives in resources/packed, the Lua
  * in resources/scripts, savedatapath.txt). It also becomes the working
  * directory, because the Host Lua loads its scripts relative to it.
  */
@@ -20,6 +29,7 @@
 #include <unistd.h>
 
 #include "isaac_host.h"
+#include "mac_launch.h"
 
 int isaac_native_reserve(void);
 int isaac_place_image(const uint8_t *blob, uint32_t len);
@@ -34,6 +44,19 @@ int isaac_fs_seed_lazy(const char *path, uint32_t len);
 uint32_t isaac_frames_presented(void);
 extern const char *g_mac_instance_dir;
 extern const char *g_mac_save_dir;
+extern const char *g_mac_mods_dir, *g_mac_layer_dir, *g_mac_modscan_path, *g_mac_gate_log_path;
+extern int g_mac_layer_off;
+int mac_seed_mods(void);
+void isaac_mac_gate_log_off(const char *reason);
+
+static int is_dir_path(const char *p) { struct stat st; return stat(p, &st) == 0 && S_ISDIR(st.st_mode); }
+static void mkdirs_path(const char *path) {
+    char tmp[4096];
+    snprintf(tmp, sizeof tmp, "%s", path);
+    for (char *p = tmp + 1; *p; ++p)
+        if (*p == '/') { *p = 0; mkdir(tmp, 0755); *p = '/'; }
+    mkdir(tmp, 0755);
+}
 
 static uint8_t *read_all(const char *path, uint32_t *len) {
     FILE *f = fopen(path, "rb");
@@ -154,23 +177,48 @@ int main(int argc, char **argv) {
     /* the driver chdirs into the instance; relative output paths (screenshots) are
      * meant relative to where the user ran it */
     { char cwd[4096]; if (getcwd(cwd, sizeof cwd)) setenv("ISAAC_MAC_LAUNCH_CWD", cwd, 1); }
-    if (argc < 3) {
-        fprintf(stderr, "usage: %s [--headless] <isaac.segs.bin> <instance dir> [boot|main] [save dir]\n"
+    if (!mac_launch_parse(argc, argv)) return 2;
+    if (!g_mac_cfg.segs || !g_mac_cfg.bundle) {
+        fprintf(stderr, "usage: %s [--headless] [--launch-settings <json>] [--vanilla] [--debug-console] [--lua-debug]\n"
+                        "          [--segs F] [--bundle D] [--layer-dir D] [--save-dir D] [--mods-dir D] [--modscan F] [--gate-log F] [--stage boot|main]\n"
+                        "       %s [--headless] <isaac.segs.bin> <instance dir> [boot|main] [save dir]     (dev)\n"
+                        "  segs, bundle and layer default to <exe dir>/../Resources/{isaac.segs.bin,game-bundle,layer}\n"
                         "  windowed by default (SDL3 + ANGLE on Metal); --headless or ISAAC_MAC_HEADLESS=1: no window, fake GL\n",
-                argv[0]);
+                argv[0], argv[0]);
         return 2;
     }
-    const char *segs = argv[1];
-    const char *stage = argc > 3 ? argv[3] : "main";
-    /* The driver chdirs into the instance, so both dirs must be absolute. */
-    static char inst_abs[4096], save_abs[4096];
-    if (!realpath(argv[2], inst_abs)) { perror("[mac] instance dir"); return 1; }
-    g_mac_instance_dir = inst_abs;
+    const char *segs = g_mac_cfg.segs;
+    const char *stage = g_mac_cfg.stage;
+    /* The driver chdirs into the instance, so every dir must be absolute (mac_launch_parse does it). */
+    g_mac_instance_dir = g_mac_cfg.bundle;
+    if (!is_dir_path(g_mac_instance_dir)) { fprintf(stderr, "[mac] bundle %s is not a directory\n", g_mac_instance_dir); return 1; }
     g_mac_save_dir = NULL;
-    if (argc > 4) {
-        mkdir(argv[4], 0755);
-        if (!realpath(argv[4], save_abs)) { perror("[mac] save dir"); return 1; }
-        g_mac_save_dir = save_abs;
+    if (g_mac_cfg.save_dir) {
+        mkdirs_path(g_mac_cfg.save_dir);
+        g_mac_save_dir = g_mac_cfg.save_dir;
+    }
+    g_mac_mods_dir = g_mac_cfg.mods_dir;
+    g_mac_layer_off = g_mac_cfg.vanilla;
+    g_mac_modscan_path = g_mac_cfg.modscan_path;
+    g_mac_gate_log_path = g_mac_cfg.gate_log_path;
+    g_mac_layer_dir = g_mac_cfg.layer_dir;
+    printf("[mac] launch: segs %s\n[mac] launch: bundle %s\n[mac] launch: saves %s\n[mac] launch: mods %s\n",
+           segs, g_mac_instance_dir, g_mac_save_dir ? g_mac_save_dir : "(none: nothing persists)", g_mac_mods_dir ? g_mac_mods_dir : "(none)");
+    if (g_mac_cfg.launch_settings) printf("[mac] launch: settings %s\n", g_mac_cfg.launch_settings);
+    printf("[mac] launch: vanilla=%d debug_console=%d lua_debug=%d\n", g_mac_cfg.vanilla, g_mac_cfg.debug_console, g_mac_cfg.lua_debug);
+    /* Layer: built into the app, never listed as a mod. Vanilla Launch turns it off through
+     * the one switch host_rgon.c honours (ISAAC_RGON=0) and the file layer stops serving it. */
+    if (g_mac_cfg.vanilla) {
+        setenv("ISAAC_RGON", "0", 1);
+        printf("[mac] Vanilla Launch: the Layer is off (ISAAC_RGON=0), no mod sees REPENTOGON\n");
+        isaac_mac_gate_log_off("vanilla launch");
+    } else if (!g_mac_layer_dir || !is_dir_path(g_mac_layer_dir)) {
+        printf("[mac] the Layer is not installed (no layer dir: %s): no REPENTOGON support this launch\n", g_mac_layer_dir ? g_mac_layer_dir : "unset");
+        g_mac_layer_dir = NULL;
+        isaac_mac_gate_log_off("layer not installed");
+    } else {
+        printf("[mac] Layer served from %s as mods/repentogon/ (not listed as a mod); modscan.lua from %s\n", g_mac_layer_dir,
+               g_mac_modscan_path ? g_mac_modscan_path : "(none)");
     }
 
     if (!isaac_native_reserve()) return 1;
@@ -198,6 +246,7 @@ int main(int argc, char **argv) {
         restore_saves(g_mac_save_dir, "", &n);
         printf("[mac] %d saved file(s) restored from %s\n", n, g_mac_save_dir);
     }
+    mac_seed_mods();
     if (chdir(g_mac_instance_dir) != 0) perror("[mac] chdir to the instance");
 
     setvbuf(stdout, NULL, _IOLBF, 0);

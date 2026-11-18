@@ -1,5 +1,60 @@
 # Mac Build progress
 
+## Status overview (orchestrator, 2026-11-18; work stopped at the user's request)
+
+The milestones are those in the orchestrator brief. "Verified" means an
+independent Verifier subagent re-ran the definition-of-done checks and
+reported PASS. The per-milestone sections further down were written by the
+implementers; any "(pending Verifier)" in their headings is out of date.
+
+| Milestone | State | mac-native commit | Public commit |
+|---|---|---|---|
+| M1 Headless main | **Verified** (3,007 frames, guard intact, no new errors vs Browser Build log, absolute-path fix works from another cwd) | af702c0 | 998bd5a |
+| M2 Picture | **Verified** ("ANGLE Metal Renderer: Apple M2"; title + Basement I start room match `shot_b.png` in layout, mean abs diff about 6/255; 59.9 to 60.0 fps steady, one 160 ms hitch when the room loads) | a30c9d6 | ea429f3 |
+| M3 Input | **Verified** (keyboard via SDL events and SDL virtual gamepad both start, walk, fire, pause; rumble follows RumbleEnabled; hot-plug; key table matches the Browser Build) | b4ededc | 5f07da8 |
+| M4 Sound | **Verified** (music and effects non-silent in WAV dump; 0 underruns/overruns over 148 s; 3 late callbacks at one room-load stall; no crackle found; MusicVolume/SFXVolume respected; no panning, same as the Browser Build) | 75efe7b | 7aaafe3 |
+| M5 Window | Not started. Hook point: `isaac_mac_window_to_game()` in `mac_input.c`; window is fixed 960x540 in `mac_gl.c` (`ISAAC_MAC_SCALE` reserved) | none | none |
+| M6 Saves | **Verified** (progress survives restart; import cases cloud-present, absent and Mac-save-present pass; fixture Steam folders untouched; evidence `.scratch/verify67/`) | M6+M7 commit | pending |
+| M7 Mods | **Verified** (95 mods synced, checker mod off; MODS menu lists 95, off greyed; Launcher and in-game toggles agree; update keeps `disable.it`; unsubscribe keeps the mod, marked, Remove moves to Trash after confirm). Side notes: Launcher sorts by folder name but the game menu sorts by display name; `fired's_angels_and_statues` main.lua logs a Lua error (M8) | M6+M7 commit | pending |
+| M8 Layer | Swift mod scan byte-identical to JS `createModScan` on all 95 mods; `gen_layer_info.py` written; Layer served at `mods/repentogon/` and gate log written by the game. Epiphany stops in `epiphany_menu.lua:35` ("no animation named Overlay"). Not verified | uncommitted | none |
+| M9 Steam | Design only: `docs/mac/steam-bridge.md`; stub dylib at `.scratch/steam-research/` | none | none |
+| M10 Launcher | First piece built (SwiftUI, `native/mac/launcher/`, contracts in `docs/mac/launcher.md`), tested against a fake game only. Not verified | uncommitted | none |
+| M11 App + build.sh | Not started (Launcher `build.sh --app` makes an unbundled wrapper only) | none | none |
+| M12 Publish | Running per milestone; README not yet updated with status/steps | none | none |
+
+### Uncommitted work on mac-native at the stop
+
+- **Launcher (M10, M6/M7/M8 logic):** `native/mac/launcher/**`, `docs/mac/launcher.md`.
+- **Integration (game side):**
+  - New files: `native/mac/host/mac_launch.{c,h}`, `mac_gate.c`, `scripts/mac/stage_layer.py`.
+  - Modified: `mac_fs.c`, `mac_gl.c`, `mac_main.c`.
+  - `ISAAC_NATIVE`-guarded edits in `scripts/recomp/host/src/`: `host_boot.c`, `host_lua.c`, `host_rgon.c`, `host_shims_fs.c`, `host_shims_gaps.c`.
+  - The last build compiled clean; headless M1 re-checked after the last edits (3,016 frames, exit 0).
+- **Docs:** `docs/mac/layer-gaps.md`, `docs/mac/steam-bridge.md`.
+- **Not ours:** `package-lock.json` is an unrelated npm change (added `"license"` line). Leave it out of commits.
+
+### Decisions taken during orchestration
+
+- **Mac support folder name:** `~/Library/Application Support/Repentance+ Mac/`.
+- **Save import and Workshop sync live in the Launcher:** they are Swift code run before every game start. The Launcher is the bundle's main program and always runs first, even with "Skip the Launcher".
+- **The mod scan also lives in the Launcher:** it is a Swift port of `createModScan`, because Node can't ship to end users and a Host-side C scan couldn't show results in the Launcher.
+- **Machine-specific source folders stay out of the repo:** the Workshop fallback and save search come from env vars or `<support>/sync-config.json`. `build.sh --game <dir>` is to write that config at M11.
+- **Workshop count is 95, not 96:** Steam's subscription list also says 95.
+- **No Repentance+ cloud save exists on this Mac:** userdata has no 250900 folder. The import imports only `persistentgamedata1..3.dat`.
+- **The real `libsteam_api.dylib` comes from the local Steam client:** a universal binary (arm64 slice) is inside the client bundle. It is copied in at build time and never committed.
+- **`scripts/mac/apply.sh` exists only in the public repo.** It should also be added to mac-native's `scripts/mac/`.
+
+### Next steps, in order
+
+1. Finish the Integration items listed in its section below. Then run a Verifier for M6 and M7 (the game side).
+2. **M5:** scaling modes and fullscreen.
+3. **M8:**
+   - Fix Epiphany's menu error (missing "Overlay" animation).
+   - Add a mod-less save hook for the Layer.
+   - Re-measure gaps with a real `implemented.txt` (lab_names run), then grow the Layer for each gap, Epiphany first.
+4. **M9:** implement `mac_steam.c` per `docs/mac/steam-bridge.md`. Start with the trace pass for the ISteamUserStats vtable offsets.
+5. **M10:** the Launcher against the real game. Then **M11:** bundle and `build.sh`. Then **M12:** README.
+
 ## M3 Input: done (pending Verifier)
 
 Status: keyboard, mouse and gamepads work live (SDL events) and scripted. A scripted
@@ -211,3 +266,43 @@ positional audio or panning, because the backend hooks receive no positions
 (the Browser Build's `host_audio_web.c` has the same interface and does not pan
 either: no panner or position code in it); the atexit `[mac][audio] final`
 line never prints because the RUN_FRAMES watchdog and exit path use `_exit`.
+
+## Integration (M6/M7/M8 game side): implemented and tested headless and windowed (pending Verifier)
+
+Nothing committed. Last build compiled clean (`python scripts/mac/build_native.py --jobs 3`).
+
+### Implemented
+- `native/mac/host/mac_launch.{c,h}` (new): `--launch-settings <json>` / env `REPENTANCE_MAC_LAUNCH_SETTINGS`, tiny JSON reader, flags `--vanilla --debug-console --lua-debug --segs --bundle --layer-dir --save-dir --mods-dir --modscan --gate-log --stage`. Precedence flag > JSON > env > default. Defaults for segs/bundle/layer: `<exe dir>/../Resources/{isaac.segs.bin,game-bundle,layer}` (M11 bundle layout). Optional JSON keys `segs_path`, `bundle_dir`, `layer_dir`. Positional dev form still works. Guest argv gets `--luadebug` for lua_debug (`mac_guest_argc/argv`, used by `host_boot.c` and `host_shims_gaps.c`, ISAAC_NATIVE-guarded). Debug console: `mac_launch_frame()` (called from `isaac_mac_present` in `mac_gl.c`) sets Options.EnableDebugConsole (Manager+0x2a398) once, both directions (the launch settings are authoritative; they override options.ini).
+- `native/mac/host/mac_main.c`: uses the above, sets save/mods/layer/modscan/gate paths, Vanilla Launch sets `ISAAC_RGON=0` and writes gate log `layer_on:false`, calls `mac_seed_mods()`. Header usage comment updated.
+- `native/mac/host/mac_fs.c`: mods seeded lazily under both roots (`mods/` and `documents/my games/binding of isaac repentance+/mods/`); lazy reads map to `mods_dir`; only `disable.it` is ever written/deleted in mods_dir (case-resolved folder); saves written atomically (tmp+fsync+rename); Layer served by `isaac_mac_layer_peek` (hooked into `isaac_fs_peek` in `host_shims_fs.c`) at `mods/repentogon/*`, never in the file table so not listed as a mod; `modscan.lua` served from `modscan_path`; `isaac_mac_lua_path` maps `//mods/<dir>/x.lua` for `luaL_loadfilex` (`host_lua.c`).
+- Off-mod seeding rule: a mod with `disable.it` is seeded as `metadata.xml` + `disable.it` only, and only in the `mods/` root. The game deletes `disable.it` in the Documents-root copy when it scans it, so that root gets enabled mods only. An off mod therefore has no `main.lua` and no `content/` visible to the game at all.
+- `native/mac/host/mac_gate.c` (new): `isaac_mac_gate_log` writes `REPENTOGON.Extras.Gate.mods` to `gate_log_path` (launcher.md format, plus `scanned`), called from `l_gate` in `host_rgon.c`; `isaac_mac_gate_log_off` for vanilla/no layer.
+- `scripts/recomp/host/src/host_shims_fs.c`: native fs key array 160 -> 256 (Workshop `<dir>_<id>` paths overflowed; 919 files were dropped).
+- `scripts/mac/stage_layer.py` (new): stages the Layer files (no main.lua/metadata.xml) into a folder. (Note: it takes the output folder as its only argument and treats any other first argument, even `--help`, as the folder name.)
+
+### Tested earlier (scratch under `.scratch/integ/`, shots in `.scratch/integ/shots/`)
+- Scratch support dir with Epiphany, EID, Enhanced Boss Bars, Instant Fires: headless and windowed runs exit 0, guard intact; the 4 mods load, the Layer loads at the first mod chunk before mod code, gate lines and `layer-gate.json` written; the in-game MODS menu lists the 4 mods and not the Layer.
+- Saves: save_dir tree is `documents/my games/binding of isaac repentance+/`; run start wrote `gamestate1.dat` and `persistentgamedata1.dat` at once; second launch restored 9 files, contents/mtimes unchanged.
+
+### Tested at the finish (scratch under `.scratch/fin/`, logs and shots there)
+Scratch support dir `.scratch/fin/sup` with three test mods (`probe_1` on, `offmod_2` and `togglemod_3` off), Layer staged by `stage_layer.py` to `.scratch/fin/layer`, `modscan.lua` made by the Launcher's PreLaunch (`.scratch/integ/prelaunch.bin`) with the Workshop and Steam folders pointed at an empty folder.
+1. M1 headless, 3000 frames: PASS. Positional dev form (`.scratch/fin/m1-dev.log`) and flag form (`m1-flags.log`): `[mac] reached 3016 frames (wanted 3000); guard intact`, exit 0, no load errors (only the known `_controlfp_s` note and the Browser Build's known option/XInput/EOS lines).
+2. Vanilla Launch (`--vanilla`, `vanilla.log`): no `[isaac][rgon]` lines (the Layer never loads) and no gate decisions, only the two `[mac]` Vanilla Launch lines; `layer-gate.json` = `{"layer_on": false, "reason": "vanilla launch", "mods": {}}` (`gate-vanilla.json`), the probe mod still loads and runs (`REPENTOGON=false`). PASS.
+3. `--lua-debug`: PASS. `type(io)` is `table` (also `os`, `debug`) with it (`luadebug.log`), `nil` without (`normal.log`, `vanilla.log`). Side finding: without `--lua-debug`, `os` is a table when the Layer is on and `nil` under Vanilla Launch, so the Layer provides an `os` table. Not investigated.
+4. `--debug-console`: PASS. Log: `debug console on by the launch settings (was off in options.ini)`. Windowed scripted run (`dc.log`): accept the welcome popup, start a run, press grave 120 frames after the start room: `dc-console.png` shows the "Repentance+ Console" prompt and command list over Basement I. Control run without the flag (`dc-off.log`): same key presses, no console (`dc-control-off.png`). The console does not open on the title screen, only in a run. Screenshots come from `ISAAC_MAC_SHOT`.
+5. Off mods: PASS.
+   - Greyed: the in-game MODS menu (`mods-off.png`, Tab on the main menu) shows `OffMod` and `ToggleMod` greyed and `Probe` black.
+   - No Lua: headless log has `PROBE ran` only; neither `OFFMOD RAN` nor `TOGGLEMOD RAN` (`normal.log`). `[mac] mods: 1 folder(s) on, 2 off (disable.it); 2 file(s)` shows only the on mod's two files were seeded.
+   - Toggle on in-game (`mods-toggled.png`: ToggleMod turns black): log `mods: removed .../togglemod_3/disable.it (mod on)`, the file is gone on disk, `offmod_2/disable.it` untouched. Next launch (`relaunch.log`): `2 folder(s) on, 1 off`, `TOGGLEMOD RAN` logged, `OFFMOD RAN` not.
+   - `content/` of an off mod: it is never served (by the seeding rule above), so its `items.xml` cannot take effect. The game still prints `LOADED MOD //mods/offmod_2/content/` for it, so that line only says the game listed the folder, not that its content is loaded. What the game itself would do with a served `content/` next to `disable.it` was not tested (the seeding rule makes it moot).
+
+### Half-done / open
+- Epiphany main.lua stops at `epiphany_menu.lua:35` ("no animation named Overlay", `no member named 'A'`), and a `ISAACSAVEMANAGER_POST_DATA_LOAD` error follows: Layer/engine gap for M8, not investigated.
+- The Layer's own mod shell (main.lua, `RegisterMod("REPENTOGON (browser)")`) is not run, so the Layer's save file (mod achievements, innate items, api_data.lua) has no mod to hang on: needs a Layer change.
+- Gate ids come from folder names; the Launcher's sanitised ids vs chunk-name folder names could differ for odd names.
+- Windowed runs can be killed with rc 137 on the 8 GB machine; a rerun was fine (none happened in the final runs).
+- Tests run with the scratch mods only; Epiphany and the 95 Workshop mods were not re-run after the last edits.
+
+### Next steps
+1. Verifier re-runs the checks above (and the save and Workshop tests of M6/M7 against the real game).
+2. Give the Layer a mod-less save hook; fix Epiphany's menu error (M8).

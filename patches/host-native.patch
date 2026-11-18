@@ -75,7 +75,7 @@ index 3452161..be87375 100644
  /* ---- AL constants (the subset the game uses) ---------------------------- */
  #define AL_NONE               0x0000u
 diff --git a/scripts/recomp/host/src/host_boot.c b/scripts/recomp/host/src/host_boot.c
-index 03f7af3..ca94beb 100644
+index 03f7af3..5389fc9 100644
 --- a/scripts/recomp/host/src/host_boot.c
 +++ b/scripts/recomp/host/src/host_boot.c
 @@ -38,7 +38,9 @@
@@ -107,6 +107,30 @@ index 03f7af3..ca94beb 100644
  
      /* Every fixed guest-side region must actually be on the guest side. */
      struct { const char *name; uint32_t lo, hi; } gr[] = {
+@@ -339,6 +346,23 @@ int isaac_boot_call_main(int argc, char **argv) {
+                              * a --luadebug style scan; a null argv is safe and
+                              * the shim for __p___argv reports if it is read. */
+     (void)argv;
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    {   /* Mac Build: the Guest's argv is what the launch settings say (--luadebug); native/mac/host/mac_launch.c */
++        extern int mac_guest_argc(void);
++        extern const char *mac_guest_argv(int);
++        int n = mac_guest_argc();
++        if (n > 1) {
++            uint32_t arr = isaac_guest_alloc((uint32_t)(4 * (n + 1)));
++            for (int i = 0; arr && i < n; ++i) {
++                const char *a = mac_guest_argv(i);
++                uint32_t s = isaac_guest_alloc((uint32_t)strlen(a) + 1);
++                memcpy(isaac_g(s), a, strlen(a) + 1);
++                isaac_w32(arr + 4u * (uint32_t)i, s);
++            }
++            if (arr) { isaac_w32(arr + 4u * (uint32_t)n, 0); argv_va = arr; argc = n; }
++        }
++    }
++#endif
+     memset(&cpu, 0, sizeof cpu);
+     cpu.FS_OFFSET = ISAAC_TEB_VA;
+     cpu.ESP = ISAAC_STACK_TOP_VA - 0x4000;
 diff --git a/scripts/recomp/host/src/host_gl_clientarrays.c b/scripts/recomp/host/src/host_gl_clientarrays.c
 index dedfd58..dbe738f 100644
 --- a/scripts/recomp/host/src/host_gl_clientarrays.c
@@ -262,7 +286,7 @@ index 98869fc..2dbd808 100644
 -#endif /* ISAAC_WEB */
 +#endif /* ISAAC_WEB || ISAAC_NATIVE */
 diff --git a/scripts/recomp/host/src/host_lua.c b/scripts/recomp/host/src/host_lua.c
-index d845225..b75b538 100644
+index d845225..9a4796a 100644
 --- a/scripts/recomp/host/src/host_lua.c
 +++ b/scripts/recomp/host/src/host_lua.c
 @@ -64,7 +64,13 @@ _Static_assert(sizeof(lua_Integer) == 8, "lua_Integer must be long long");
@@ -371,6 +395,43 @@ index d845225..b75b538 100644
  
  /* auxiliary */
  LUA_SHIM(luaL_checkinteger) { ret_int(cpu, luaL_checkinteger(L_ARG(0), I_ARG(1))); }
+@@ -1820,8 +1895,15 @@ LUA_SHIM(luaL_loadfilex) {
+      * sites; the buffer loader below has one, the console's). The layer boots
+      * before the first of them that is a mod's. */
+     isaac_rgon_before_chunk(L_ARG(0), S_ARG(1));
+-    char real[512];
+-    cpu->EAX = (uint32_t)luaL_loadfilex(L_ARG(0), lua_file_any_case(S_ARG(1), real, sizeof real), S_ARG(2));
++    char real[1024];
++    const char *path = S_ARG(1);
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    /* Mac Build: "//mods/<dir>/x.lua" is a file of the mods folder (the Browser Build
++     * mirrors a mod's Lua into MEMFS for this loader; native/mac/host/mac_fs.c) */
++    char mapped[1024];
++    { extern int isaac_mac_lua_path(const char *, char *, size_t); if (path && isaac_mac_lua_path(path, mapped, sizeof mapped)) path = mapped; }
++#endif
++    cpu->EAX = (uint32_t)luaL_loadfilex(L_ARG(0), lua_file_any_case(path, real, sizeof real), S_ARG(2));
+ }
+ LUA_SHIM(luaL_loadbufferx) {
+     /* round 102: the REPENTOGON-compatible layer, if its mod is installed and
+diff --git a/scripts/recomp/host/src/host_rgon.c b/scripts/recomp/host/src/host_rgon.c
+index 25bd680..11cb13e 100644
+--- a/scripts/recomp/host/src/host_rgon.c
++++ b/scripts/recomp/host/src/host_rgon.c
+@@ -383,8 +383,14 @@ static int gate_index(lua_State *L) {
+     lua_pushnil(L);
+     return 1;
+ }
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++void isaac_mac_gate_log(lua_State *L, int r);   /* native/mac/host/mac_gate.c: logs/layer-gate.json */
++#endif
+ static int l_gate(lua_State *L) {
+     lua_settop(L, 2);
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    isaac_mac_gate_log(L, 1);
++#endif
+     lua_pushglobaltable(L);                                   /* 3 */
+     lua_pushnil(L); lua_setfield(L, 3, "REPENTOGON");         /* the lookup must miss */
+     if (!lua_getmetatable(L, 3)) { lua_newtable(L); lua_pushvalue(L, -1); lua_setmetatable(L, 3); }   /* 4 */
 diff --git a/scripts/recomp/host/src/host_shims_crt.c b/scripts/recomp/host/src/host_shims_crt.c
 index ee93d31..a10c303 100644
 --- a/scripts/recomp/host/src/host_shims_crt.c
@@ -430,10 +491,22 @@ index ee93d31..a10c303 100644
              isaac_log("[isaac][crt] __stdio_common_vsscanf: format with %u "
                        "conversions exceeds the 8-arg dispatch "
 diff --git a/scripts/recomp/host/src/host_shims_fs.c b/scripts/recomp/host/src/host_shims_fs.c
-index 818d851..b2a5afa 100644
+index 818d851..a2277a2 100644
 --- a/scripts/recomp/host/src/host_shims_fs.c
 +++ b/scripts/recomp/host/src/host_shims_fs.c
-@@ -253,6 +253,9 @@ EM_JS(int, isaac_fs_lazy_read_js, (const char *src, uint8_t *dst, uint32_t len),
+@@ -54,7 +54,11 @@
+ #define FIND_TOKEN(x) ((x) + 0x200u)
+ 
+ typedef struct {
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    char     key[256];        /* Mac Build: Workshop folders are named <dir>_<id>; as long as fs_key's own limit */
++#else
+     char     key[160];
++#endif
+     uint8_t  is_dir;
+     uint8_t  live;            /* slot in use (a file may be empty or lazy: data == NULL) */
+     uint8_t  lazy;            /* bytes not loaded yet: src names the host file */
+@@ -253,6 +257,9 @@ EM_JS(int, isaac_fs_lazy_read_js, (const char *src, uint8_t *dst, uint32_t len),
      for (var i = src; HEAPU8[i]; i++) s += String.fromCharCode(HEAPU8[i]);
      return Module.isaacLazyRead(s, dst, len) ? 1 : 0;
  });
@@ -443,7 +516,7 @@ index 818d851..b2a5afa 100644
  #else
  static int isaac_fs_lazy_read_js(const char *src, uint8_t *dst, uint32_t len) {
      (void)src; (void)dst; (void)len; return 0;
-@@ -298,6 +301,9 @@ EM_JS(int, isaac_fs_lazy_pread_js, (const char *src, uint8_t *dst, uint32_t off,
+@@ -298,6 +305,9 @@ EM_JS(int, isaac_fs_lazy_pread_js, (const char *src, uint8_t *dst, uint32_t off,
       * bytes in place; a number is the answer at once. */
      return (typeof n === "number" || (n && typeof n.then === "function")) ? n : -1;
  });
@@ -453,7 +526,7 @@ index 818d851..b2a5afa 100644
  #else
  static int isaac_fs_lazy_pread_avail(void) { return 0; }
  static int isaac_fs_lazy_pread_js(const char *src, uint8_t *dst, uint32_t off, uint32_t len) {
-@@ -353,6 +359,9 @@ EM_JS(int, isaac_fs_unlink_js, (const char *key, const char *src), {
+@@ -353,6 +363,9 @@ EM_JS(int, isaac_fs_unlink_js, (const char *key, const char *src), {
      for (var j = src; HEAPU8[j]; j++) s += String.fromCharCode(HEAPU8[j]);
      return Module.isaacUnlink(k, s) ? 1 : 0;
  });
@@ -463,6 +536,51 @@ index 818d851..b2a5afa 100644
  #else
  static int isaac_fs_persist_js(const char *key, const char *src, const uint8_t *data, uint32_t len) {
      (void)key; (void)src; (void)data; (void)len; return 0;
+@@ -790,6 +803,10 @@ const uint8_t *isaac_fs_peek(const char *path, uint32_t *len) {
+     char key[256];
+     if (!path || !fs_key(path, key, sizeof key)) return NULL;
+     fs_entry *e = fs_find(key);
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    /* Mac Build: the Layer is served from the app (native/mac/host/mac_fs.c), never listed as a mod */
++    if (!e) { extern const uint8_t *isaac_mac_layer_peek(const char *, uint32_t *); return isaac_mac_layer_peek(key, len); }
++#endif
+     if (!e || e->is_dir || e->windowed) return NULL;
+     if (e->lazy && !fs_materialise(e)) return NULL;
+     if (e->ranged) return NULL;                  /* round 107: read in place, never held whole */
+diff --git a/scripts/recomp/host/src/host_shims_gaps.c b/scripts/recomp/host/src/host_shims_gaps.c
+index 304f892..646348e 100644
+--- a/scripts/recomp/host/src/host_shims_gaps.c
++++ b/scripts/recomp/host/src/host_shims_gaps.c
+@@ -174,6 +174,29 @@ static void ensure_argv(void) {
+     isaac_w32(arr, str); isaac_w32(arr + 4, 0);
+     isaac_w32(arr + 8, 1);              /* argc cell */
+     isaac_w32(arr + 12, arr);           /* argv cell (points at the array) */
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    {   /* Mac Build: the launch's extra arguments (--luadebug), as host_boot.c gives main() */
++        extern int mac_guest_argc(void);
++        extern const char *mac_guest_argv(int);
++        int n = mac_guest_argc();
++        if (n > 1) {
++            uint32_t big = isaac_guest_alloc((uint32_t)(4 * (n + 1) + 8));
++            if (big) {
++                for (int i = 0; i < n; ++i) {
++                    const char *a = mac_guest_argv(i);
++                    uint32_t s = isaac_guest_alloc((uint32_t)strlen(a) + 1);
++                    memcpy(isaac_g(s), a, strlen(a) + 1);
++                    isaac_w32(big + 4u * (uint32_t)i, s);
++                }
++                uint32_t cells = big + 4u * (uint32_t)(n + 1);
++                isaac_w32(big + 4u * (uint32_t)n, 0);
++                isaac_w32(cells, (uint32_t)n);       /* the argc cell */
++                isaac_w32(cells + 4, big);           /* the argv cell */
++                arr = cells - 8;                     /* the shims answer arr + 8 and arr + 12 */
++            }
++        }
++    }
++#endif
+     g_argv_va = arr;
+ }
+ void imp_api_ms_win_crt_runtime____p___argc(CpuState *restrict cpu) { ensure_argv(); cpu->EAX = g_argv_va ? g_argv_va + 8 : 0; }
 diff --git a/scripts/recomp/host/src/host_shims_gl.c b/scripts/recomp/host/src/host_shims_gl.c
 index e17068a..7bd4a45 100644
 --- a/scripts/recomp/host/src/host_shims_gl.c

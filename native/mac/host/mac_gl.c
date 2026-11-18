@@ -280,6 +280,7 @@ void isaac_mac_present(void) {
         _exit(0);
     }
 
+    { extern void mac_launch_frame(uint32_t); mac_launch_frame(frame); }   /* debug console option (mac_launch.c) */
     { extern void isaac_mac_audio_tick(void); isaac_mac_audio_tick(); }
     pace();
     SDL_GL_SwapWindow(g_win);

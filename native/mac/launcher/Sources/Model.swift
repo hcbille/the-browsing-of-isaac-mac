@@ -1,0 +1,182 @@
+import Foundation
+import AppKit
+
+// MARK: - Paths (contracts in docs/mac/launcher.md)
+
+enum Paths {
+    static let folderName = "Repentance+ Mac"
+    static let env = ProcessInfo.processInfo.environment
+
+    static var supportDir: URL {
+        if let p = env["REPENTANCE_MAC_SUPPORT_DIR"], !p.isEmpty { return URL(fileURLWithPath: p) }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/\(folderName)")
+    }
+    static var modsDir: URL {
+        if let p = env["REPENTANCE_MAC_MODS_DIR"], !p.isEmpty { return URL(fileURLWithPath: p) }
+        return supportDir.appendingPathComponent("mods")
+    }
+    static var launcherSettings: URL { supportDir.appendingPathComponent("launcher-settings.json") }
+    static var launchSettings: URL { supportDir.appendingPathComponent("launch-settings.json") }
+    static var gateLog: URL {
+        if let p = env["REPENTANCE_MAC_GATE_LOG"], !p.isEmpty { return URL(fileURLWithPath: p) }
+        return supportDir.appendingPathComponent("logs/layer-gate.json")
+    }
+    static var modSync: URL { supportDir.appendingPathComponent("mod-sync.json") }
+    static var gameLog: URL { supportDir.appendingPathComponent("logs/game.log") }
+    static var layerInfo: URL {
+        if let p = env["REPENTANCE_MAC_LAYER_INFO"], !p.isEmpty { return URL(fileURLWithPath: p) }
+        return Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/layer-info.json")
+    }
+    static var gameExecutable: URL {
+        if let p = env["REPENTANCE_MAC_GAME_EXE"], !p.isEmpty { return URL(fileURLWithPath: p) }
+        return Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/isaac-mac")
+    }
+}
+
+// MARK: - Settings
+
+struct LauncherSettings: Codable, Equatable {
+    var skipLauncher = false
+    var vanillaLaunch = false
+    var debugConsole = false
+    var logWindow = false
+    var luaDebug = false
+
+    enum CodingKeys: String, CodingKey {
+        case skipLauncher = "skip_launcher", vanillaLaunch = "vanilla_launch"
+        case debugConsole = "debug_console", logWindow = "log_window", luaDebug = "lua_debug"
+    }
+    init() {}
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        skipLauncher = try c.decodeIfPresent(Bool.self, forKey: .skipLauncher) ?? false
+        vanillaLaunch = try c.decodeIfPresent(Bool.self, forKey: .vanillaLaunch) ?? false
+        debugConsole = try c.decodeIfPresent(Bool.self, forKey: .debugConsole) ?? false
+        logWindow = try c.decodeIfPresent(Bool.self, forKey: .logWindow) ?? false
+        luaDebug = try c.decodeIfPresent(Bool.self, forKey: .luaDebug) ?? false
+    }
+
+    static func load() -> LauncherSettings {
+        guard let d = try? Data(contentsOf: Paths.launcherSettings),
+              let s = try? JSONDecoder().decode(LauncherSettings.self, from: d) else { return LauncherSettings() }
+        return s
+    }
+    func save() {
+        try? FileManager.default.createDirectory(at: Paths.supportDir, withIntermediateDirectories: true)
+        let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let d = try? e.encode(self) { try? d.write(to: Paths.launcherSettings, options: .atomic) }
+    }
+}
+
+// MARK: - Layer info and gate log
+
+struct LayerInfo: Decodable {
+    var version: Int?
+    var layerVersion: String?
+    var gameVersion: String?
+    var implementedNames: Int?
+    var unsupportedNames: Int?
+    var knownNames: Int?
+    var implementedCallbacks: Int?
+    var knownCallbacks: Int?
+    var builtAt: String?
+    enum CodingKeys: String, CodingKey {
+        case version, builtAt = "built_at"
+        case layerVersion = "layer_version", gameVersion = "game_version"
+        case implementedNames = "implemented_names", unsupportedNames = "unsupported_names"
+        case knownNames = "known_names", implementedCallbacks = "implemented_callbacks"
+        case knownCallbacks = "known_callbacks"
+    }
+    static func load() -> LayerInfo? {
+        guard let d = try? Data(contentsOf: Paths.layerInfo) else { return nil }
+        return try? JSONDecoder().decode(LayerInfo.self, from: d)
+    }
+    var coverageText: String? {
+        guard let i = implementedNames, let k = knownNames, k > 0 else { return nil }
+        let pct = Int((Double(i) / Double(k) * 100).rounded())
+        var s = "\(i) of \(k) REPENTOGON names (\(pct)%)"
+        if let ci = implementedCallbacks, let ck = knownCallbacks, ck > 0 { s += ", \(ci) of \(ck) callbacks" }
+        return s
+    }
+}
+
+struct GateRow: Decodable {
+    var shown: Bool
+    var why: String?
+    var used: Int?
+    var missing: [String]?
+}
+struct GateLog: Decodable {
+    var version: Int?
+    var layerOn: Bool?
+    var writtenAt: String?
+    var mods: [String: GateRow]
+    enum CodingKeys: String, CodingKey { case version, mods, layerOn = "layer_on", writtenAt = "written_at" }
+    static func load() -> GateLog? {
+        guard let d = try? Data(contentsOf: Paths.gateLog) else { return nil }
+        return try? JSONDecoder().decode(GateLog.self, from: d)
+    }
+}
+struct ModSync: Decodable {
+    var unsubscribed: [String]?
+    static func load() -> Set<String> {
+        guard let d = try? Data(contentsOf: Paths.modSync),
+              let s = try? JSONDecoder().decode(ModSync.self, from: d) else { return [] }
+        return Set((s.unsubscribed ?? []).map { $0.lowercased() })
+    }
+}
+
+// MARK: - Mods
+
+struct Mod: Identifiable {
+    var id: String            // folder name
+    var name: String
+    var version: String
+    var enabled: Bool
+    var order: Int            // 1-based position in the game's load order
+    var unsubscribed: Bool
+    var gate: GateRow?
+    var isEpiphany: Bool { (id + " " + name).lowercased().contains("epiphany") }
+    var folder: URL { Paths.modsDir.appendingPathComponent(id) }
+}
+
+enum ModStore {
+    private static func tag(_ xml: String, _ name: String) -> String? {
+        guard let r = xml.range(of: "<\(name)>[^<]*</\(name)>", options: .regularExpression) else { return nil }
+        let s = String(xml[r]).dropFirst(name.count + 2).dropLast(name.count + 3)
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+
+    /// The game lists mod folders sorted by folder name (see docs/mac/launcher.md); case-insensitive.
+    static func load() -> [Mod] {
+        let fm = FileManager.default
+        let items = (try? fm.contentsOfDirectory(at: Paths.modsDir, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+        let dirs = items.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            && !$0.lastPathComponent.hasPrefix(".") }
+        let names = dirs.map { $0.lastPathComponent }
+            .sorted { $0.compare($1, options: [.caseInsensitive, .numeric]) == .orderedAscending }
+        let gate = GateLog.load()
+        let unsub = ModSync.load()
+        return names.enumerated().map { i, folder in
+            let dir = Paths.modsDir.appendingPathComponent(folder)
+            let xml = (try? String(contentsOf: dir.appendingPathComponent("metadata.xml"), encoding: .utf8)) ?? ""
+            return Mod(id: folder, name: tag(xml, "name") ?? folder, version: tag(xml, "version") ?? "",
+                       enabled: !fm.fileExists(atPath: dir.appendingPathComponent("disable.it").path),
+                       order: i + 1, unsubscribed: unsub.contains(folder.lowercased()),
+                       gate: gate?.mods[folder.lowercased()])
+        }
+    }
+
+    static func setEnabled(_ mod: Mod, _ on: Bool) {
+        let mark = mod.folder.appendingPathComponent("disable.it")
+        if on { try? FileManager.default.removeItem(at: mark) }
+        else { FileManager.default.createFile(atPath: mark.path, contents: Data()) }
+    }
+
+    /// Moves the folder to the Trash. Never hard-deletes.
+    static func moveToTrash(_ mod: Mod) throws {
+        try FileManager.default.trashItem(at: mod.folder, resultingItemURL: nil)
+    }
+}
