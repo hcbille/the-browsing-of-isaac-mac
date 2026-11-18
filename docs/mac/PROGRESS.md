@@ -1,5 +1,76 @@
 # Mac Build progress
 
+## M3 Input: done (pending Verifier)
+
+Status: keyboard, mouse and gamepads work live (SDL events) and scripted. A scripted
+run starts a game, walks, fires and pauses by keyboard, and the same through SDL's
+virtual gamepad into the XInput shim. Rumble reaches the pad when the game's RUMBLE
+option is on and does not when it is off.
+
+Files: `native/mac/host/mac_input.c` (new), `mac_script.c` (extended), `mac_gl.c`
+(forwards SDL events). Host, guarded by `ISAAC_NATIVE`: `host_shims_xinput.c` (native
+arm of the pad state/rumble hooks, Browser Build unchanged), `host_shims_win.c`
+(`isaac_input_mouse_wheel`, WM_MOUSEWHEEL 0x20A; poll event type 4).
+
+Keyboard: SDL scancode to the Windows VK and set-1 scancode (+ extended bit) the Browser
+Build's KEYS table uses (letters, digits, punctuation, F1-F12, arrows, Enter, Esc, Tab,
+Backspace, Space, modifiers, Insert/Delete/Home/End/PgUp/PgDn, keypad). Key repeat is
+dropped (as in the Browser Build); Cmd+key is not forwarded (M5's shortcuts); focus loss
+releases every held key and button (as the Browser Build does on blur). Modifiers send the
+generic VK with the side in the scancode/extended bit.
+Mouse: motion is coalesced to one move per frame, left and right buttons only (the Browser
+Build treats middle as left; here it is ignored), wheel as 120 per notch. Window to game
+pixels goes through `isaac_mac_window_to_game()` in `mac_input.c` (plain stretch of the
+window to 960x540 today; M5 replaces the body).
+Pads (SDL3 gamepad API, up to 4): slot = connection order and stays put when another pad
+leaves; a free slot answers XInputGetState with ERROR_DEVICE_NOT_CONNECTED. Mapping: A/B/X/Y =
+south/east/west/north, bumpers, Back, Start, Guide (0x0400, which the game reads), stick clicks,
+dpad; triggers 0..255; sticks int16 with up positive (SDL's Y is inverted); a packet number that
+increments on change. XInputSetState: left motor = SDL low-frequency, right = high, 1000 ms per
+call (the game sends 0/0 to stop). Confirmed: with `RumbleEnabled=1` a bomb explosion logs
+`rumble lo=65535 hi=65535` then `lo=0 hi=0`; with `RumbleEnabled=0` the game makes no call.
+SDL is polled once per frame (hot-plug needs no event handling). Pads are off in `--headless`
+unless a script uses one (or `ISAAC_MAC_PADS=1`); `ISAAC_MAC_PADS=0` turns them off everywhere.
+
+Script grammar additions (`mac_script.c` header has the full list):
+`F:mouse:X:Y`, `F:mouse:left|right[:hold=N]`, `F:mouse:wheel=D`, `F:pad[K]:BTN[:hold=N]`,
+`F:pad[K]:AXIS=V[:hold=N]` (axes lx ly rx ry lt rt; SDL sense, ly negative = up),
+`F:pad[K]:connect|disconnect`, `until=TEXT:pad-BTN`. `ISAAC_MAC_SCRIPT_VIA_SDL=1` pushes the
+keyboard and mouse tokens as SDL events so the live path (scancode table, coordinates) is the
+one under test. Pad tokens attach SDL's virtual gamepad (a real SDL joystick with the standard
+mapping), so SDL gamepad -> XInput shim -> game is exercised. `ISAAC_MAC_PAD_LOG=0` mutes the
+`[mac][pad] slot N state` lines.
+
+Not done: pause on focus loss (upstream has none). A physical controller and live OS keyboard were
+not driven in this session (no hardware injection); the live handlers were driven by SDL events.
+
+Evidence (`.scratch/m3-shots/`, logs `.scratch/m3-*.log`): see the commands in the M3 hand-off.
+
+## M6 Saves and M7 Mods: logic done in the Launcher (pending Verifier; game side not run)
+
+Decisions: Save import and Workshop sync live in the Launcher as Swift code
+(`native/mac/launcher/Sources/SaveImport.swift`, `WorkshopSync.swift`, `SyncSupport.swift`).
+The Launcher is the bundle's main program and always runs first (also with "Skip the
+Launcher", which only skips the window), so both run before every game start.
+Contracts: `docs/mac/launcher.md` ("Save import", "Workshop sync").
+
+- Saves: the Mac save folder is `<support>/saves`, passed to the game as its save dir
+  (`launch-settings.json` key `save_dir`). The game keys its files below it as
+  `documents/my games/binding of isaac repentance+/persistentgamedata{1,2,3}.dat`
+  (observed in `.scratch/save-m1`; the exe's format strings are `%spersistentgamedata%d.dat`,
+  `%sgamestate%d.dat`, `%srep+rerunstate%d.dat`, `%s/options.ini`). Only
+  `persistentgamedata1..3.dat` are imported (not a run in progress, not options.ini).
+- No Steam Cloud save for Repentance+ exists on this Mac: Steam's `userdata/79444488/` has no
+  `250900/` folder (only `7/remote`, Steam's own), and no `persistentgamedata*.dat` exists under
+  the fallback game folder. So today the import does nothing and the game makes a fresh save.
+- Workshop: Mac Steam's `steamapps/workshop/content/250900` does not exist yet, so the fallback is
+  used. The fallback folder is not in the repo: `REPENTANCE_MAC_WORKSHOP_FALLBACK` or
+  `<support>/sync-config.json` (`workshop_fallback`, `save_search`). It holds 95 mods (matches the
+  95 entries in Steam's `ugc/250900_subscriptions.vdf`; the brief's 96 is off by one).
+- Tests: `native/mac/launcher/Tests/run.sh <scratch dir>`: 35 checks pass (see launcher.md).
+  Real sync into a scratch support dir: 95 mods copied in about 2 s, 402 MB logical, about 12 MB
+  physical (APFS clones); a second run copies 0.
+
 ## M2 Picture: done (pending Verifier)
 
 Status: `isaac-mac` opens a 960x540 SDL3 window, creates an OpenGL ES 3.0 context

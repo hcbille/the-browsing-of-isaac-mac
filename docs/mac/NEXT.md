@@ -23,10 +23,8 @@
 
 ## Next
 
-M1 (headless main) and M2 (window, ANGLE Metal, title and room render) are
-done, see PROGRESS.md.
+M1 (headless main), M2 (window, ANGLE Metal, title and room render) and M3
+(keyboard, mouse, gamepads with rumble) are done, see PROGRESS.md.
 
-3. Input from SDL events into `isaac_input_key` / `_mouse_*`; pads into the
-   XInput shim.
 4. Audio: the OpenAL shim's mixer output to an SDL audio stream.
 5. Steam (achievements), Workshop mod folder, the Launcher, the Layer.

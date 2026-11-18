@@ -44,6 +44,8 @@ void isaac_input_window_close(void);
 int isaac_mac_script_anchor(void);              /* presented frame of the script's trigger, -1 until then */
 int isaac_mac_png_write_rgb(const char *path, const uint8_t *rgb, int w, int h);
 void isaac_mac_gl_install_fakes(void);
+void isaac_mac_input_event(const SDL_Event *ev);
+void isaac_mac_input_end_events(void);
 
 static SDL_Window *g_win;
 static SDL_GLContext g_ctx;
@@ -268,7 +270,9 @@ void isaac_mac_present(void) {
                 isaac_input_window_close();
             }
         }
+        isaac_mac_input_event(&ev);      /* keyboard, mouse, focus (mac_input.c) */
     }
+    isaac_mac_input_end_events();
     /* the game did not leave within a second: end it ourselves */
     if (g_quit_frame >= 0 && (int)frame > g_quit_frame + 90) {
         printf("[mac] the game did not close; exiting\n");

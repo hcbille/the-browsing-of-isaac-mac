@@ -679,7 +679,7 @@ index 7933f49..ce09811 100644
          isaac_w32(ISAAC_TEB_VA + 0x34, 3u);         /* ERROR_PATH_NOT_FOUND */
          return;
 diff --git a/scripts/recomp/host/src/host_shims_win.c b/scripts/recomp/host/src/host_shims_win.c
-index 372e76d..e2f3abb 100644
+index 372e76d..63aab3f 100644
 --- a/scripts/recomp/host/src/host_shims_win.c
 +++ b/scripts/recomp/host/src/host_shims_win.c
 @@ -17,7 +17,9 @@
@@ -701,7 +701,7 @@ index 372e76d..e2f3abb 100644
      { extern void isaac_web_present(void); isaac_web_present(); }
  #endif
      (void)isaac_arg(cpu, 0);
-@@ -1263,12 +1265,27 @@ void isaac_input_mouse_button(int button, int down) {
+@@ -1263,12 +1265,33 @@ void isaac_input_mouse_button(int button, int down) {
      msgq_push(message, g_mouse_mk, ((uint32_t)g_cur_y << 16) | ((uint32_t)g_cur_x & 0xFFFFu));
      ++g_input_events;
  }
@@ -709,6 +709,12 @@ index 372e76d..e2f3abb 100644
 +/* The Mac Build's window close button / Cmd+Q: WM_CLOSE to the game's window,
 + * which GLFW turns into the game's own orderly exit. */
 +void isaac_input_window_close(void) { msgq_push(0x10u, 0u, 0u); }
++/* WM_MOUSEWHEEL: delta in wheel units (120 per notch, positive = away from the user) */
++void isaac_input_mouse_wheel(int32_t delta) {
++    msgq_push(0x20Au, ((uint32_t)delta << 16) | (g_mouse_mk & 0xFFFFu),
++              ((uint32_t)g_cur_y << 16) | ((uint32_t)g_cur_x & 0xFFFFu));
++    ++g_input_events;
++}
 +#endif
  uint32_t isaac_input_queued(void) { return g_msgq_count; }
  uint32_t isaac_input_dropped(void) { return g_input_dropped; }
@@ -729,6 +735,33 @@ index 372e76d..e2f3abb 100644
  static void input_poll_page(void) {
      int32_t ev[4];
      for (unsigned n = 0; n < 64; ++n) {
+@@ -1280,6 +1303,9 @@ static void input_poll_page(void) {
+         case 1: isaac_input_key((uint32_t)ev[1], (uint32_t)ev[2] & 0xFFu, (ev[2] >> 8) & 1, ev[3] != 0); break;
+         case 2: isaac_input_mouse_move(ev[1], ev[2]); break;
+         case 3: isaac_input_mouse_button(ev[1], ev[2] != 0); break;
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++        case 4: isaac_input_mouse_wheel(ev[1]); break;
++#endif
+         default: break;
+         }
+     }
+diff --git a/scripts/recomp/host/src/host_shims_xinput.c b/scripts/recomp/host/src/host_shims_xinput.c
+index 4e85a0e..c515b77 100644
+--- a/scripts/recomp/host/src/host_shims_xinput.c
++++ b/scripts/recomp/host/src/host_shims_xinput.c
+@@ -56,6 +56,12 @@ EM_JS(void, isaac_xinput_rumble_js, (int slot, int left, int right), {
+     var f = Module.isaacPadRumble;
+     if (typeof f === "function") { try { f(slot, left, right); } catch (e) { /* rumble is decoration */ } }
+ });
++#elif defined(ISAAC_NATIVE) && ISAAC_NATIVE
++/* The Mac Build: SDL gamepads, native/mac/host/mac_input.c */
++int isaac_mac_pad_state(int slot, uint8_t *out);
++void isaac_mac_pad_rumble(int slot, int left, int right);
++static int isaac_xinput_state_js(int slot, uint8_t *out) { return isaac_mac_pad_state(slot, out); }
++static void isaac_xinput_rumble_js(int slot, int left, int right) { isaac_mac_pad_rumble(slot, left, right); }
+ #else
+ static int isaac_xinput_state_js(int slot, uint8_t *out) { (void)slot; (void)out; return 0; }
+ static void isaac_xinput_rumble_js(int slot, int left, int right) { (void)slot; (void)left; (void)right; }
 diff --git a/scripts/recomp/host/src/host_trap.c b/scripts/recomp/host/src/host_trap.c
 index 425aae4..5880866 100644
 --- a/scripts/recomp/host/src/host_trap.c
