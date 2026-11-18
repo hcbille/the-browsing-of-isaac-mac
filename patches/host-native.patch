@@ -1,0 +1,448 @@
+diff --git a/scripts/recomp/compile_flags.txt b/scripts/recomp/compile_flags.txt
+new file mode 100644
+index 0000000..ec632f0
+--- /dev/null
++++ b/scripts/recomp/compile_flags.txt
+@@ -0,0 +1,8 @@
++-std=gnu11
++-DISAAC_NATIVE=1
++-DRECOMP_MEM_IDENTITY=0
++-Ihost/include
++-Ihost/generated
++-Ilift
++-I../../output/recomp/lift/gu
++-I../../tools/lua-5.3.3/src
+diff --git a/scripts/recomp/host/include/isaac_host.h b/scripts/recomp/host/include/isaac_host.h
+index d07b0a0..377c49e 100644
+--- a/scripts/recomp/host/include/isaac_host.h
++++ b/scripts/recomp/host/include/isaac_host.h
+@@ -164,8 +164,41 @@ static inline int isaac_is_guest_va(uint32_t va) {
+ /* Identity addressing makes these casts, not conversions. They exist so that
+  * intent is greppable and so a future non-identity mode has one place to change. */
+ 
++#if !defined(__EMSCRIPTEN__)
++/* Mac Build: native stand-ins for the two Emscripten helpers the Host uses
++ * outside its ISAAC_WEB paths (a millisecond clock and the core count). */
++#include <time.h>
++#include <unistd.h>
++static inline double emscripten_get_now(void) {
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
++}
++static inline int emscripten_num_logical_cores(void) {
++    long n = sysconf(_SC_NPROCESSORS_ONLN);
++    return n > 0 ? (int)n : 1;
++}
++#endif
++
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++/* Mac Build (docs/adr/0001): the Guest's 4 GiB live in one reservation at
++ * recomp_mem_base, so a Guest address is an offset into it. A Host pointer
++ * handed to the Guest must point inside that reservation; anything else is a
++ * Host allocation that leaked across, and truncating it would be silent
++ * corruption, so it stops the process instead. NULL stays 0. */
++extern uint8_t *recomp_mem_base;
++__attribute__((noreturn)) void isaac_native_bad_va(const void *p);
++static inline void *isaac_g(uint32_t va) { return recomp_mem_base + va; }
++static inline uint32_t isaac_va(const void *p) {
++    if (!p) return 0;
++    uintptr_t d = (uintptr_t)p - (uintptr_t)recomp_mem_base;
++    if (d >> 32) isaac_native_bad_va(p);
++    return (uint32_t)d;
++}
++#else
+ static inline void *isaac_g(uint32_t va) { return (void *)(uintptr_t)va; }
+ static inline uint32_t isaac_va(const void *p) { return (uint32_t)(uintptr_t)p; }
++#endif
+ 
+ static inline uint32_t isaac_r32(uint32_t va) { return *(const uint32_t *)isaac_g(va); }
+ static inline void isaac_w32(uint32_t va, uint32_t v) { *(uint32_t *)isaac_g(va) = v; }
+diff --git a/scripts/recomp/host/src/host_audio.c b/scripts/recomp/host/src/host_audio.c
+index 3452161..be87375 100644
+--- a/scripts/recomp/host/src/host_audio.c
++++ b/scripts/recomp/host/src/host_audio.c
+@@ -53,9 +53,9 @@
+ 
+ #ifdef __EMSCRIPTEN__
+ #include <emscripten.h>
+-#else
++#elif !defined(ISAAC_HOST_H)
+ static double emscripten_get_now(void) { return 0.0; }
+-#endif
++#endif   /* otherwise isaac_host.h supplies the native clock */
+ 
+ /* ---- AL constants (the subset the game uses) ---------------------------- */
+ #define AL_NONE               0x0000u
+diff --git a/scripts/recomp/host/src/host_boot.c b/scripts/recomp/host/src/host_boot.c
+index 03f7af3..ca94beb 100644
+--- a/scripts/recomp/host/src/host_boot.c
++++ b/scripts/recomp/host/src/host_boot.c
+@@ -38,7 +38,9 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdlib.h>
++#ifdef __EMSCRIPTEN__
+ #include <emscripten.h>
++#endif
+ 
+ /* Supplied by the memory-image loader (JS or the wasm data module). */
+ extern int  isaac_image_is_loaded(void);
+@@ -66,6 +68,10 @@ static int verify_image(void) {
+      * table and cascade into 1,429 bogus downstream failures, so this is the
+      * single most valuable assertion in the boot path: if it fires, the
+      * runtime and the guest are sharing a blast radius. */
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    /* Mac Build: Host data is its own mapping, never inside the Guest region,
++     * so there is no shared blast radius to check for. */
++#else
+     static const char probe = 0;
+     uint32_t host_va = isaac_va(&probe);
+     if (host_va < ISAAC_HOST_BASE_VA) {
+@@ -80,6 +86,7 @@ static int verify_image(void) {
+         isaac_log("[isaac][boot] host static data at 0x%08x, %u MiB above the "
+                   "guest limit 0x%08x", host_va,
+                   (host_va - ISAAC_GUEST_LIMIT_VA) >> 20, ISAAC_GUEST_LIMIT_VA);
++#endif
+ 
+     /* Every fixed guest-side region must actually be on the guest side. */
+     struct { const char *name; uint32_t lo, hi; } gr[] = {
+diff --git a/scripts/recomp/host/src/host_lua.c b/scripts/recomp/host/src/host_lua.c
+index d845225..71a5dfd 100644
+--- a/scripts/recomp/host/src/host_lua.c
++++ b/scripts/recomp/host/src/host_lua.c
+@@ -64,7 +64,13 @@ _Static_assert(sizeof(lua_Integer) == 8, "lua_Integer must be long long");
+ _Static_assert(LUAL_NUMSIZES == 136, "LUAL_NUMSIZES must be 0x88 = 136");
+ _Static_assert(LUAI_MAXSTACK == 1000000, "LUAI_MAXSTACK must be 1000000");
+ _Static_assert(LUA_IDSIZE == 60, "LUA_IDSIZE must be 60");
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++/* Mac Build: LUA_EXTRASPACE is sizeof(void *) = 8; the Guest's 4-byte
++ * `L - 4` access stays inside it (docs/mac/base-pointer-survey.md). */
++_Static_assert(LUA_EXTRASPACE >= 4, "LUA_EXTRASPACE must cover the Guest's 4 bytes");
++#else
+ _Static_assert(LUA_EXTRASPACE == 4, "LUA_EXTRASPACE must be 4 (32-bit build)");
++#endif
+ /* LUA_COMPAT_5_2 changes the exported surface. Upstream's own Makefile ships
+  * it ON; this DLL was built with it OFF, so following upstream's default
+  * breaks the ABI. */
+@@ -1737,10 +1743,76 @@ int isaac_lua_gc(lua_State *L, int what, int data) {
+     return r;
+ }
+ LUA_SHIM(lua_gc)      { cpu->EAX = (uint32_t)isaac_lua_gc(L_ARG(0), I_ARG(1), I_ARG(2)); }
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++/* Mac Build: the Guest's lua_Debug is the 32-bit layout (100 bytes); native
++ * Lua's has 8-byte pointers. Copy across in both directions. Offsets:
++ * event 0, name 4, namewhat 8, what 12, source 16, currentline 20,
++ * linedefined 24, lastlinedefined 28, nups 32, nparams 33, isvararg 34,
++ * istailcall 35, short_src 36 (LUA_IDSIZE 60), i_ci 96. */
++enum { GDBG_SIZE = 100, GDBG_SRC = 36, GDBG_CI = 96 };
++
++/* A string Lua returns may be a C literal in the Host image ("=[C]", "main",
++ * ""), outside the Guest region. Give each such literal one Guest copy. */
++static uint32_t guest_str(const char *s) {
++    if (!s) return 0;
++    uintptr_t d = (uintptr_t)s - (uintptr_t)recomp_mem_base;
++    if (!(d >> 32)) return (uint32_t)d;
++    static struct { const char *host; uint32_t va; } cache[64];
++    static unsigned n;
++    for (unsigned i = 0; i < n; ++i) if (cache[i].host == s) return cache[i].va;
++    uint32_t len = (uint32_t)strlen(s) + 1;
++    uint32_t va = isaac_guest_alloc(len);
++    if (!va) return 0;
++    memcpy(isaac_g(va), s, len);
++    if (n < 64) { cache[n].host = s; cache[n].va = va; ++n; }
++    return va;
++}
++static void dbg_from_guest(uint32_t va, lua_Debug *ar) {
++    memset(ar, 0, sizeof *ar);
++    ar->event = (int)isaac_r32(va);
++    uint32_t ci = isaac_r32(va + GDBG_CI);
++    ar->i_ci = ci ? (struct CallInfo *)isaac_g(ci) : NULL;
++}
++static void dbg_to_guest(const lua_Debug *ar, uint32_t va) {
++    isaac_w32(va + 0,  (uint32_t)ar->event);
++    isaac_w32(va + 4,  guest_str(ar->name));
++    isaac_w32(va + 8,  guest_str(ar->namewhat));
++    isaac_w32(va + 12, guest_str(ar->what));
++    isaac_w32(va + 16, guest_str(ar->source));
++    isaac_w32(va + 20, (uint32_t)ar->currentline);
++    isaac_w32(va + 24, (uint32_t)ar->linedefined);
++    isaac_w32(va + 28, (uint32_t)ar->lastlinedefined);
++    uint8_t *b = (uint8_t *)isaac_g(va);
++    b[32] = ar->nups; b[33] = ar->nparams;
++    b[34] = (uint8_t)ar->isvararg; b[35] = (uint8_t)ar->istailcall;
++    memcpy(b + GDBG_SRC, ar->short_src, LUA_IDSIZE);
++    isaac_w32(va + GDBG_CI, isaac_va(ar->i_ci));
++}
++LUA_SHIM(lua_getinfo) {
++    uint32_t va = isaac_arg(cpu, 2);
++    if (!isaac_is_guest_va(va) || !isaac_is_guest_va(va + GDBG_SIZE - 1)) { cpu->EAX = 0; return; }
++    lua_Debug ar;
++    dbg_from_guest(va, &ar);
++    cpu->EAX = (uint32_t)lua_getinfo(L_ARG(0), S_ARG(1), &ar);
++    dbg_to_guest(&ar, va);
++}
++#else
+ LUA_SHIM(lua_getinfo) { cpu->EAX = (uint32_t)lua_getinfo(L_ARG(0), S_ARG(1), (lua_Debug *)P_ARG(2)); }
++#endif
+ /* Register-held only (0x00930b63, the debug-hook path): the call-site census
+  * saw 0 sites, so it had no binding and would have trapped. */
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++LUA_SHIM(lua_getstack) {
++    uint32_t va = isaac_arg(cpu, 2);
++    if (!isaac_is_guest_va(va) || !isaac_is_guest_va(va + GDBG_SIZE - 1)) { cpu->EAX = 0; return; }
++    lua_Debug ar;
++    dbg_from_guest(va, &ar);
++    cpu->EAX = (uint32_t)lua_getstack(L_ARG(0), I_ARG(1), &ar);
++    if (cpu->EAX) isaac_w32(va + GDBG_CI, isaac_va(ar.i_ci));  /* getstack sets only i_ci */
++}
++#else
+ LUA_SHIM(lua_getstack) { cpu->EAX = (uint32_t)lua_getstack(L_ARG(0), I_ARG(1), (lua_Debug *)P_ARG(2)); }
++#endif
+ 
+ /* auxiliary */
+ LUA_SHIM(luaL_checkinteger) { ret_int(cpu, luaL_checkinteger(L_ARG(0), I_ARG(1))); }
+diff --git a/scripts/recomp/host/src/host_shims_crt.c b/scripts/recomp/host/src/host_shims_crt.c
+index ee93d31..a10c303 100644
+--- a/scripts/recomp/host/src/host_shims_crt.c
++++ b/scripts/recomp/host/src/host_shims_crt.c
+@@ -318,32 +318,33 @@ void imp_api_ms_win_crt_stdio____stdio_common_vsscanf(CpuState *restrict cpu) {
+     }
+ 
+ #define ARG(i) (*(uint32_t *)isaac_g(argptr + 4 * (i)))
++#define ARGP(i) isaac_g(ARG(i))   /* a Guest pointer argument, as a Host pointer */
+     /* hfmt is the guest's own format string by contract — this shim IS the
+      * sscanf reimplementation, so a non-literal format is intentional. */
+ #pragma GCC diagnostic push
+ #pragma GCC diagnostic ignored "-Wformat-security"
+     switch (n) {
+         case 0:  cpu->EAX = sscanf(hbuf, hfmt); break;
+-        case 1:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0)); break;
+-        case 2:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0), (void *)ARG(1)); break;
+-        case 3:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0), (void *)ARG(1),
+-                                   (void *)ARG(2)); break;
+-        case 4:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0), (void *)ARG(1),
+-                                   (void *)ARG(2), (void *)ARG(3)); break;
+-        case 5:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0), (void *)ARG(1),
+-                                   (void *)ARG(2), (void *)ARG(3),
+-                                   (void *)ARG(4)); break;
+-        case 6:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0), (void *)ARG(1),
+-                                   (void *)ARG(2), (void *)ARG(3),
+-                                   (void *)ARG(4), (void *)ARG(5)); break;
+-        case 7:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0), (void *)ARG(1),
+-                                   (void *)ARG(2), (void *)ARG(3),
+-                                   (void *)ARG(4), (void *)ARG(5),
+-                                   (void *)ARG(6)); break;
+-        case 8:  cpu->EAX = sscanf(hbuf, hfmt, (void *)ARG(0), (void *)ARG(1),
+-                                   (void *)ARG(2), (void *)ARG(3),
+-                                   (void *)ARG(4), (void *)ARG(5),
+-                                   (void *)ARG(6), (void *)ARG(7)); break;
++        case 1:  cpu->EAX = sscanf(hbuf, hfmt, ARGP(0)); break;
++        case 2:  cpu->EAX = sscanf(hbuf, hfmt, ARGP(0), ARGP(1)); break;
++        case 3:  cpu->EAX = sscanf(hbuf, hfmt, ARGP(0), ARGP(1),
++                                   ARGP(2)); break;
++        case 4:  cpu->EAX = sscanf(hbuf, hfmt, ARGP(0), ARGP(1),
++                                   ARGP(2), ARGP(3)); break;
++        case 5:  cpu->EAX = sscanf(hbuf, hfmt, ARGP(0), ARGP(1),
++                                   ARGP(2), ARGP(3),
++                                   ARGP(4)); break;
++        case 6:  cpu->EAX = sscanf(hbuf, hfmt, ARGP(0), ARGP(1),
++                                   ARGP(2), ARGP(3),
++                                   ARGP(4), ARGP(5)); break;
++        case 7:  cpu->EAX = sscanf(hbuf, hfmt, ARGP(0), ARGP(1),
++                                   ARGP(2), ARGP(3),
++                                   ARGP(4), ARGP(5),
++                                   ARGP(6)); break;
++        case 8:  cpu->EAX = sscanf(hbuf, hfmt, ARGP(0), ARGP(1),
++                                   ARGP(2), ARGP(3),
++                                   ARGP(4), ARGP(5),
++                                   ARGP(6), ARGP(7)); break;
+         default:
+             isaac_log("[isaac][crt] __stdio_common_vsscanf: format with %u "
+                       "conversions exceeds the 8-arg dispatch "
+diff --git a/scripts/recomp/host/src/host_shims_fs.c b/scripts/recomp/host/src/host_shims_fs.c
+index 818d851..b2a5afa 100644
+--- a/scripts/recomp/host/src/host_shims_fs.c
++++ b/scripts/recomp/host/src/host_shims_fs.c
+@@ -253,6 +253,9 @@ EM_JS(int, isaac_fs_lazy_read_js, (const char *src, uint8_t *dst, uint32_t len),
+     for (var i = src; HEAPU8[i]; i++) s += String.fromCharCode(HEAPU8[i]);
+     return Module.isaacLazyRead(s, dst, len) ? 1 : 0;
+ });
++#elif defined(ISAAC_NATIVE) && ISAAC_NATIVE
++/* Mac Build: real file I/O against the game folder (native/mac/host/mac_fs.c). */
++int isaac_fs_lazy_read_js(const char *src, uint8_t *dst, uint32_t len);
+ #else
+ static int isaac_fs_lazy_read_js(const char *src, uint8_t *dst, uint32_t len) {
+     (void)src; (void)dst; (void)len; return 0;
+@@ -298,6 +301,9 @@ EM_JS(int, isaac_fs_lazy_pread_js, (const char *src, uint8_t *dst, uint32_t off,
+      * bytes in place; a number is the answer at once. */
+     return (typeof n === "number" || (n && typeof n.then === "function")) ? n : -1;
+ });
++#elif defined(ISAAC_NATIVE) && ISAAC_NATIVE
++int isaac_fs_lazy_pread_avail(void);
++int isaac_fs_lazy_pread_js(const char *src, uint8_t *dst, uint32_t off, uint32_t len);
+ #else
+ static int isaac_fs_lazy_pread_avail(void) { return 0; }
+ static int isaac_fs_lazy_pread_js(const char *src, uint8_t *dst, uint32_t off, uint32_t len) {
+@@ -353,6 +359,9 @@ EM_JS(int, isaac_fs_unlink_js, (const char *key, const char *src), {
+     for (var j = src; HEAPU8[j]; j++) s += String.fromCharCode(HEAPU8[j]);
+     return Module.isaacUnlink(k, s) ? 1 : 0;
+ });
++#elif defined(ISAAC_NATIVE) && ISAAC_NATIVE
++int isaac_fs_persist_js(const char *key, const char *src, const uint8_t *data, uint32_t len);
++int isaac_fs_unlink_js(const char *key, const char *src);
+ #else
+ static int isaac_fs_persist_js(const char *key, const char *src, const uint8_t *data, uint32_t len) {
+     (void)key; (void)src; (void)data; (void)len; return 0;
+diff --git a/scripts/recomp/host/src/host_shims_heap.c b/scripts/recomp/host/src/host_shims_heap.c
+index caa9da0..d779e54 100644
+--- a/scripts/recomp/host/src/host_shims_heap.c
++++ b/scripts/recomp/host/src/host_shims_heap.c
+@@ -153,6 +153,18 @@ static int heap_grow(uint32_t need) {
+     if (!on || g_isaac_ovf_n >= ISAAC_OVF_MAX) return 0;
+     uint32_t size = OVF_SEG_BYTES;
+     if (need > size) size = (need + 0xFFFFFu) & ~0xFFFFFu;
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    /* Mac Build: a Host malloc block is outside the Guest region; carve the
++     * segment from the region itself (native/mac/host/mac_guest_mem.c). */
++    extern uint32_t isaac_native_region_alloc(uint32_t bytes);
++    uint32_t base = isaac_native_region_alloc(size + ALIGN);
++    if (!base && size > need) {
++        size = (need + 0xFFFFu) & ~0xFFFFu;
++        base = isaac_native_region_alloc(size + ALIGN);
++    }
++    if (!base) return 0;
++    const uint32_t lo = (base + (ALIGN - 1u)) & ~(ALIGN - 1u);
++#else
+     void *m = malloc((size_t)size + ALIGN);
+     if (!m && size > need) {                  /* the host cannot spare a whole segment: just this block */
+         size = (need + 0xFFFFu) & ~0xFFFFu;
+@@ -161,6 +173,7 @@ static int heap_grow(uint32_t need) {
+     if (!m) return 0;
+     const uint32_t lo = (isaac_va(m) + (ALIGN - 1u)) & ~(ALIGN - 1u);
+     if (lo < ISAAC_HOST_BASE_VA || (uint64_t)lo + size > 0xFFFF0000ull) { free(m); return 0; }
++#endif
+     g_isaac_ovf[g_isaac_ovf_n][0] = lo;
+     g_isaac_ovf[g_isaac_ovf_n][1] = size;
+     ++g_isaac_ovf_n;
+diff --git a/scripts/recomp/host/src/host_shims_misc.c b/scripts/recomp/host/src/host_shims_misc.c
+index 7933f49..a4e5f0b 100644
+--- a/scripts/recomp/host/src/host_shims_misc.c
++++ b/scripts/recomp/host/src/host_shims_misc.c
+@@ -16,7 +16,9 @@
+ 
+ #include <math.h>
+ #include <time.h>
++#ifdef __EMSCRIPTEN__
+ #include <emscripten/threading.h>
++#endif
+ #include <stdarg.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -284,14 +286,28 @@ void imp_kernel32__GetTempPathA(CpuState *restrict cpu) {
+  * a platform primitive per the port policy; zeroing honours GMEM_ZEROINIT. */
+ void imp_kernel32__GlobalAlloc(CpuState *restrict cpu) {
+     uint32_t flags = isaac_arg(cpu, 0), size = isaac_arg(cpu, 1);
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    /* Mac Build: a Host malloc pointer is outside the Guest region. */
++    extern uint32_t isaac_guest_alloc(uint32_t n);
++    uint32_t va = isaac_guest_alloc(size ? size : 1);
++    if (va && (flags & 0x40u))               /* GMEM_ZEROINIT */
++        memset(isaac_g(va), 0, size);
++    cpu->EAX = va;
++#else
+     void *p = malloc(size ? size : 1);
+     if (p && (flags & 0x40u))                /* GMEM_ZEROINIT */
+         memset(p, 0, size);
+     cpu->EAX = (uint32_t)(uintptr_t)p;
++#endif
+ }
+ void imp_kernel32__GlobalFree(CpuState *restrict cpu) {
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    extern void isaac_guest_free(uint32_t p);
++    if (isaac_arg(cpu, 0)) isaac_guest_free(isaac_arg(cpu, 0));
++#else
+     void *p = (void *)(uintptr_t)isaac_arg(cpu, 0);
+     free(p);
++#endif
+     cpu->EAX = 0;
+ }
+ void imp_kernel32__GlobalLock(CpuState *restrict cpu) {
+diff --git a/scripts/recomp/host/src/host_shims_win.c b/scripts/recomp/host/src/host_shims_win.c
+index 372e76d..8864b1b 100644
+--- a/scripts/recomp/host/src/host_shims_win.c
++++ b/scripts/recomp/host/src/host_shims_win.c
+@@ -17,7 +17,9 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdlib.h>
++#ifdef __EMSCRIPTEN__
+ #include <emscripten.h>
++#endif
+ 
+ #define WIN_CLASS_MAX 32
+ #define WIN_HWND_MAX  32
+@@ -1265,10 +1267,20 @@ void isaac_input_mouse_button(int button, int down) {
+ }
+ uint32_t isaac_input_queued(void) { return g_msgq_count; }
+ uint32_t isaac_input_dropped(void) { return g_input_dropped; }
++#ifdef __EMSCRIPTEN__
+ EM_JS(int, isaac_input_poll_js, (int frame, int32_t *out), {
+     if (typeof Module.isaacInputPoll !== "function") return 0;
+     return Module.isaacInputPoll(frame, out) ? 1 : 0;
+ });
++#else
++/* Mac Build: the platform layer overrides this with a scripted-input source
++ * when it has one; live keyboard, mouse and pad input call isaac_input_key /
++ * _mouse_move / _mouse_button directly from SDL events instead. */
++__attribute__((weak)) int isaac_input_poll_js(int frame, int32_t *out) {
++    (void)frame; (void)out;
++    return 0;
++}
++#endif
+ static void input_poll_page(void) {
+     int32_t ev[4];
+     for (unsigned n = 0; n < 64; ++n) {
+diff --git a/scripts/recomp/lift/boot_integration.c b/scripts/recomp/lift/boot_integration.c
+index 6aa6b68..e50d951 100644
+--- a/scripts/recomp/lift/boot_integration.c
++++ b/scripts/recomp/lift/boot_integration.c
+@@ -35,7 +35,7 @@ int isaac_place_image(const uint8_t *blob, uint32_t len) {
+     memcpy(&n, idx + 8 * i + 4, 4);
+     if (va < ISAAC_IMAGE_BASE || (uint64_t)va + n > ISAAC_IMAGE_END) return -3;
+     if (body + n > blob + len) return -4;
+-    memcpy((void *)(uintptr_t)va, body, n);
++    memcpy(isaac_g(va), body, n);
+     body += n;
+     placed += n;
+   }
+@@ -52,14 +52,14 @@ int isaac_place_image(const uint8_t *blob, uint32_t len) {
+ #define GUARD_PAT 0xA5C3D200u
+ 
+ void isaac_guard_arm(void) {
+-  uint32_t *p = (uint32_t *)(uintptr_t)ISAAC_GUARD_VA;
++  uint32_t *p = (uint32_t *)isaac_g(ISAAC_GUARD_VA);
+   uint32_t n = ISAAC_GUARD_SIZE / 4;
+   for (uint32_t i = 0; i < n; ++i) p[i] = GUARD_PAT ^ i;
+ }
+ 
+ /* Returns the number of corrupted words, 0 if intact. */
+ uint32_t isaac_guard_check(void) {
+-  const uint32_t *p = (const uint32_t *)(uintptr_t)ISAAC_GUARD_VA;
++  const uint32_t *p = (const uint32_t *)isaac_g(ISAAC_GUARD_VA);
+   uint32_t n = ISAAC_GUARD_SIZE / 4, bad = 0, first = 0;
+   for (uint32_t i = 0; i < n; ++i) {
+     if (p[i] != (GUARD_PAT ^ i)) {
+diff --git a/scripts/recomp/lift/recomp_rt.c b/scripts/recomp/lift/recomp_rt.c
+index 9748f68..a71282d 100644
+--- a/scripts/recomp/lift/recomp_rt.c
++++ b/scripts/recomp/lift/recomp_rt.c
+@@ -138,7 +138,7 @@ uint32_t recomp_other_out(CpuState *s, uint32_t port,
+ #define ISAAC_CPUID_SCRATCH_VA 0x0e004000u
+ 
+ static uint32_t *recomp_cpuid_record(uint32_t leaf) {
+-  uint32_t *rec = (uint32_t *)(uintptr_t)ISAAC_CPUID_SCRATCH_VA;
++  uint32_t *rec = (uint32_t *)RECOMP_PTR(ISAAC_CPUID_SCRATCH_VA);
+   uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
+   switch (leaf) {
+     case 0x00000000u:
