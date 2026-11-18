@@ -181,7 +181,7 @@ index dedfd58..dbe738f 100644
  #else
      (void)v0;
 diff --git a/scripts/recomp/host/src/host_gl_webgl.c b/scripts/recomp/host/src/host_gl_webgl.c
-index 98869fc..2dbd808 100644
+index 98869fc..641d6c5 100644
 --- a/scripts/recomp/host/src/host_gl_webgl.c
 +++ b/scripts/recomp/host/src/host_gl_webgl.c
 @@ -29,7 +29,10 @@
@@ -207,7 +207,19 @@ index 98869fc..2dbd808 100644
  #include <stdlib.h>
  #include <string.h>
  
-@@ -202,6 +207,7 @@ void isaac_web_get_integerv(uint32_t pname, uint32_t out) {
+@@ -197,11 +202,19 @@ static void canonical_shader_loops(char *source) {
+ void isaac_web_get_integerv(uint32_t pname, uint32_t out) {
+     GLint v[4] = {0, 0, 0, 0};
+     if (isaac_web_gl_ready()) glGetIntegerv((GLenum)pname, v);
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    {   /* the offscreen screen framebuffer is the game's framebuffer 0 */
++        extern uint32_t isaac_mac_screen_fbo(void);
++        uint32_t sf = isaac_mac_screen_fbo();
++        if (sf && (pname == 0x8CA6u || pname == 0x8CAAu) && (uint32_t)v[0] == sf) v[0] = 0;
++    }
++#endif
+     if (isaac_is_guest_va(out)) isaac_w32(out, (uint32_t)v[0]);
+     if (pname == 0x0D3Au && isaac_is_guest_va(out + 4)) isaac_w32(out + 4, (uint32_t)v[1]);
  }
  
  /* ---- frame presentation --------------------------------------------------- */
@@ -215,7 +227,7 @@ index 98869fc..2dbd808 100644
  EM_JS(void, isaac_present_js, (const uint8_t *px, int w, int h), {
      if (typeof Module.isaacPresent === "function") Module.isaacPresent(px, w, h);
  });
-@@ -216,6 +222,10 @@ EM_JS(int, isaac_wants_frame_js, (unsigned n), {
+@@ -216,6 +229,10 @@ EM_JS(int, isaac_wants_frame_js, (unsigned n), {
  });
  static uint8_t *g_present_buf;
  static uint32_t g_present_cap;
@@ -226,7 +238,7 @@ index 98869fc..2dbd808 100644
  void isaac_web_present(void) {
      if (!isaac_web_gl_ready()) return;
      ++g_present_count;
-@@ -230,6 +240,7 @@ void isaac_web_present(void) {
+@@ -230,6 +247,7 @@ void isaac_web_present(void) {
                  isaac_log("[isaac][gl] GL error 0x%x pending at present #%u", err, g_present_count);
          }
      }
@@ -234,7 +246,7 @@ index 98869fc..2dbd808 100644
      if (!isaac_wants_frame_js(g_present_count)) return;   /* no PNG wanted: no readback */
      int w = 0, h = 0;
      emscripten_webgl_get_drawing_buffer_size(emscripten_webgl_get_current_context(), &w, &h);
-@@ -247,6 +258,9 @@ void isaac_web_present(void) {
+@@ -247,6 +265,9 @@ void isaac_web_present(void) {
      glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, g_present_buf);
      glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prev);
      isaac_present_js(g_present_buf, w, h);
@@ -244,7 +256,25 @@ index 98869fc..2dbd808 100644
  }
  void isaac_web_gl_report(void) {
      isaac_log("[isaac][gl] web backend: %u GL calls, %u GL errors, %u frames presented",
-@@ -602,10 +616,16 @@ GLFN(glProgramUniform1ivEXT) { ENTER; RET0; }
+@@ -419,7 +440,16 @@ GLFN(glActiveTexture) {
+     RET0;
+ }
+ GLFN(glAttachShader)         { ENTER; glAttachShader(A(0), A(1)); RET0; }
+-GLFN(glBindFramebuffer)      { ENTER; isaac_glc_fbo_bind(A(0), A(1)); glBindFramebuffer(A(0), A(1)); RET0; }
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++/* The Mac Build draws the game's "default framebuffer" into an offscreen
++ * framebuffer of the game's own size and scales it into the window at present
++ * (native/mac/host/mac_window.c). 0 when there is no window (headless). */
++uint32_t isaac_mac_screen_fbo(void);
++#define SCREEN_FBO(n) ((n) ? (n) : isaac_mac_screen_fbo())
++#else
++#define SCREEN_FBO(n) (n)
++#endif
++GLFN(glBindFramebuffer)      { ENTER; isaac_glc_fbo_bind(A(0), A(1)); glBindFramebuffer(A(0), SCREEN_FBO(A(1))); RET0; }
+ GLFN(glBindRenderbuffer)     { ENTER; isaac_glc_rb_bind(A(1)); glBindRenderbuffer(A(0), A(1)); RET0; }
+ GLFN(glBindTexture) {
+     ENTER;
+@@ -602,10 +632,16 @@ GLFN(glProgramUniform1ivEXT) { ENTER; RET0; }
  /* Round 48: the first three of the game's own glReadPixels log the wasm stack
   * (the names come from the module's name section): the engine reads pixels
   * back in play, one call every dozen frames, each a GPU pipeline drain. */
@@ -261,7 +291,7 @@ index 98869fc..2dbd808 100644
  static uint32_t g_rp_logged;
  /* Round 94: the game's one readback, made asynchronous. On a footstep frame
   * (Entity_Player::IsFootstepFrame 0x007b9940, every 6 ticks, from 0x007b8cb0)
-@@ -625,7 +645,17 @@ static uint32_t g_rp_logged;
+@@ -625,7 +661,17 @@ static uint32_t g_rp_logged;
   * ISAAC_READPIXELS_CHECK=1 also reads each pixel synchronously and logs the
   * pair, so the lag can be seen. */
  /* WebGL2's getBufferSubData; Emscripten implements it, GLES3's gl3.h does not declare it */
@@ -279,7 +309,7 @@ index 98869fc..2dbd808 100644
  #define RP_RING 4
  static GLuint g_rp_pbo[RP_RING];
  static GLsync g_rp_fence[RP_RING];
-@@ -848,4 +878,4 @@ GLFN(glViewport) {
+@@ -848,4 +894,4 @@ GLFN(glViewport) {
      RET0;
  }
  
@@ -797,10 +827,10 @@ index 7933f49..ce09811 100644
          isaac_w32(ISAAC_TEB_VA + 0x34, 3u);         /* ERROR_PATH_NOT_FOUND */
          return;
 diff --git a/scripts/recomp/host/src/host_shims_win.c b/scripts/recomp/host/src/host_shims_win.c
-index 372e76d..63aab3f 100644
+index 372e76d..d50d3db 100644
 --- a/scripts/recomp/host/src/host_shims_win.c
 +++ b/scripts/recomp/host/src/host_shims_win.c
-@@ -17,7 +17,9 @@
+@@ -17,14 +17,24 @@
  #include <stdio.h>
  #include <string.h>
  #include <stdlib.h>
@@ -810,7 +840,40 @@ index 372e76d..63aab3f 100644
  
  #define WIN_CLASS_MAX 32
  #define WIN_HWND_MAX  32
-@@ -1091,7 +1093,7 @@ void isaac_render_skipped(CpuState *restrict cpu) { (void)cpu; }
+ #define WIN_ATOM_BASE 0xC000u
+ #define WIN_HWND_BASE 0x00020000u
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++/* Mac Build: the game's "display" is its own 960x540 client size, so the game's
++ * fullscreen option leaves the picture at 960x540 and native/mac/host/mac_window.c
++ * scales it into the real window or desktop (whole-number, bars). */
++#define DISPLAY_W 960
++#define DISPLAY_H 540
++#else
+ #define DISPLAY_W 1280
+ #define DISPLAY_H 720
++#endif
+ 
+ static struct {
+     char     name[64];
+@@ -291,6 +301,17 @@ void imp_user32__GetClientRect(CpuState *restrict cpu) {
+     if (isaac_is_guest_va(r)) {
+         isaac_w32(r + 0, 0);
+         isaac_w32(r + 4, 0);
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++        /* the stored size is the window rect (CreateWindowEx got it from AdjustWindowRectEx); the client
++         * area is that minus the frame AdjustWindowRectEx added. Without this the game's own fullscreen
++         * toggle (the F key, the options menu) sees a 976x578 client for its 960x540 window. */
++        if (g_win[i].style & 0x00CF0000u && g_win[i].w > 16 && g_win[i].h > 38) {
++            isaac_w32(r + 8,  g_win[i].w - 16);
++            isaac_w32(r + 12, g_win[i].h - 38);
++            cpu->EAX = 1;
++            return;
++        }
++#endif
+         isaac_w32(r + 8,  g_win[i].w);
+         isaac_w32(r + 12, g_win[i].h);
+     }
+@@ -1091,7 +1112,7 @@ void isaac_render_skipped(CpuState *restrict cpu) { (void)cpu; }
  #endif
  /* BOOL SwapBuffers(HDC) -- gdi32, 4 bytes. One call per presented frame. */
  void imp_gdi32__SwapBuffers(CpuState *restrict cpu) {
@@ -819,7 +882,7 @@ index 372e76d..63aab3f 100644
      { extern void isaac_web_present(void); isaac_web_present(); }
  #endif
      (void)isaac_arg(cpu, 0);
-@@ -1263,12 +1265,33 @@ void isaac_input_mouse_button(int button, int down) {
+@@ -1263,12 +1284,33 @@ void isaac_input_mouse_button(int button, int down) {
      msgq_push(message, g_mouse_mk, ((uint32_t)g_cur_y << 16) | ((uint32_t)g_cur_x & 0xFFFFu));
      ++g_input_events;
  }
@@ -853,7 +916,7 @@ index 372e76d..63aab3f 100644
  static void input_poll_page(void) {
      int32_t ev[4];
      for (unsigned n = 0; n < 64; ++n) {
-@@ -1280,6 +1303,9 @@ static void input_poll_page(void) {
+@@ -1280,6 +1322,9 @@ static void input_poll_page(void) {
          case 1: isaac_input_key((uint32_t)ev[1], (uint32_t)ev[2] & 0xFFu, (ev[2] >> 8) & 1, ev[3] != 0); break;
          case 2: isaac_input_mouse_move(ev[1], ev[2]); break;
          case 3: isaac_input_mouse_button(ev[1], ev[2] != 0); break;

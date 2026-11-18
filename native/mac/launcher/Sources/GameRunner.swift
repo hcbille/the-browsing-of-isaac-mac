@@ -42,6 +42,7 @@ final class GameRunner: ObservableObject {
             "version": 1, "launched_at": iso,
             "vanilla_launch": s.vanillaLaunch, "debug_console": s.debugConsole,
             "log_window": s.logWindow, "lua_debug": s.luaDebug,
+            "scale_mode": s.scaleMode,
             "support_dir": Paths.supportDir.path, "mods_dir": Paths.modsDir.path,
             "save_dir": SyncDirs.fromEnvironment().saves.path,
             "gate_log_path": Paths.gateLog.path, "game_log_path": Paths.gameLog.path,

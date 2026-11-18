@@ -18,10 +18,16 @@
  *                              relative to where isaac-mac was started
  *   ISAAC_ANGLE_DIR            where libEGL.dylib / libGLESv2.dylib are
  *                              (default: the directory baked in at build time)
- *   ISAAC_MAC_SCALE            reserved for M5 (window scaling modes)
+ *   ISAAC_MAC_SCALE            integer (default) or fill (mac_window.c; also --scale,
+ *                              launch-settings scale_mode)
+ *   ISAAC_MAC_WINDOW=WxH       initial window size in points (also --window)
+ *   ISAAC_MAC_WINDOW_BORDERLESS=1  test hook: a borderless window (macOS lets it be larger than the screen)
  *
- * The window is created at the game's native client size, 960x540 (a whole
- * multiple, 1x, of 480x270); the scaling modes are M5.
+ * The window opens at the game's client size, 960x540, and is resizable. The game
+ * draws into an offscreen framebuffer of its own size; mac_window.c scales it into
+ * the drawable (whole-number with bars, or fill), handles fullscreen, and maps the
+ * mouse through the same rectangle. Screenshots (ISAAC_MAC_SHOT) read the composed
+ * drawable, bars included.
  */
 #include <SDL3/SDL.h>
 #include <GLES3/gl3.h>
@@ -46,8 +52,14 @@ int isaac_mac_png_write_rgb(const char *path, const uint8_t *rgb, int w, int h);
 void isaac_mac_gl_install_fakes(void);
 void isaac_mac_input_event(const SDL_Event *ev);
 void isaac_mac_input_end_events(void);
+void isaac_mac_window_initial_size(int *w, int *h);
+int isaac_mac_window_gl_ready(void);
+void isaac_mac_window_compose(void);
+void isaac_mac_window_frame(uint32_t frame);
+void isaac_mac_window_event(const SDL_Event *ev);
 
 static SDL_Window *g_win;
+SDL_Window *isaac_mac_gl_window(void) { return g_win; }
 static SDL_GLContext g_ctx;
 static int g_state = -1;            /* -1 untried, 0 headless, 1 context current, -2 failed */
 static int g_vsync = 1;
@@ -97,13 +109,19 @@ int isaac_mac_gl_open(void) {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
-    g_win = SDL_CreateWindow("The Binding of Isaac: Repentance+", NATIVE_W, NATIVE_H, SDL_WINDOW_OPENGL);
+    int iw = NATIVE_W, ih = NATIVE_H;
+    isaac_mac_window_initial_size(&iw, &ih);
+    SDL_WindowFlags wf = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
+    /* test hook: macOS keeps a titled window inside the screen; a borderless one can be larger (2x/3x screenshots) */
+    { const char *bl = getenv("ISAAC_MAC_WINDOW_BORDERLESS"); if (bl && *bl && *bl != '0') wf |= SDL_WINDOW_BORDERLESS; }
+    g_win = SDL_CreateWindow("The Binding of Isaac: Repentance+", iw, ih, wf);
     if (!g_win) { fail("SDL_CreateWindow"); g_state = -2; return -1; }
     g_ctx = SDL_GL_CreateContext(g_win);
     if (!g_ctx) { fail("SDL_GL_CreateContext"); g_state = -2; return -1; }
     const char *v = getenv("ISAAC_MAC_VSYNC");
     g_vsync = !(v && *v == '0');
     SDL_GL_SetSwapInterval(g_vsync ? 1 : 0);
+    SDL_SetWindowMinimumSize(g_win, 320, 180);
     SDL_RaiseWindow(g_win);
 
     int w = 0, h = 0;
@@ -115,6 +133,7 @@ int isaac_mac_gl_open(void) {
     printf("[mac][gl] drawable %dx%d, swap interval %d\n", w, h, g_vsync);
     if (!renderer || !strstr(renderer, "ANGLE") || !strstr(renderer, "Metal"))
         printf("[mac][gl] WARNING: the renderer is not ANGLE on Metal\n");
+    if (!isaac_mac_window_gl_ready()) { fprintf(stderr, "[mac][gl] the screen framebuffer could not be made\n"); g_state = -2; return -1; }
     g_state = 1;
     return 1;
 }
@@ -259,7 +278,8 @@ void isaac_mac_present(void) {
     if (!registered) { registered = 1; atexit(atexit_report); }
     uint32_t frame = isaac_frames_presented();
     uint64_t start = now_ns();
-    shots_check(frame);
+    isaac_mac_window_compose();          /* the game's picture into the drawable (mac_window.c) */
+    shots_check(frame);                  /* ... so a screenshot shows the whole drawable, bars included */
 
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
@@ -270,9 +290,11 @@ void isaac_mac_present(void) {
                 isaac_input_window_close();
             }
         }
+        isaac_mac_window_event(&ev);     /* fullscreen changes by the system (mac_window.c) */
         isaac_mac_input_event(&ev);      /* keyboard, mouse, focus (mac_input.c) */
     }
     isaac_mac_input_end_events();
+    isaac_mac_window_frame(frame);       /* Options.Fullscreen changed by the game's menu? */
     /* the game did not leave within a second: end it ourselves */
     if (g_quit_frame >= 0 && (int)frame > g_quit_frame + 90) {
         printf("[mac] the game did not close; exiting\n");

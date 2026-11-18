@@ -100,12 +100,16 @@ struct VanillaEpiphanyWarning: View {
 struct ModsView: View {
     @EnvironmentObject var model: AppModel
     @State private var pendingRemove: Mod?
+    @State private var byLoadOrder = Debug.value("SORT") == "load"
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Text(Paths.modsDir.path).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 Spacer()
+                Picker("", selection: $byLoadOrder) {
+                    Text("By name").tag(false); Text("By load order").tag(true)
+                }.pickerStyle(.segmented).labelsHidden().frame(width: 200)
                 Button("Reload") { model.reload() }
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
@@ -115,12 +119,12 @@ struct ModsView: View {
                 Text("No mods in this folder yet.\nMods are copied here from Steam's Workshop folder when the game starts.")
                     .multilineTextAlignment(.center).foregroundStyle(.secondary).frame(maxHeight: .infinity)
             } else {
-                List(model.mods) { mod in
+                List(byLoadOrder ? model.mods.sorted { $0.order < $1.order } : model.mods) { mod in
                     ModRow(mod: mod, remove: { pendingRemove = mod })
                 }
             }
             Divider()
-            Text("Load order is the game's own (folders sorted by name) and cannot be changed here.")
+            Text("The list is sorted by name, as in the game's MODS menu. The number is the mod's place in the game's load order, which is the order the volume lists the folders in (not by name) and cannot be changed here.")
                 .font(.caption).foregroundStyle(.secondary).padding(8)
         }
         .confirmationDialog(
@@ -146,7 +150,7 @@ struct ModRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Text("\(mod.order)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            Text(mod.order > 0 ? "\(mod.order)" : "–").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 .frame(width: 28, alignment: .trailing).padding(.top, 3)
             Toggle("", isOn: Binding(get: { mod.enabled }, set: { model.toggle(mod, $0) }))
                 .labelsHidden().toggleStyle(.switch).controlSize(.small)
@@ -218,6 +222,17 @@ struct OptionsView: View {
                 Text("The Layer is updated only by installing a new build; there is no auto-update.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("Window") {
+                Picker("Scaling", selection: $model.settings.scaleMode) {
+                    Text("Whole-number scaling (black bars)").tag("integer")
+                    Text("Fill the window").tag("fill")
+                }
+                .pickerStyle(.radioGroup)
+                Text(model.settings.scaleMode == "fill"
+                     ? "The picture is stretched to fill the window; pixels may be uneven."
+                     : "The picture is scaled by whole numbers and centred, with black bars around it.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Launch") {
                 Toggle("Vanilla Launch (Layer off)", isOn: $model.settings.vanillaLaunch)
                 Text("No mod sees REPENTOGON. Mods that need it will fall back to their own code or refuse to run.")
@@ -258,6 +273,7 @@ struct LogView: View {
 
 /// Test helpers, driven by environment variables (command-line arguments confuse AppKit's own parsing):
 ///   REPENTANCE_MAC_LAUNCHER_TAB=play|mods|options   initial tab
+///   REPENTANCE_MAC_LAUNCHER_SORT=load               Mods tab starts sorted by load order
 ///   REPENTANCE_MAC_LAUNCHER_SNAPSHOT=<png path>     render every visible window of this app from inside it
 ///   REPENTANCE_MAC_LAUNCHER_SNAPSHOT_DELAY=<secs>, REPENTANCE_MAC_LAUNCHER_EXIT=1
 enum Debug {

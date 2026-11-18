@@ -42,10 +42,13 @@ struct LauncherSettings: Codable, Equatable {
     var debugConsole = false
     var logWindow = false
     var luaDebug = false
+    /// "integer" = whole-number scaling with black bars (default); "fill" = fill the window.
+    var scaleMode = "integer"
 
     enum CodingKeys: String, CodingKey {
         case skipLauncher = "skip_launcher", vanillaLaunch = "vanilla_launch"
         case debugConsole = "debug_console", logWindow = "log_window", luaDebug = "lua_debug"
+        case scaleMode = "scale_mode"
     }
     init() {}
     init(from d: Decoder) throws {
@@ -55,6 +58,8 @@ struct LauncherSettings: Codable, Equatable {
         debugConsole = try c.decodeIfPresent(Bool.self, forKey: .debugConsole) ?? false
         logWindow = try c.decodeIfPresent(Bool.self, forKey: .logWindow) ?? false
         luaDebug = try c.decodeIfPresent(Bool.self, forKey: .luaDebug) ?? false
+        let sm = try c.decodeIfPresent(String.self, forKey: .scaleMode) ?? "integer"
+        scaleMode = sm == "fill" ? "fill" : "integer"
     }
 
     static func load() -> LauncherSettings {
@@ -134,7 +139,7 @@ struct Mod: Identifiable {
     var name: String
     var version: String
     var enabled: Bool
-    var order: Int            // 1-based position in the game's load order
+    var order: Int            // 1-based position in the game's load order (the order it logs `LOADED MOD` in)
     var unsubscribed: Bool
     var gate: GateRow?
     var isEpiphany: Bool { (id + " " + name).lowercased().contains("epiphany") }
@@ -149,24 +154,52 @@ enum ModStore {
         return t.isEmpty ? nil : t
     }
 
-    /// The game lists mod folders sorted by folder name (see docs/mac/launcher.md); case-insensitive.
+    /// Folder names in the order the game loads them. The Host seeds the mods folder with
+    /// `readdir` (mac_fs.c `mac_seed_mods`) and the game loads in that order, so this is the raw,
+    /// unsorted directory order of the volume (APFS: by a hash of the name, not by name).
+    /// Mirrors the Host's filter: dot-folders, non-directories and a folder named `repentogon` are not mods.
+    static func gameLoadOrder(in dir: URL) -> [String] {
+        guard let d = opendir(dir.path) else { return [] }
+        defer { closedir(d) }
+        var out: [String] = []
+        while let e = readdir(d) {
+            let name = withUnsafePointer(to: &e.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX) + 1) { String(cString: $0) }
+            }
+            if name.hasPrefix(".") { continue }
+            var st = stat()
+            guard stat(dir.appendingPathComponent(name).path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else { continue }
+            if name.lowercased() == "repentogon" { continue }
+            out.append(name)
+        }
+        return out
+    }
+
+    /// The list is sorted like the in-game MODS menu (display name, case-insensitive); each row
+    /// carries its position in the game's real load order (`gameLoadOrder`).
     static func load() -> [Mod] {
         let fm = FileManager.default
+        let loadIndex = Dictionary(gameLoadOrder(in: Paths.modsDir).enumerated().map { ($1, $0 + 1) },
+                                   uniquingKeysWith: { a, _ in a })
         let items = (try? fm.contentsOfDirectory(at: Paths.modsDir, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
         let dirs = items.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
             && !$0.lastPathComponent.hasPrefix(".") }
-        let names = dirs.map { $0.lastPathComponent }
-            .sorted { $0.compare($1, options: [.caseInsensitive, .numeric]) == .orderedAscending }
         let gate = GateLog.load()
         let unsub = ModSync.load()
-        return names.enumerated().map { i, folder in
+        var mods: [Mod] = dirs.map { $0.lastPathComponent }.map { folder in
             let dir = Paths.modsDir.appendingPathComponent(folder)
             let xml = (try? String(contentsOf: dir.appendingPathComponent("metadata.xml"), encoding: .utf8)) ?? ""
             return Mod(id: folder, name: tag(xml, "name") ?? folder, version: tag(xml, "version") ?? "",
                        enabled: !fm.fileExists(atPath: dir.appendingPathComponent("disable.it").path),
-                       order: i + 1, unsubscribed: unsub.contains(folder.lowercased()),
+                       order: loadIndex[folder] ?? 0, unsubscribed: unsub.contains(folder.lowercased()),
                        gate: gate?.mods[folder.lowercased()])
         }
+        mods.sort {
+            let c = $0.name.compare($1.name, options: [.caseInsensitive])
+            return c == .orderedSame ? $0.id.compare($1.id, options: [.caseInsensitive]) == .orderedAscending
+                                     : c == .orderedAscending
+        }
+        return mods
     }
 
     static func setEnabled(_ mod: Mod, _ on: Bool) {

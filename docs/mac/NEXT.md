@@ -9,6 +9,12 @@ at the top of `docs/mac/PROGRESS.md`.
   mouse, gamepads with rumble and hot-plug), M4 sound (SDL3 audio, native
   mixer). Each one is committed on `mac-native` and published.
 
+## Done, awaiting a Verifier (uncommitted)
+
+- M5 window: integer / fill scaling, resizable window, fullscreen (game's F key, Options menu, Cmd+Ctrl+F), mouse mapping.
+  Evidence and commands: "M5 Window" in `docs/mac/PROGRESS.md`, `.scratch/m5/`. Verifier: re-run `.scratch/m5/run.sh` cases,
+  headless M1, and check a real mouse click in the bars and a resize by hand.
+
 ## In progress (uncommitted)
 
 - Game-side integration of the Launcher contracts (launch settings, save dir, mods dir with the `disable.it`
@@ -24,4 +30,4 @@ at the top of `docs/mac/PROGRESS.md`.
 2. Commit the integration work on `mac-native`, publish.
 3. M8: fix Epiphany's `epiphany_menu.lua:35` error ("no animation named Overlay"), give the Layer a mod-less save
    hook, re-measure gaps with a real `implemented.txt`, grow the Layer (Epiphany first).
-4. Then M5, M9 (`docs/mac/steam-bridge.md`), M10 against the real game, M11, M12.
+4. Then M9 (`docs/mac/steam-bridge.md`), M10 against the real game, M11, M12.

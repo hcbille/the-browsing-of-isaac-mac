@@ -13,9 +13,9 @@ implementers; any "(pending Verifier)" in their headings is out of date.
 | M2 Picture | **Verified** ("ANGLE Metal Renderer: Apple M2"; title + Basement I start room match `shot_b.png` in layout, mean abs diff about 6/255; 59.9 to 60.0 fps steady, one 160 ms hitch when the room loads) | a30c9d6 | ea429f3 |
 | M3 Input | **Verified** (keyboard via SDL events and SDL virtual gamepad both start, walk, fire, pause; rumble follows RumbleEnabled; hot-plug; key table matches the Browser Build) | b4ededc | 5f07da8 |
 | M4 Sound | **Verified** (music and effects non-silent in WAV dump; 0 underruns/overruns over 148 s; 3 late callbacks at one room-load stall; no crackle found; MusicVolume/SFXVolume respected; no panning, same as the Browser Build) | 75efe7b | 7aaafe3 |
-| M5 Window | Not started. Hook point: `isaac_mac_window_to_game()` in `mac_input.c`; window is fixed 960x540 in `mac_gl.c` (`ISAAC_MAC_SCALE` reserved) | none | none |
-| M6 Saves | **Verified** (progress survives restart; import cases cloud-present, absent and Mac-save-present pass; fixture Steam folders untouched; evidence `.scratch/verify67/`) | M6+M7 commit | pending |
-| M7 Mods | **Verified** (95 mods synced, checker mod off; MODS menu lists 95, off greyed; Launcher and in-game toggles agree; update keeps `disable.it`; unsubscribe keeps the mod, marked, Remove moves to Trash after confirm). Side notes: Launcher sorts by folder name but the game menu sorts by display name; `fired's_angels_and_statues` main.lua logs a Lua error (M8) | M6+M7 commit | pending |
+| M5 Window | **Verified** (clean rebuild; integer x1/x2 nearest with pure-black bars at 1280x800, 1100x700, 2000x1200; fill aspect-preserving; fullscreen by F, Cmd+Ctrl+F and the Options menu in both modes, options.ini matches; mouse maps through the letterbox, presses in bars ignored; precedence flag > JSON > env; headless M1 3,000 frames; 60.0 fps; evidence `.scratch/verify5/`) | M5 commit | pending |
+| M6 Saves | **Verified** (progress survives restart; import cases cloud-present, absent and Mac-save-present pass; fixture Steam folders untouched; evidence `.scratch/verify67/`) | d12bb6c | 3fad2d6 |
+| M7 Mods | **Verified** (95 mods synced, checker mod off; MODS menu lists 95, off greyed; Launcher and in-game toggles agree; update keeps `disable.it`; unsubscribe keeps the mod, marked, Remove moves to Trash after confirm). Side notes: Launcher sorts by folder name but the game menu sorts by display name; `fired's_angels_and_statues` main.lua logs a Lua error (M8) | d12bb6c | 3fad2d6 |
 | M8 Layer | Swift mod scan byte-identical to JS `createModScan` on all 95 mods; `gen_layer_info.py` written; Layer served at `mods/repentogon/` and gate log written by the game. Epiphany stops in `epiphany_menu.lua:35` ("no animation named Overlay"). Not verified | uncommitted | none |
 | M9 Steam | Design only: `docs/mac/steam-bridge.md`; stub dylib at `.scratch/steam-research/` | none | none |
 | M10 Launcher | First piece built (SwiftUI, `native/mac/launcher/`, contracts in `docs/mac/launcher.md`), tested against a fake game only. Not verified | uncommitted | none |
@@ -54,6 +54,65 @@ implementers; any "(pending Verifier)" in their headings is out of date.
    - Re-measure gaps with a real `implemented.txt` (lab_names run), then grow the Layer for each gap, Epiphany first.
 4. **M9:** implement `mac_steam.c` per `docs/mac/steam-bridge.md`. Start with the trace pass for the ISteamUserStats vtable offsets.
 5. **M10:** the Launcher against the real game. Then **M11:** bundle and `build.sh`. Then **M12:** README.
+
+## M5 Window: done (pending Verifier)
+
+Status: the window is resizable and the picture is scaled into it by `native/mac/host/mac_window.c`; fullscreen
+follows the game's Fullscreen option; the mouse maps through the same rectangle.
+
+How it works:
+1. The game's "default framebuffer" is an offscreen framebuffer (RGB8 + depth/stencil) of the game's own size,
+   960x540 (read from the Guest's window size at `0x00c799a8/ac`; the fake display in `host_shims_win.c` is 960x540
+   on the native build, and `GetClientRect` returns the client size, not the frame size, so the game's own
+   fullscreen toggle keeps rendering at 960x540). `glBindFramebuffer(0)` binds it (`host_gl_webgl.c`,
+   `ISAAC_NATIVE`-guarded) and `GL_FRAMEBUFFER_BINDING` answers 0 for it.
+2. At every present `isaac_mac_window_compose()` clears the drawable black and `glBlitFramebuffer`s the picture
+   centred: **integer** (default): the largest whole multiple of 960x540 that fits, nearest filter, bars on both
+   axes; if the window is smaller than 1x the picture is fitted (linear) so it is never cut. **fill**: the largest
+   aspect-preserving size, linear filter, bars on the short axis. Screenshots (`ISAAC_MAC_SHOT`) now read the
+   composed drawable, bars included.
+3. Setting: `--scale integer|fill`, launch-settings key `"scale_mode"`, env `REPENTANCE_MAC_SCALE` /
+   `ISAAC_MAC_SCALE` (precedence in that order). Initial size: `--window WxH` / `ISAAC_MAC_WINDOW=WxH` (points;
+   test knob). `ISAAC_MAC_WINDOW_BORDERLESS=1` is a test hook (macOS keeps a titled window inside the screen, so
+   a 2x window on this 1710x1107-point desktop needs a borderless one). No Retina rendering: the drawable is in points.
+4. Fullscreen: SDL3 desktop (borderless, Spaces) fullscreen. `Options.Fullscreen` is the byte at Manager+0x2a360
+   (Manager = `[0x00c7169c]`; Options at Manager+0x2a33c, Fullscreen at Options+0x24, set by `FUN_00925c60`, which
+   runs the game's own window change `FUN_00a196b0`). `mac_window.c` polls it once per frame and toggles the SDL
+   window when it changes (options menu: verified by scripted menu navigation; game's F key). **F is the game's own
+   fullscreen key** (found by feeding F to the game: it toggles the option), so plain F needs no Host code, it is
+   forwarded as before. **Cmd+Ctrl+F** (the macOS key, not forwarded to the game) presses F for the game, so the
+   option, the menu, options.ini and the window always agree; if the game has not changed the option after 12
+   frames it toggles the window directly (the byte is not written then, the game re-syncs it). Neither works while
+   the debug console is open (F is text there). Leaving fullscreen by the system (green button) is followed by
+   the poll/event too.
+5. Mouse: `isaac_mac_window_to_game()` (moved from `mac_input.c` to `mac_window.c`) maps window points through the
+   same rectangle; a move in the bars clamps to the nearest game pixel, a press in the bars is ignored (a release is
+   always passed). `ISAAC_MAC_MOUSE_LOG=1` logs every mapped event; button events always log.
+6. Script (`ISAAC_MAC_SCRIPT`): `F:fullscreen[:on|:off]`, `F:cmdctrl-f` (SDL event with Cmd+Ctrl), `F:window:WxH`,
+   `F:mousewin:X:Y` (a point in the window, bars included); with `ISAAC_MAC_SCRIPT_VIA_SDL=1` the `mouse:X:Y` token
+   goes through the scaling rectangle too.
+
+Decisions: aspect-preserving fill (not stretch); whole-number is relative to the game's 960x540; scale mode is a
+launch setting, not an in-game option (the Launcher can add a setting later: key `scale_mode`); the F shortcut is
+the game's own rather than a Host shortcut (it exists on PC too).
+
+Notes: after a change to `mac_launch.h` (struct layout) touch the files that include it, `build_native.py` only
+compares file times. The 1920x1080 and larger window screenshots use the borderless test hook.
+
+Evidence (`.scratch/m5/`, commands in `.scratch/m5/run.sh`; shots in `.scratch/m5/shots/`):
+- integer 1280x800: `int-1280x800.png` (1x, bars 160/130); 1100x700: `int-1100x700.png` (1x, bars 70/80); 2000x1200:
+  `int-2000x1200.png` (2x, bars 40/60); 1920x1080: `int-1920x1080.png` (2x, no bars).
+- fill 1280x800: `fill-1280x800.png` (x1.33, bars 40 top/bottom); 1100x700: `fill-1100x700.png`; 2000x1200:
+  `fill-2000x1200.png` (x2.08).
+- fullscreen (this desktop's drawable is 1710x1074 points): integer by Cmd+Ctrl+F from a 1280x800 window
+  `fullscreen-integer-from1280x800.png`, back by the game's F `windowed-after-F-1280x800.png`, again by Cmd+Ctrl+F
+  `fullscreen-integer-2nd.png`; fill by the game's F from 1100x700 `fullscreen-fill-from1100x700.png`, back by
+  Cmd+Ctrl+F `windowed-after-cmdctrlf-1100x700.png`; by the Options menu `menu-option-fullscreen-on.png` and
+  `menu-option-fullscreen-off.png` (log `.scratch/m5/menuFS.log`: "fullscreen on by the game option").
+- mouse (`mouse-integer.log`, `mouse-fill.log`): game 959,539 -> window 1119.5,669.5 -> back to game 959,539; a
+  press at window 5,5 in the bars is "ignored".
+- headless M1: `ISAAC_MAC_RUN_FRAMES=3000 ... --headless` exits 0, "reached 3007 frames; guard intact"
+  (`.scratch/m5/headless.log`). Windowed 60.0 fps in a room at 1280x800 and 2000x1200.
 
 ## M3 Input: done (pending Verifier)
 

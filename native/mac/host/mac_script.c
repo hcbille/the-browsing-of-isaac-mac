@@ -15,7 +15,12 @@
  *                        contains TEXT; that frame becomes the anchor for the
  *                        @F tokens and the @F screenshots (ISAAC_MAC_SHOT).
  *                        TEXT has no ',' or ':'.
- *   F:mouse:X:Y          move the pointer to game pixel X,Y (960x540)
+ *   F:fullscreen[:on|:off]  toggle (or set) fullscreen, as the shortcut does (mac_window.c)
+ *   F:cmdctrl-f          press Cmd+Ctrl+F as an SDL event (with the modifiers set)
+ *   F:window:WxH         resize the window (points; not while fullscreen)
+ *   F:mousewin:X:Y       move the pointer to window point X,Y (SDL event; bars included)
+ *   F:mouse:X:Y          move the pointer to game pixel X,Y (960x540); with
+ *                        ISAAC_MAC_SCRIPT_VIA_SDL=1 through the window's scaling rectangle
  *   F:mouse:left|right[:hold=N]     press that button (default hold 4)
  *   F:mouse:wheel=D      wheel, D notches (positive = up)
  *   F:pad[K]:BTN[:hold=N]           virtual gamepad K (default 0..3): press a button
@@ -50,7 +55,7 @@ void isaac_mac_vpad_button(int idx, int sdl_button, int down);
 void isaac_mac_vpad_axis(int idx, int sdl_axis, int value);
 void isaac_mac_input_pump_headless(void);
 
-enum { K_KEY, K_MMOVE, K_MBTN, K_MWHEEL, K_PBTN, K_PAXIS, K_PCONN, K_PDISC };
+enum { K_KEY, K_MMOVE, K_MBTN, K_MWHEEL, K_PBTN, K_PAXIS, K_PCONN, K_PDISC, K_FS, K_WSIZE, K_MWIN, K_CCF };
 typedef struct { int frame, rel, kind, a, b, c, d, done; } sev;   /* key: a=vk b=sc|ext<<8 c=down */
 #define MAX_EV 1024
 static sev g_ev[MAX_EV];
@@ -179,6 +184,20 @@ static void parse_token(char *tok) {
     if (rest) *rest++ = 0;                                  /* what = field 2, rest = the remaining fields (or NULL) */
     const char *r = rest ? rest : "";
 
+    if (!strcmp(what, "fullscreen")) { add(frame, rel, K_FS, !strcmp(r, "on") ? 1 : !strcmp(r, "off") ? 0 : -1, 0, 0, 0); return; }
+    if (!strcmp(what, "cmdctrl-f")) { add(frame, rel, K_CCF, 0, 0, 0, 0); return; }
+    if (!strcmp(what, "window")) {
+        int ww = 0, wh = 0;
+        if (sscanf(r, "%dx%d", &ww, &wh) != 2) { fprintf(stderr, "[mac][script] bad window token '%s'\n", tok); return; }
+        add(frame, rel, K_WSIZE, ww, wh, 0, 0);
+        return;
+    }
+    if (!strcmp(what, "mousewin")) {
+        const char *c2 = strchr(r, ':');
+        if (!c2) { fprintf(stderr, "[mac][script] bad mousewin token '%s'\n", tok); return; }
+        add(frame, rel, K_MWIN, atoi(r), atoi(c2 + 1), 0, 0);
+        return;
+    }
     if (!strcmp(what, "mouse")) {
         char first[32] = { 0 };
         snprintf(first, sizeof first, "%s", r);
@@ -253,6 +272,11 @@ int isaac_mac_input_push_key(uint32_t vk, uint32_t sc, int ext, int down);
 int isaac_mac_input_push_mouse_move(int gx, int gy);
 int isaac_mac_input_push_mouse_button(int right, int down);
 int isaac_mac_input_push_mouse_wheel(int delta);
+int isaac_mac_input_push_key_mod(uint32_t vk, uint32_t sc, int ext, int down, unsigned mod);
+int isaac_mac_input_push_mouse_window(float x, float y);
+int isaac_mac_window_toggle_fullscreen(const char *why);
+int isaac_mac_window_set_fullscreen(int on, const char *why);
+void isaac_mac_window_set_size(int w, int h);
 static int via_sdl(void) {
     static int v = -1;
     if (v < 0) { const char *e = getenv("ISAAC_MAC_SCRIPT_VIA_SDL"); v = e && *e && *e != '0'; }
@@ -273,6 +297,26 @@ static int emit_key(int32_t *out, uint32_t vk, uint32_t sc, int ext, int down, i
 /* One due event: 1 when it filled `out` for the Host, 0 when it acted by itself (pads). */
 static int run_event(sev *e, int32_t *out, int frame) {
     switch (e->kind) {
+    case K_FS:
+        printf("[mac][script] frame %d: fullscreen %s\n", frame, e->a < 0 ? "toggle" : e->a ? "on" : "off");
+        if (e->a < 0) isaac_mac_window_toggle_fullscreen("the script");
+        else isaac_mac_window_set_fullscreen(e->a, "the script");
+        return 0;
+    case K_CCF: {
+        printf("[mac][script] frame %d: Cmd+Ctrl+F (SDL event)\n", frame);
+        unsigned mod = SDL_KMOD_LGUI | SDL_KMOD_LCTRL;
+        isaac_mac_input_push_key_mod(0x46, 0x21, 0, 1, mod);       /* F: VK 0x46, set-1 scancode 0x21 */
+        isaac_mac_input_push_key_mod(0x46, 0x21, 0, 0, mod);
+        return 0;
+    }
+    case K_WSIZE:
+        printf("[mac][script] frame %d: window %dx%d\n", frame, e->a, e->b);
+        isaac_mac_window_set_size(e->a, e->b);
+        return 0;
+    case K_MWIN:
+        printf("[mac][script] frame %d: pointer to window point %d,%d (SDL event)\n", frame, e->a, e->b);
+        isaac_mac_input_push_mouse_window((float)e->a, (float)e->b);
+        return 0;
     case K_KEY: return emit_key(out, (uint32_t)e->a, (uint32_t)e->b & 0xFFu, (e->b >> 8) & 1, e->c, frame);
     case K_MMOVE:
         if (via_sdl()) {

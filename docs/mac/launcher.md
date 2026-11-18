@@ -18,7 +18,7 @@ game runs (Steam tracks the process it started) and quits when the game exits.
   start launches the game at once with the saved options, unless **Option** is
   held at start, which brings the Launcher back.
 - **Mods**: one row per folder in the mods folder, in the game's load order
-  (display only), a switch (on/off = `disable.it` absent/present in the mod
+  (display only; the list is sorted by name like the game's menu, each row shows its real load-order number), a switch (on/off = `disable.it` absent/present in the mod
   folder), the Shown / Hidden state from the gate log, what each hidden mod is
   missing, "No longer subscribed" with **Remove...** (asks first, then moves the
   folder to the Trash; never a hard delete).
@@ -37,14 +37,18 @@ game runs (Steam tracks the process it started) and quits when the game exits.
 
 - **App folder name: `Repentance+ Mac`** (no earlier doc named one). The support
   folder is `~/Library/Application Support/Repentance+ Mac/`.
-- **Load order.** The game's mod list is sorted by folder name (upstream
-  `web/mods.mjs`: the game's list "is sorted by" the folder name, which is why
-  the import row's folder is named with a leading space; the page's own catalogue
-  lists sort by display name with `localeCompare`, a different thing). Upstream has
-  no further note on case or numbers. The Launcher sorts folder names
-  case-insensitively and numerically-aware, ascending. If the real game's order
-  turns out different (the Host's directory listing decides), change `ModStore.load`
-  only; the order is display-only.
+- **Load order.** The game loads mods in the order the Host's `readdir` lists the folders of the mods
+  folder (`mac_seed_mods` in `mac_fs.c`), i.e. the raw, unsorted directory order of the volume (on APFS a
+  hash of the name, neither folder name nor display name). Evidence: the 95 `LOADED MOD` lines of a real run
+  (`.scratch/verify67/g-run4.log`) are exactly `ls -f` of that run's mods folder, lower-cased; a test
+  compares them (`REPENTANCE_MAC_LOADED_MOD_LOG` / `_DIR`). The Launcher reads the folder with `readdir`
+  too (`ModStore.gameLoadOrder`: dot-folders, files and a folder named `repentogon` are not mods) and
+  shows that number on each row; the Mods tab can sort "By load order". The list itself is sorted like
+  the in-game MODS menu, by display name, case-insensitive. The order is display-only and cannot be changed.
+- **Window.** Options > Window: "Whole-number scaling (black bars)" (default) or "Fill the window",
+  stored as `scale_mode` (`"integer"` | `"fill"`) in `launcher-settings.json` and written to
+  `launch-settings.json` at each Play. The game side must read `scale_mode`. No fullscreen-at-start key is
+  defined, so the Launcher has none.
 - A Workshop update re-copies a mod and keeps its `disable.it`; the Launcher
   never touches anything but `disable.it` and the Trash move.
 
@@ -72,7 +76,7 @@ environment variable, for tests.
 | Layer info | `Repentance+.app/Contents/Resources/layer-info.json` | `REPENTANCE_MAC_LAYER_INFO` | the build |
 | Game program | `Repentance+.app/Contents/MacOS/isaac-mac` | `REPENTANCE_MAC_GAME_EXE` | the build |
 
-Test-only: `REPENTANCE_MAC_LAUNCHER_TAB=play|mods|options`,
+Test-only: `REPENTANCE_MAC_LAUNCHER_TAB=play|mods|options`, `REPENTANCE_MAC_LAUNCHER_SORT=load`,
 `REPENTANCE_MAC_LAUNCHER_FORCE=1` (act as if Option were held),
 `REPENTANCE_MAC_LAUNCHER_SNAPSHOT=<png>` (+ `_SNAPSHOT_DELAY`, `_EXIT=1`) renders
 every visible window from inside the app (no screen-recording permission needed).
@@ -151,7 +155,7 @@ are invented.)
 
 ```json
 { "skip_launcher": false, "vanilla_launch": false, "debug_console": false,
-  "log_window": false, "lua_debug": false }
+  "log_window": false, "lua_debug": false, "scale_mode": "integer" }
 ```
 
 ### Launch contract (what the game must implement)
@@ -182,6 +186,7 @@ convenience):
   "version": 1,
   "launched_at": "2026-11-18T01:41:16Z",
   "vanilla_launch": false, "debug_console": false, "log_window": false, "lua_debug": false,
+  "scale_mode": "integer",
   "support_dir": "<support>", "mods_dir": "<mods>",
   "gate_log_path": "<support>/logs/layer-gate.json",
   "game_log_path": "<support>/logs/game.log",
@@ -196,7 +201,7 @@ The game must read the mods folder from `mods_dir` and write the gate log to
 ### Game side (implemented in `native/mac/host/mac_launch.c`, `mac_fs.c`, `mac_gate.c`)
 
 Flags (`isaac-mac`, all optional): `--launch-settings <json>`, `--vanilla`, `--debug-console`, `--lua-debug`,
-`--segs <file>`, `--bundle <dir>`, `--layer-dir <dir>`, `--save-dir <dir>`, `--mods-dir <dir>`, `--modscan <file>`,
+`--scale integer|fill`, `--window WxH`, `--segs <file>`, `--bundle <dir>`, `--layer-dir <dir>`, `--save-dir <dir>`, `--mods-dir <dir>`, `--modscan <file>`,
 `--gate-log <file>`, `--stage boot|main`, `--headless` (no window, fake GL; tests). The positional dev form
 `isaac-mac <segs> <bundle> [boot|main] [save dir]` still works.
 
@@ -210,6 +215,13 @@ Flags (`isaac-mac`, all optional): `--launch-settings <json>`, `--vanilla`, `--d
   load. If the Layer folder is missing the game launches the same way and the gate log says `"reason": "layer not installed"`.
 - **`--lua-debug`**: passes `--luadebug` in the Guest's argv, so mods get `io`, `os` and `debug`
   (`type(io)` is `"table"`; without the flag it is `nil`).
+- **Window scaling (M5, `mac_window.c`)**: launch-settings key `"scale_mode"`: `"integer"` (default; the largest
+  whole multiple of the game's 960x540 that fits the window, nearest filter, black bars) or `"fill"` (largest
+  aspect-preserving size, linear filter, bars on the short axis). Flag `--scale integer|fill` overrides it, then the
+  environment (`REPENTANCE_MAC_SCALE`, `ISAAC_MAC_SCALE`). Read at launch, so a Launcher setting takes effect at the
+  next Play. `--window WxH` / `ISAAC_MAC_WINDOW=WxH` sets the initial window size in points (default 960x540, the
+  window is resizable). Fullscreen is the game's own option (Options menu, the F key) or Cmd+Ctrl+F; the Launcher
+  has nothing to pass.
 - **`--debug-console`**: the game sets Options.EnableDebugConsole at the first frame, both ways, overriding
   `options.ini` (log: `debug console on|off by the launch settings`). The grave key opens the console during a run.
 - **Layer**: built into the app, served by the Host at the virtual path `mods/repentogon/`, never listed as a mod,

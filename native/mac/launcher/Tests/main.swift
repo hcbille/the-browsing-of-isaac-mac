@@ -208,5 +208,36 @@ do {
     check(logText(d).contains("2 read, 0 unchanged (cached)"), "no cache file: everything read")
 }
 
+// ---- Load order and window setting ----
+do {
+    let dir = root.appendingPathComponent("loadorder/mods")
+    for n in ["Zeta_1", "alpha_2", "Beta_3", ".hidden", "repentogon", "! bang_4"] { try fm.createDirectory(at: dir.appendingPathComponent(n), withIntermediateDirectories: true) }
+    write(dir.appendingPathComponent("a-file.txt"), "x")
+    let lo = ModStore.gameLoadOrder(in: dir)
+    check(Set(lo) == ["Zeta_1", "alpha_2", "Beta_3", "! bang_4"], "load order: dot-folders, files and the Layer folder are not mods")
+    // the Host's readdir order, as the game logs it with LOADED MOD
+    var raw: [String] = []
+    if let d = opendir(dir.path) { while let e = readdir(d) {
+        let n = withUnsafePointer(to: &e.pointee.d_name) { $0.withMemoryRebound(to: CChar.self, capacity: 1024) { String(cString: $0) } }
+        if Set(["Zeta_1", "alpha_2", "Beta_3", "! bang_4"]).contains(n) { raw.append(n) } }; closedir(d) }
+    check(lo == raw, "load order equals the raw directory order (not sorted by name)")
+    if let log = ProcessInfo.processInfo.environment["REPENTANCE_MAC_LOADED_MOD_LOG"],
+       let mods = ProcessInfo.processInfo.environment["REPENTANCE_MAC_LOADED_MOD_DIR"],
+       let text = try? String(contentsOfFile: log, encoding: .utf8) {
+        let logged = text.split(separator: "\n").compactMap { l -> String? in
+            guard let r = l.range(of: "LOADED MOD //mods/") else { return nil }
+            return String(l[r.upperBound...].split(separator: "/")[0]) }
+        let mine = ModStore.gameLoadOrder(in: URL(fileURLWithPath: mods)).map { $0.lowercased() }
+        check(!logged.isEmpty && logged == mine, "real run: LOADED MOD order of \(logged.count) mods equals the Launcher's load order")
+    } else { print("SKIP  real LOADED MOD comparison (REPENTANCE_MAC_LOADED_MOD_LOG / _DIR not set)") }
+    let s0 = try JSONDecoder().decode(LauncherSettings.self, from: Data("{}".utf8))
+    check(s0.scaleMode == "integer", "scale_mode defaults to integer")
+    var s1 = LauncherSettings(); s1.scaleMode = "fill"
+    let enc = try JSONEncoder().encode(s1)
+    check((try? JSONDecoder().decode(LauncherSettings.self, from: enc))?.scaleMode == "fill"
+          && String(decoding: enc, as: UTF8.self).contains("\"scale_mode\""), "scale_mode fill round-trips under the key scale_mode")
+    check((try JSONDecoder().decode(LauncherSettings.self, from: Data("{\"scale_mode\":\"weird\"}".utf8))).scaleMode == "integer", "unknown scale_mode falls back to integer")
+}
+
 print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

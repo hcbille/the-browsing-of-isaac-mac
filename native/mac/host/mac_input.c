@@ -39,19 +39,12 @@ int isaac_mac_gl_ready(void);
 #define GAME_H 540
 
 /* ---- window pixels -> game pixels ---------------------------------------------
- * The only place that knows how the window maps onto the game's 960x540 client
- * area. Today the window is the game's size (or a plain stretch of it); M5 replaces
- * the body with the whole-number scale and its black bars. Returns 0 when the point
- * lies outside the game area (letterbox) -- the caller then keeps the last position. */
-int isaac_mac_window_to_game(SDL_Window *win, float wx, float wy, int *gx, int *gy) {
-    int ww = GAME_W, wh = GAME_H;
-    if (win) SDL_GetWindowSize(win, &ww, &wh);
-    if (ww <= 0 || wh <= 0) { ww = GAME_W; wh = GAME_H; }
-    int x = (int)(wx * (float)GAME_W / (float)ww), y = (int)(wy * (float)GAME_H / (float)wh);
-    *gx = x < 0 ? 0 : x >= GAME_W ? GAME_W - 1 : x;
-    *gy = y < 0 ? 0 : y >= GAME_H ? GAME_H - 1 : y;
-    return x >= 0 && y >= 0 && x < GAME_W && y < GAME_H;
-}
+ * isaac_mac_window_to_game() lives in mac_window.c: it maps through the same rectangle the
+ * picture is drawn in (whole-number scale or fill, centred, bars). It returns 0 when the
+ * point lies in the bars; the coordinates are then clamped to the nearest game pixel. */
+int isaac_mac_window_to_game(SDL_Window *win, float wx, float wy, int *gx, int *gy);
+void isaac_mac_game_to_window(int gx, int gy, float *wx, float *wy);
+int isaac_mac_window_toggle_fullscreen(const char *why);
 
 /* ---- keyboard -------------------------------------------------------------------- */
 typedef struct { uint8_t vk, sc, ext; } vkey;
@@ -99,12 +92,20 @@ static void keymap_init(void) {
     km(SDL_SCANCODE_KP_DIVIDE, 0x6F, 0x35, 1); km(SDL_SCANCODE_KP_PERIOD, 0x6E, 0x53, 0);
 }
 
-static void key_event(SDL_Scancode sc, int down, int repeat) {
+static void key_event(SDL_Scancode sc, int down, int repeat, SDL_Keymod mod) {
     if (!g_keymap_ready) keymap_init();
     if ((int)sc <= 0 || (int)sc >= SDL_SCANCODE_COUNT || !g_keymap[sc].vk) return;
     if (down) {
         if (repeat || g_keyheld[sc]) return;                  /* the game wants edges only */
-        if (SDL_GetModState() & SDL_KMOD_GUI) return;         /* Cmd+key belongs to the OS and to M5's shortcuts */
+        if (sc == SDL_SCANCODE_F) {                           /* M5: fullscreen shortcuts (mac_window.c) */
+            if ((mod & SDL_KMOD_GUI) && (mod & SDL_KMOD_CTRL)) {   /* Cmd+Ctrl+F, the macOS fullscreen key */
+                isaac_mac_window_toggle_fullscreen("Cmd+Ctrl+F");
+                return;
+            }
+            /* plain F is the game's own fullscreen key: it is forwarded below and mac_window.c follows
+             * Options.Fullscreen */
+        }
+        if (mod & SDL_KMOD_GUI) return;                       /* other Cmd+key belongs to the OS */
         g_keyheld[sc] = 1;
     } else {
         if (!g_keyheld[sc]) return;
@@ -124,16 +125,33 @@ static void mouse_flush(void) {
     if (g_px != g_mx || g_py != g_my) { g_mx = g_px; g_my = g_py; isaac_input_mouse_move(g_mx, g_my); }
 }
 
-static void mouse_pos(SDL_WindowID wid, float x, float y) {
+/* Returns 1 when the pointer is inside the picture; in the bars the position is clamped to the
+ * nearest game pixel (a move there still tracks the edge) and 0 is returned. */
+static int mouse_pos(SDL_WindowID wid, float x, float y) {
     int gx, gy;
-    if (!isaac_mac_window_to_game(SDL_GetWindowFromID(wid), x, y, &gx, &gy)) return;
+    int inside = isaac_mac_window_to_game(SDL_GetWindowFromID(wid), x, y, &gx, &gy);
     g_px = gx; g_py = gy; g_pend = 1;
+    static int logged;
+    if (getenv("ISAAC_MAC_MOUSE_LOG") && logged < 400) {      /* every mapped event: window point -> game pixel */
+        ++logged;
+        printf("[mac][mouse] window %.1f,%.1f -> game %d,%d %s\n", x, y, gx, gy, inside ? "inside" : "in the bars (clamped)");
+    }
+    return inside;
 }
 
-static void mouse_button(int sdl_button, int down) {
+static int g_btn_logged;
+static void mouse_button(int sdl_button, int down, int inside, float wx, float wy) {
     int b = sdl_button == SDL_BUTTON_LEFT ? 0 : sdl_button == SDL_BUTTON_RIGHT ? 1 : -1;
     if (b < 0) return;
+    if (down && !inside) {                          /* a press in the bars does nothing */
+        printf("[mac][mouse] %s press at window %.1f,%.1f is in the bars: ignored\n", b ? "right" : "left", wx, wy);
+        return;
+    }
     mouse_flush();
+    if (g_btn_logged < 100) {
+        ++g_btn_logged;
+        printf("[mac][mouse] %s %s at window %.1f,%.1f -> game %d,%d\n", b ? "right" : "left", down ? "down" : "up", wx, wy, g_px, g_py);
+    }
     if (g_mbtn[b] == (uint8_t)down) return;
     g_mbtn[b] = (uint8_t)down;
     isaac_input_mouse_button(b, down);
@@ -141,24 +159,26 @@ static void mouse_button(int sdl_button, int down) {
 
 /* focus lost: nothing stays held (the Browser Build does the same on blur) */
 static void release_all(void) {
-    for (int i = 1; i < SDL_SCANCODE_COUNT; ++i) if (g_keyheld[i]) key_event((SDL_Scancode)i, 0, 0);
+    for (int i = 1; i < SDL_SCANCODE_COUNT; ++i) if (g_keyheld[i]) key_event((SDL_Scancode)i, 0, 0, SDL_KMOD_NONE);
     for (int b = 0; b < 2; ++b) if (g_mbtn[b]) { g_mbtn[b] = 0; isaac_input_mouse_button(b, 0); }
 }
 
 /* One SDL event from the present loop (mac_gl.c). */
 void isaac_mac_input_event(const SDL_Event *ev) {
     switch (ev->type) {
-    case SDL_EVENT_KEY_DOWN: key_event(ev->key.scancode, 1, ev->key.repeat); break;
-    case SDL_EVENT_KEY_UP: key_event(ev->key.scancode, 0, 0); break;
+    case SDL_EVENT_KEY_DOWN: key_event(ev->key.scancode, 1, ev->key.repeat, ev->key.mod); break;
+    case SDL_EVENT_KEY_UP: key_event(ev->key.scancode, 0, 0, SDL_KMOD_NONE); break;
     case SDL_EVENT_MOUSE_MOTION: mouse_pos(ev->motion.windowID, ev->motion.x, ev->motion.y); break;
-    case SDL_EVENT_MOUSE_BUTTON_DOWN:
-        mouse_pos(ev->button.windowID, ev->button.x, ev->button.y);
-        mouse_button(ev->button.button, 1);
+    case SDL_EVENT_MOUSE_BUTTON_DOWN: {
+        int in = mouse_pos(ev->button.windowID, ev->button.x, ev->button.y);
+        mouse_button(ev->button.button, 1, in, ev->button.x, ev->button.y);
         break;
-    case SDL_EVENT_MOUSE_BUTTON_UP:
-        mouse_pos(ev->button.windowID, ev->button.x, ev->button.y);
-        mouse_button(ev->button.button, 0);
+    }
+    case SDL_EVENT_MOUSE_BUTTON_UP: {
+        int in = mouse_pos(ev->button.windowID, ev->button.x, ev->button.y);
+        mouse_button(ev->button.button, 0, in, ev->button.x, ev->button.y);
         break;
+    }
     case SDL_EVENT_MOUSE_WHEEL: {
         mouse_flush();
         float dy = ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -ev->wheel.y : ev->wheel.y;
@@ -185,7 +205,8 @@ static SDL_Window *first_window(void) {
     return r;
 }
 
-int isaac_mac_input_push_key(uint32_t vk, uint32_t sc, int ext, int down) {
+/* mod: SDL_Keymod bits the key event carries (a pushed event does not change SDL's own modifier state) */
+int isaac_mac_input_push_key_mod(uint32_t vk, uint32_t sc, int ext, int down, unsigned mod) {
     if (!g_keymap_ready) keymap_init();
     for (int s = 1; s < SDL_SCANCODE_COUNT; ++s) {
         if (g_keymap[s].vk != vk || g_keymap[s].sc != (sc & 0xFF) || g_keymap[s].ext != (ext != 0)) continue;
@@ -194,25 +215,38 @@ int isaac_mac_input_push_key(uint32_t vk, uint32_t sc, int ext, int down) {
         e.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
         e.key.scancode = (SDL_Scancode)s;
         e.key.down = down != 0;
+        e.key.mod = (SDL_Keymod)mod;
         return SDL_PushEvent(&e) ? 1 : 0;
     }
     return 0;
 }
 
-static int g_push_x, g_push_y;      /* last scripted pointer position, game pixels */
-
-static void push_pos(float *wx, float *wy) {
-    int ww = GAME_W, wh = GAME_H;
-    SDL_Window *w = first_window();
-    if (w) SDL_GetWindowSize(w, &ww, &wh);
-    *wx = (float)g_push_x * (float)ww / GAME_W;
-    *wy = (float)g_push_y * (float)wh / GAME_H;
+int isaac_mac_input_push_key(uint32_t vk, uint32_t sc, int ext, int down) {
+    return isaac_mac_input_push_key_mod(vk, sc, ext, down, 0);
 }
 
+static float g_push_wx, g_push_wy;      /* last scripted pointer position, window points */
+
+static void push_pos(float *wx, float *wy) { *wx = g_push_wx; *wy = g_push_wy; }
+
+/* a point in the window itself (points), bars included */
+int isaac_mac_input_push_mouse_window(float x, float y) {
+    SDL_Window *w = first_window();
+    if (!w) return 0;
+    g_push_wx = x; g_push_wy = y;
+    SDL_Event e;
+    SDL_zero(e);
+    e.type = SDL_EVENT_MOUSE_MOTION;
+    e.motion.windowID = SDL_GetWindowID(w);
+    push_pos(&e.motion.x, &e.motion.y);
+    return SDL_PushEvent(&e) ? 1 : 0;
+}
+
+/* the middle of game pixel gx,gy wherever the picture is in the window now */
 int isaac_mac_input_push_mouse_move(int gx, int gy) {
     SDL_Window *w = first_window();
     if (!w) return 0;
-    g_push_x = gx; g_push_y = gy;
+    isaac_mac_game_to_window(gx, gy, &g_push_wx, &g_push_wy);
     SDL_Event e;
     SDL_zero(e);
     e.type = SDL_EVENT_MOUSE_MOTION;

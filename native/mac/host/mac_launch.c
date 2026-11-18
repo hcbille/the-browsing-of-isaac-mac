@@ -7,6 +7,7 @@
  *   isaac-mac [--headless] [--launch-settings <json>] [--vanilla] [--debug-console]
  *             [--lua-debug] [--segs F] [--bundle D] [--layer-dir D] [--save-dir D]
  *             [--mods-dir D] [--modscan F] [--gate-log F] [--stage main|boot]
+ *             [--scale integer|fill] [--window WxH]     (M5, mac_window.c; JSON key scale_mode)
  *   isaac-mac [--headless] <isaac.segs.bin> <instance dir> [boot|main] [save dir]   (dev)
  *
  * Precedence for every path: command-line flag, launch-settings.json, environment
@@ -203,7 +204,7 @@ static int take(int argc, char **argv, int *i, const char *name, const char **ou
 
 int mac_launch_parse(int argc, char **argv) {
     const char *f_segs = NULL, *f_bundle = NULL, *f_layer = NULL, *f_save = NULL, *f_mods = NULL,
-               *f_scan = NULL, *f_gate = NULL, *f_stage = NULL, *f_ls = NULL;
+               *f_scan = NULL, *f_gate = NULL, *f_stage = NULL, *f_ls = NULL, *f_scale = NULL, *f_window = NULL;
     int f_vanilla = 0, f_console = 0, f_lua = 0;
     const char *pos[4] = { 0 };
     int npos = 0;
@@ -213,7 +214,8 @@ int mac_launch_parse(int argc, char **argv) {
             take(argc, argv, &i, "--bundle", &f_bundle) || take(argc, argv, &i, "--layer-dir", &f_layer) ||
             take(argc, argv, &i, "--save-dir", &f_save) || take(argc, argv, &i, "--mods-dir", &f_mods) ||
             take(argc, argv, &i, "--modscan", &f_scan) || take(argc, argv, &i, "--gate-log", &f_gate) ||
-            take(argc, argv, &i, "--stage", &f_stage)) continue;
+            take(argc, argv, &i, "--stage", &f_stage) || take(argc, argv, &i, "--scale", &f_scale) ||
+            take(argc, argv, &i, "--window", &f_window)) continue;
         if (!strcmp(a, "--vanilla")) f_vanilla = 1;
         else if (!strcmp(a, "--debug-console")) f_console = 1;
         else if (!strcmp(a, "--lua-debug")) f_lua = 1;
@@ -243,6 +245,22 @@ int mac_launch_parse(int argc, char **argv) {
     c->vanilla = json_bool("vanilla_launch", 0) || f_vanilla;
     c->debug_console = json_bool("debug_console", 0) || f_console;
     c->lua_debug = json_bool("lua_debug", 0) || f_lua;
+
+    /* window scaling: flag, JSON scale_mode, env REPENTANCE_MAC_SCALE / ISAAC_MAC_SCALE, then "integer" */
+    {
+        const char *m = f_scale;
+        if (!m) m = json_str("scale_mode");
+        if (!m) m = env_nonempty("REPENTANCE_MAC_SCALE");
+        if (!m) m = env_nonempty("ISAAC_MAC_SCALE");
+        c->scale_fill = 0;
+        if (m && !strcmp(m, "fill")) c->scale_fill = 1;
+        else if (m && strcmp(m, "integer")) fprintf(stderr, "[mac] unknown scale mode '%s' (integer or fill); using integer\n", m);
+        /* initial window size WxH in points (flag --window, env ISAAC_MAC_WINDOW); a test and power-user knob */
+        const char *w = f_window ? f_window : env_nonempty("ISAAC_MAC_WINDOW");
+        int ww = 0, wh = 0;
+        if (w && sscanf(w, "%dx%d", &ww, &wh) == 2 && ww >= 160 && wh >= 90 && ww <= 16384 && wh <= 16384) { c->win_w = ww; c->win_h = wh; }
+        else if (w) fprintf(stderr, "[mac] bad window size '%s' (want WxH); using the default\n", w);
+    }
 
     /* where things are */
     const char *v;
