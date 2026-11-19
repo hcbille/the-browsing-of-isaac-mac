@@ -754,6 +754,33 @@ Needs an engine build. Callbacks real (10): MC_POST_PICKUP_SHOP_PURCHASE 1062, M
 
 Deferred: MC_PRE_LOOT_LIST_PUT / LootList callbacks 1334 and 1336 (the game's loot list is an MSVC `std::deque<LootListEntry>` and the Layer has no LootList class; the producer is 0x006dae40); MC_PRE_SLOT_DROP / explosion drops 1123 (the drops are inlined per variant in `Entity_Slot::TakeDamage` 0x00664560, no function boundary). Lint rule `insn-hook-giant-entry` was added.
 
+### CB-c: grid entities, grid collisions, grid hurt, CanReroll, Room item pool, knife hitbox parent (hooks 205-223, lab `lab_cb_c.lua`, 2026-11-19)
+
+Needs an engine build. Callbacks real (31): grid update 1402 1403 (door), 1410 1411 (pit), 1412 1413 (poop), 1416 1417 (rock), 1426 1427 (trapdoor);
+grid render 1446 1447 (door), 1438 1439 (trapdoor), 1462 1463 (wall); 1011 `MC_POST_GRID_ROCK_DESTROY`; 1012 1013 `MC_GRID_HURT_DAMAGE` and its post;
+grid collisions 1171-1174 (player, tear), 1177-1184 (bomb, pickup, projectile, NPC). Names real (7): `EntityPickup` Get/Set/ClearCanRerollOverride,
+`Room` GetItemPool/SetItemPool, `EntityKnife` Get/SetHitboxParentKnife. Lab: 97 PASS, 0 FAIL. Census with the binary: callbacks 165 -> 196,
+functions 799 -> 806. Trap run: same failed and `ERR:` lines as the base.
+
+| What | Site (v1.9.7.17) | Notes |
+|---|---|---|
+| Update 1402-1427 | the five classes' `Update` (vtable slot 2): Door 0x0070c5c0, Pit 0x00712180, Poop 0x00714770, Rock 0x00718fe0, TrapDoor 0x0071fef0 (slots 205-209), thiscall, pop 0 | `(grid)`, param = the grid type; any boolean answer skips the update (the post is then not run). The Pit's body runs past the index end, so the index shows no `ret`. |
+| Render 1438-1463 | Door 0x0070d1e0, Wall 0x00720fe0, and one function 0x0071edb0 for the Gravity, Spikes, Stairs, TNT, TrapDoor and Web classes (slots 210-212), `ret 4` | `(grid, offset)`; a boolean skips the draw, a Vector replaces the offset for the call (put back afterwards). The shared function is told apart by the grid type at `[this+4]`: only the trapdoor's names are wired. |
+| 1011 | `GridEntity_Rock::Destroy` 0x007197d0, `ret 8` (slot 213) | `(rock, type, immediate, source)`, after a `true` return. The game's own `GridEntity:Destroy` passes a source EntityRef too (it is not nil). |
+| 1012 1013 | `GridEntity::hurt_func` 0x00709fb0, `ret 0x14` (slot 214) | `(grid, entity, playerDamage, damageFlags u64, enemyDamage (xmm2), ignoreGridCollisionClass)`; any boolean from 1012 skips the damage. Spikes hurting the player is the lab's case. |
+| 1171-1184 | `Entity::move_with_grid` 0x006a9c90: one hook per collision class right after `Room::GetGridCollision` 0x007f0800 (Bullet 0x006aa0d8 slot 215, Ground 0x006aa1ea 216, PitsOnly 0x006aa2da 217, NoPits 0x006aa467 218, Walls 0x006aa85e 219), and the player's own `Entity_Player::CollideWithGrid` 0x006ab440 at 0x006ab77b (220) | `(entity, gridIndex, gridEntity)`, param = variant (NPC: type). `true` ignores that cell for that entity (the collision test answers "none", the Bullet and NoPits sites jump past the push-back); an entity tests one cell many times a frame, so the answer is kept per (entity, cell, frame). `GetGridCollision(-1)` answers 4, so no -1 trick. |
+| CanReroll | `Entity_Pickup::CanReroll` 0x006ee200 (slot 221), thiscall, AL, plain `ret` | The override is kept per InitSeed (survives leaving the room). Lab: the game's own D6 leaves the pedestal alone with the override false and rerolls it after `ClearCanRerollOverride`. |
+| Room item pool | the static `Room::GetItemPool` 0x007ebe20 (slot 222): ecx = seed, edx = RoomDescriptor, boss id at `[esp+4]`, caller cleans | `SetItemPool(pool)` answers it; -1 hands the choice back; forgotten at `Room::Init` (slot 89, ahead of the PRE_NEW_ROOM callback). Lab: with the Devil pool set and one heavy item added, the pedestal's first random draw is that item; the pool is -1 again after `ChangeRoom`. `ItemPool:GetPoolForRoom` (0x006fe2f0) is a different function and does not go through it. In the start room the game's function answers -1 (POOL_NULL) for seed 1234. |
+| Knife hitbox parent | `Entity_Knife::update_bone_swing` 0x009688d0, insn 0x0096a936 (slot 223): esi the weapon knife, edi the hitbox knife just spawned | The Forgotten's bone club hitbox (SubType 4) answers the club (SubType 0); the club answers nil. A recorded link is checked against both InitSeeds, so a freed and reused address answers nil. |
+
+Findings. (1) `type(run(...))` raises when no callback answers (`run` returns no value): lint rule `type-of-callback-result`. (2) The lab's collision checks were
+vacuous at first because `Room:RemoveGridEntity` plus `Isaac.GridSpawn` of the same cell left a collision with no grid entity (`GetGridEntity` nil); the lab keeps
+the rock instead and proves each "ignored" answer against a case that was blocked. (3) A Gaper's AI paths around a rock, so the NPC case pushes its velocity each frame.
+(4) Tears and projectiles need a height (-23) to collide with a rock.
+Deferred: `MC_PRE_FAMILIAR_GRID_COLLISION` / `MC_FAMILIAR_GRID_COLLISION` (1175, 1176): a Brother Bobby pushed into a rock at 8 px/frame passed it and no hook site ran (familiars have no
+grid collision class), so the names stay out of Implemented. The other grid classes' update and render names (fire, spikes, lock, pressure plate, teleporter, decoration, web, TNT, staircase,
+statue; the shared render's non-trapdoor classes) are not wired: their per-class `Update` addresses are the next step (same recipe; the shared render needs only more ids).
+
 ### Pickups and pools (`api_pickup_more.lua`, lab `lab_pickup_more.lua`, 2026-11-19)
 
 EntityPickup: Get/SetVarData, Get/SetDropDelay, AddCollectibleCycle, RemoveCollectibleCycle, HasFlipData, GetPickupGhost, GetPriceSprite,
@@ -769,11 +796,54 @@ PickCollectible, AddCollectible. Every address, offset and calling convention is
 - `Pickup::GetLootList` (0x006dae40) takes a hidden deque return, `shouldAdvance`, and a player (0 works). The deque has one entry per block.
 - `Isaac.GetItemIdByName` takes the English name ('The Inner Eye'); `ItemConfigItem.Name` is the localization key. Lint rule `item-name-is-a-key`.
 - `ItemPool:GetTrinket(dontAdvance, seed)`: the first argument is NOT "decrease"; `GetTrinket(false)` removes the drawn trinket from the pool.
-Not done (deferred): EntityPickup Set/Get/ClearCanRerollOverride (the override must change the game's own D6 and reroll code: needs a hook on
-`CanReroll` 0x006ee200, belongs with the engine-hook worker); Room Get/SetItemPool (SetItemPool needs a hook on the static `Room::GetItemPool`);
-ItemPool:GetCollectible's Flags argument: the game's Lua binding ignores a fifth argument (BAN_ACTIVES and BAN_PASSIVES drew the same items),
+Done later by CB-c (section above): EntityPickup Set/Get/ClearCanRerollOverride (hook on `CanReroll` 0x006ee200) and Room Get/SetItemPool (hook on the static `Room::GetItemPool`).
+Not done (deferred): ItemPool:GetCollectible's Flags argument: the game's Lua binding ignores a fifth argument (BAN_ACTIVES and BAN_PASSIVES drew the same items),
 the game function 0x00733610 does take the flags (ecx pool, stack poolType, seed, flags word = flags << 1 | not-decrease, default), but a wrapper
 put over the class table's entry was never the function a lookup answered (the lab's call went to the game's own binding), so it is not Implemented.
+
+### Player items (`api_player_items.lua`, lab `lab_player_items.lua` 130 PASS / 0 FAIL, 2026-11-19)
+
+Offsets measured in v1.9.7.17 (displacement-xref index, decompile, then the game's own reaction in the lab; the header of `api_player_items.lua` lists
+each with its anchor). EntityPlayer: R U a Wizard timer 0x145c, Metronome item 0x1388, held entity 0x1410, Pony charge 0x1888 (the item-use switch sets 60,
+only while the player's velocity squared is over 1), Plan C countdown 0x188c, Dead Eye charge 0x18b0 (`ClearDeadEyeCharge` 0x007c78e0 clears it at random: 20,
+33, 50 percent per call), pee burst 0x18f8/0x18fc, bladder 0x1900/0x1904 (max starts at 0), urethra 0x1908/0x190c, Suplex state/aim/target/land
+0x1f2c/0x1f30/0x1f34/0x1f3c (Suplex! writes state 1, aim 0x10), poop queue 0x1f58, Eve's Sumptorium 0x1f7c, costume vector 0x1220 (stride 0x130), layer map
+0x122c, afterimage deque 0x1e54. Game functions called: SpawnLocust 0x005b35c0, InitPostLevelInitStats 0x007bc740, TryAddToBagOfCrafting 0x007d5170,
+IncrementPlayerFormCounter 0x0075e320, GetTotalActiveCharge 0x007910f0, CheckPoopSpellQueue 0x007d6670, deque push 0x007dc740.
+Done: 43 EntityPlayer names (the Suplex stand-ins in `api_gaps.lua` replaced), PlayerManager AnyPlayerTypeHasCollectible/Trinket, FirstBirthrightOwner,
+GetRandomCollectibleOwner/TrinketOwner, CostumeSpriteDesc (14 names). Census 858 functions / 165 callbacks (was 799 / 165); the 95-mod trap run reaches all
+five floor changes with the same failed and `ERR:` lines as the baseline. Backlog (regenerated from that census): EntityPlayer missing 27 -> 4, inert 5 -> 0,
+PlayerManager 6 -> 1, CostumeSpriteDesc 2 -> 0, ItemConfig_Card 2 -> 1; AddCustomTag/HasCustomTag/GetTaggedItems were already done (the old census log
+predated them) and `ItemConfig_Card.Weight` is the mods' own boss weights (the tool now drops it).
+Not done: ModdedCardFront (REPENTOGON's own field at card config +0x6c, no vanilla counterpart: needs an engine hook), EntityPlayer Teleport / InitTwin /
+ShuffleCostumes and PlayerManager.RemoveCoPlayer (engine functions not located; REPENTOGON's signatures match nothing here), SpawnAquariusCreep (the
+effect's varData offset is unmeasured). A native `EntityPlayer:GetBombVariant(0, false)` called from a lab once stopped the run with "Host pointer handed to the
+Guest is outside the Guest region" (not looked into). A transformation reached by `IncrementPlayerFormCounter` shows the unlock paper, which pauses the game.
+Lint rule: `lab-prints-done`.
+
+### Rooms and levels (`api_rooms_more.lua`, lab `lab_rooms_more.lua`, 2026-11-19)
+
+Measured in v1.9.7.17 (a dump of a live room, `lab_rooms_probe.lua`): Room clear delay +0x11ec, Camera* +0x11f8 (the camera's +0x68 is its room), FXLayers +0x1618
+with FXParams at +0x4f8 inside it (+0x1c use-water byte, +0x20 water colour, +0x34 colour multiplier, +0x48 shadow alpha, +0x4c shadow colour, +0x60 light colour,
++0x74 water effect colour), room TemporaryEffects +0x7310; RoomDescriptor Doors[8] at +0x1c (-1 = none) and BossDeathSeed +0x64. `Camera` (thiscall, ret 4):
+IsPosVisible 0x00944a40 (bool in AL), SetFocusPosition 0x00944d10, SnapToPosition 0x00944d40. `Game::PlaceRoom` 0x00738ab0 `ret 0x14` (ecx = the Game; stack: a
+LevelGenerator_Room, the RoomConfigRoom, seed, 0, 0), its constructor 0x007381b0 `ret 0xc` (ecx = a 0x50-byte buffer; column, line, shape); descriptors from
+game+0x14 (0xb8 bytes each), their count at game+0x182cc, the current dimension at game+0x1830c.
+Done: Room SetRoomClearDelay, GetCamera, GetFXLayers, GetFXParams, GetEffects; Camera IsPosVisible, SetFocusPosition, SnapToPosition; FXParams (variables
+UseWaterV2, ShadowAlpha, WaterColor, WaterColorMultiplier, ShadowColor, LightColor, WaterEffectColor); RoomDescriptor GetErrorTrinketEffect, Doors,
+BossDeathSeed (the two variables are put into the real descriptor's property tables at the first room, so the census flags are set at load); GridEntity ToWall;
+Level TryPlaceRoom / TryPlaceRoomAtDoor (the door of the CURRENT room is not spawned: `Room::MakeDoor` was not found; the descriptors' doors are linked).
+Lab 41 PASS / 0 FAIL. Left out because the effect was not proven: GridEntity:HurtDamage (`hurt_func` 0x00709fb0 `ret 0x14` takes the damage SOURCE entity first
+and reads its type; with the first player it returned true but a poop and a rock did not change), Room:IsChampionBossSeed (no way to check REPENTOGON's
+rules against the game), RoomConfigRoom.Mode (the game's own class already answers `Mode`).
+Deferred: Room GetItemPool/SetItemPool (engine hook, cb-c); Camera SetClampEnabled (patch of `Camera::ClampedToRoom` 0x00943490); GridEntity
+SetWaterClipFlags/ResetWaterClipFlags (override of the vtable GetWaterClipInfo); RoomConfig LoadStb and CcpContainer_RoomConfigSet AddRooms (REPENTOGON's
+VirtualRoomSet, about 1300 lines); LevelGeneratorRoom GenerationIndex (only reachable through MC_PRE_LEVEL_PLACE_ROOM, `LevelGenerator::place_room`
+0x009b0330, cb-c); Room UpdateColorModifier (stays inert: `Room::ComputeColorModifier` not found), DoLightningStrike / GetLightningIntensity (the Game's
+lightning offset in .17 is unknown), ClearBossHazards, FXLayers AddPoopFx, RoomDescriptor InitSeeds (functions not located). Careful: `names.json` is only a
+signature match; "FXLayers::AddPoopFx 0x4dd7f0" is really an NPC update.
+False positives of the backlog tool, now suppressed: `REVEL.RoomLists[...]:AddRooms` (a Revelations function, not RoomConfig.AddRooms) and StageAPI's
+`:SetMusic` (not RoomConfigStage). Lint rules: `hurt-func-source`, and `backlog-narrowing` now needs MODLIB.
 
 ### Next batches (proposed)
 
@@ -845,3 +915,16 @@ Get/SetFlashRed/Soul/GoldHearts, GetLayout, GetHearts, GetHeartByIndex; PlayerHU
 PlayerHUDHeart 2 -> 0; census 743 functions / 155 callbacks (was 710 / 155). Not done: Red Stew's own use did not set the duration when `UseActiveItem`
 was called from a script (only the field and its effect on Damage were measured); PlayerHUD hearts are copies (as REPENTOGON's); a co-op layout (1 to 3) was not seen.
 Lint rules: `health-field-offsets`, `cacheflag-literals`.
+
+**Game and miscellaneous globals batch (worker game-misc, 2026-11-19; `api_game_misc.lua`, lab `lab_game_misc.lua` 123 PASS / 0 FAIL).**
+Game struct in v1.9.7.17: debug flags 0x26544, IsRerun byte 0x26588, dizzy 0x67738 (current) and 0x6773c (target), colour modifier current/target/lerp
+0x676b8 / 0x676d0 / 0x676e8, erased-enemy vector 0x6774c..0x67750 (12-byte records). Functions: `SetColorModifier` 0x007067c0 (xmm3 = rate), `DevolveEnemy` 0x00705480,
+ChainLightning 0x00707e10, random unit vector 0x0067f0d0, erased-id fix-up 0x007076d0, `AddErasedEnemy` 0x00707840, `GetCurrentStageConfigId` 0x0082d030,
+`ItemOverlay::Show` 0x009ad210 (ret 0xc; id past 0x2f is ignored), PlayJingle 0x007e2580 (ret 0xc, countdown at +0x364). Challenges 1..45 are a byte array in the
+persistent data; higher ids are kept by the Layer. Done: RNG RandomVector/PhantomVector, REPENTOGON.MeetsVersion and the WeightedOutcomePicker constructor (flags only),
+Game Add/GetDebugFlags piece, IsRerun, Get/SetDizzyAmount, IsErased, the three colour getters and SetColorModifier (the old Lua-only stand-ins are gone), DevolveEnemy,
+ChainLightning, MoveToRandomRoom, Isaac GetCurrentStageConfigId / RenderToWorld / AllTaintedCompletion / the four challenge calls, the ItemOverlay table,
+MusicManager PlayJingle/StopJingle, BossPool and BossPoolManager, the EntitySaveState setters. Not done (no Lua-only way, or no match in this exe): ProceduralItemManager.CreateProceduralItem
+and EntityNPC.ThrowMaggot (REPENTOGON's byte signatures match nothing), the HistoryHUD family with its two callbacks, Input.GetMouseWheel, Options.BetterVoidGeneration,
+Isaac LoadModDataFromFolder/SetIcon/ShowErrorDialog/StartNewGame/DrawLine/RenderCollectionItem. `RenderToWorld`'s screen-shake and scroll terms read as zero in the lab, so only the
+zero-offset case is verified. Lint rules: `stdstring-read`, `backlog-narrowing` (MODFIELD).

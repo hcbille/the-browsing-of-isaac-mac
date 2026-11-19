@@ -100,6 +100,17 @@ def rule_part_loads_part(fs):
                                   'part list in rgon.lua instead (before "api_hooks.lua" unless it must run after it)')
 
 
+def rule_lab_prints_done(fs):
+    """A lab that counts PASS/FAIL must print a closing DONE line with the counts (2026-11-19: without it a run that
+    stopped early or never reached its steps read as clean, since only the FAIL lines were counted)."""
+    for f in fs:
+        if re.match(r'.*/lab_[a-z0-9_]+\.lua$', f) and f.startswith(RGON + '/'):
+            t = text_of(f) or ''
+            if re.search(r'local pass, fail\b', t) and not re.search(r'done', t, re.I):
+                yield (f, 0, 'a lab with a `local pass, fail` counter must end with a line like '
+                             'B.log(string.format("lab_x: DONE %d PASS %d FAIL", pass, fail)) so a run cut short is visible')
+
+
 def rule_inert_not_implemented(fs):
     """A stand-in that does nothing is not 'implemented' (2026-11-19: Shape and DebugRenderer, which draw nothing, were put
     in REPENTOGON.Implemented). Mark it with a `-- inert: Name Name` line in its Layer file."""
@@ -118,6 +129,23 @@ def rule_inert_not_implemented(fs):
                     yield (f, n, '%s is marked inert (accepted, not supported) but is set in REPENTOGON.Implemented: leave inert '
                                  'stand-ins out of REPENTOGON.Implemented (the gate would show a mod a name that does nothing) and '
                                  'list them as "accepted, not supported" in the file and in layer-gaps.md' % name)
+
+
+def rule_hurt_func_source(fs):
+    """GridEntity::hurt_func (0x00709fb0) reads its first stack argument, the damage SOURCE entity (its type at +0x28), before
+    anything else (2026-11-19, chunk 6: a call with 0 there dereferences null). Pass a real Entity* (the first player), never 0.
+    Also: a name from names.json is only a signature match, so check its decompile before using the address as that function
+    (FXLayers::AddPoopFx 0x4dd7f0 is really an NPC update)."""
+    pat = re.compile(r'call\(\s*0x0*709fb0\s*,[^)]*\)\s*,\s*0\s*,|0x0*709fb0\s*,\s*\{[^}]*\}\s*,\s*0\s*,')
+    for f in fs:
+        if not f.endswith('.lua') or not f.startswith(RGON + '/'):
+            continue
+        t = text_of(f)
+        if t is None:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            if pat.search(line):
+                yield (f, n, 'hurt_func called with a null source entity: pass a real Entity* (Isaac.GetPlayer(0)) as the first stack argument')
 
 
 def rule_global_pointer_plus_offset(fs):
@@ -250,6 +278,19 @@ def rule_roomconfig_both_tables(fs):
                              'them on RoomConfig and RoomConfigHolder together')
 
 
+def rule_orphan_starts_packed(fs):
+    """orphan_starts.py keeps the packed-accessor test (2026-11-19: 0x0060d0e0, a getter right after a 16-byte setter with no int3,
+    was dropped as 'inside a function' because the index merges unpadded neighbours; a mod's familiar then hit a TRAP)."""
+    f = 'scripts/recomp/lift/orphan_starts.py'
+    if f not in fs:
+        return
+    t = text_of(f) or ''
+    for needle in ('def after_ret', 'endVa'):
+        if needle not in t:
+            yield (f, 0, 'orphan_starts.py must keep "%s": a function packed right after a ret (no int3) is a real entry, and Ghidra\'s '
+                         'bodies (endVa), not the PE index\'s merged bounds, decide whether a start falls inside a function' % needle)
+
+
 def rule_fast_setjmp(fs):
     """Every Host and lifted TU builds with setjmp/longjmp mapped to _setjmp/_longjmp (2026-11-19: Darwin's setjmp
     saves the signal mask and sigaltstack, two syscalls per host->guest call, 26.6% of the main thread with 95 mods)."""
@@ -304,6 +345,8 @@ def rule_backlog_narrowing(fs):
         ("call chain ends in", 'a chain whose last call is GetSprite()/To*() has that return class whatever the head: narrow it to the return class'),
         ("MODACCESS", 'a mod\'s cached accessor chain (`Mod.Room():Name()`) returns the game\'s object of that name: narrow it via MODACCESS so Room:SetBackdropType is not counted against EntityTear'),
         ("'TearFlagsLib'", 'a mod\'s own library table (TearFlagsLib.FireSplitTear) is not a REPENTOGON class: keep it in MODISH so its functions are not counted as misses'),
+        ("MODLIB", 'a call reached through a mod library table (REVEL.RoomLists[...]:AddRooms) is that library\'s own function: keep REVEL and StageAPI in MODLIB so it is not counted as a RoomConfig miss'),
+        ("MODFIELD", 'a mod\'s cached field (`Mod.itemconfig:GetTaggedItems`) is the game\'s object of that name: narrow it via MODFIELD so ItemConfig.GetTaggedItems is not counted against another class'),
         ("field of the mod's own table", 'a dot access `x.Name` that is not called or constructed, where every REPENTOGON candidate is a function, is a field of the mod\'s own table: suppress it'),
     ):
         if needle not in t:
@@ -350,6 +393,20 @@ def rule_read_of_call_result(fs):
         for n, line in enumerate((t or '').splitlines(), 1):
             if pat.search(line) and 'eax is a pointer' not in line:
                 yield (f, n, 'a memory reader on call()\'s result reads memory at eax: take the result directly, or mark a real pointer with `-- eax is a pointer`')
+
+
+def rule_type_of_callback_result(fs):
+    """type(run(...)) raises 'bad argument #1 to type (value expected)' when no callback answers, because run() then returns NO value, not
+    nil (2026-11-19, cb-c: every grid update hook errored on its first call and the hurt hook lost its `after` state). Take the first
+    result into a local: `local res = run(...)`, then `if type(res) == "boolean"`; `(run(...))` in parentheses also gives exactly one."""
+    pat = re.compile(r'\btype\(\s*(?:T\.)?(?:run|run_by_rule|RunWithParam)\(')
+    for f in fs:
+        if not (f.startswith(RGON + '/') and f.endswith('.lua')):
+            continue
+        t = text_of(f)
+        for n, line in enumerate((t or '').splitlines(), 1):
+            if pat.search(line):
+                yield (f, n, 'type(run(...)) errors when the callback answers nothing (no value, not nil): `local res = run(...)` first, then type(res)')
 
 
 def rule_item_name_is_a_key(fs):
@@ -483,7 +540,18 @@ def rule_insn_hook_giant_entry(fs):
                        % m.group(3))
 
 
-RULES = [rule_item_name_is_a_key, rule_insn_hook_giant_entry, rule_pgrep_game_by_name, rule_tears_methods_in_lab, rule_cacheflag_literals, rule_health_field_offsets, rule_web_host_mem_base, rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part]
+def rule_stdstring_read(fs):
+    """A std::string field of a game object is read with B.stdstr(addr), not B.str(addr) (2026-11-19, game-misc: BossPool's name read with
+    B.str returned the string's SSO bytes or a pointer, not the text; the 16 bytes at the field are a std::string)."""
+    for f in fs:
+        if not (f.startswith(RGON + '/api_') and f.endswith('.lua')):
+            continue
+        for i, ln in enumerate((text_of(f) or '').split('\n'), 1):
+            if re.search(r'B\.str\([^)]*\)', ln) and re.search(r'name|Name', ln) and '--' not in ln.split('B.str')[0]:
+                yield (f, i, 'a std::string name field is read with B.stdstr(addr); B.str(addr) is for a plain C string: use B.stdstr here')
+
+
+RULES = [rule_type_of_callback_result, rule_stdstring_read, rule_orphan_starts_packed, rule_hurt_func_source, rule_item_name_is_a_key, rule_insn_hook_giant_entry, rule_pgrep_game_by_name, rule_tears_methods_in_lab, rule_cacheflag_literals, rule_health_field_offsets, rule_web_host_mem_base, rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_lab_prints_done, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part]
 
 
 def main():

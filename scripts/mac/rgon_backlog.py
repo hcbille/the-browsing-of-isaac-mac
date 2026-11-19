@@ -47,6 +47,10 @@ import rgon_census as rc  # noqa: E402  (reuse its REPENTOGON-reading code)
 
 norm = rc.norm_class
 
+# (class, name) pairs that the mods' uses never mean: `.Weight` is the mods' own boss and pick weights (Fiend Folio's
+# main.lua:763, 49 uses; REPENTOGON's ItemConfig_Card.Weight has none in any mod), so it is not a miss of the card's field.
+NOT_A_MOD_USE = {(norm('ItemConfig_Card'), 'Weight')}
+
 ENTITY_SUB = ['EntityPlayer', 'EntityNPC', 'EntityFamiliar', 'EntityTear', 'EntityLaser', 'EntityBomb', 'EntityPickup',
               'EntityProjectile', 'EntityEffect', 'EntityKnife', 'EntitySlot']
 PARENT = {norm(c): 'Entity' for c in ENTITY_SUB}
@@ -183,12 +187,17 @@ VARNAME = {'player': 'EntityPlayer', 'npc': 'EntityNPC', 'familiar': 'EntityFami
            'tear': 'EntityTear', 'laser': 'EntityLaser', 'room': 'Room', 'level': 'Level', 'game': 'Game',
            'sprite': 'Sprite', 'pickup': 'EntityPickup', 'bomb': 'EntityBomb', 'knife': 'EntityKnife',
            'projectile': 'EntityProjectile', 'proj': 'EntityProjectile', 'effect': 'EntityEffect', 'itempool': 'ItemPool',
-           'hud': 'HUD', 'seeds': 'Seeds', 'rng': 'RNG', 'p': None}
+           'hud': 'HUD', 'seeds': 'Seeds', 'rng': 'RNG', 'chest': 'EntityPickup', 'p': None}
+# a mod library's global table: every name reached through it (REVEL.RoomLists[...]:AddRooms, StageAPI.X:SetMusic) is that
+# library's own, whatever the chain after it
+MODLIB = {'REVEL', 'StageAPI'}
 MODISH = {'mod', 'Mod', 'self', 'FiendFolio', 'Epiphany', 'FF', 'epiphany', '_G', 'table', 'string', 'math', 'os', 'io', 'debug',
           'json', 'utf8', 'coroutine', 'package',
           'TearFlagsLib'}   # a mod's own library table (Fiend Folio's TearFlagsLib.FireSplitTear is its own function)
 # a mod's cached accessor (Mod.Room(), Mod.Game(), Mod.Level()) returns the game's object of that name
 MODACCESS = {'Room': 'Room', 'Game': 'Game', 'Level': 'Level'}
+# a mod's cached field (Mod.itemconfig = Isaac.GetItemConfig()) is the game's object of that name
+MODFIELD = {'itemconfig': 'ItemConfig'}
 
 
 def cb_arg_class(mc, idx):
@@ -224,6 +233,8 @@ def eval_chain(pieces, binding_of, classes_global):
         cur = ('static', first)
     elif first in MODISH and len(pieces) > 2 and pieces[1][0] == 'dot' and pieces[1][1] in MODACCESS and pieces[2][0] == 'call':
         cur, i = MODACCESS[pieces[1][1]], 3
+    elif first in MODISH and len(pieces) > 1 and pieces[1][0] == 'dot' and pieces[1][1] in MODFIELD:
+        cur, i = MODFIELD[pieces[1][1]], 2
     else:
         cur = binding_of(first)
         if cur is None:
@@ -463,6 +474,8 @@ def main():
     for (nc, n), e in pairs.items():
         if e['kind'] == 'mod' and norm(n) == nc:
             continue   # a "Modified Constructors" entry (RNG(), Font()): the class name, not a method
+        if (nc, n) in NOT_A_MOD_USE:
+            continue
         by_name[n].append(e)
 
     impl, impl_ids, exists = rc.parse_layer_logs(a.implemented)
@@ -555,6 +568,9 @@ def main():
                     suppressed['definition (function a:Name)'] += 1
                     continue
                 pieces = chain_before(text, p)
+                if pieces and pieces[0][0] == 'id' and pieces[0][1] in MODLIB:
+                    suppressed['receiver chain starts at a mod library (REVEL, StageAPI): its own function'] += 1
+                    continue
                 if (name == 'FromAngle' and pieces == [('id', 'Vector')]):
                     suppressed['Vector.FromAngle( ) is the game\'s static; REPENTOGON documents an instance method of that name'] += 1
                     continue

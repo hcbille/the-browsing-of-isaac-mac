@@ -320,6 +320,14 @@ means the cloud guard failed. Never run it against the real client without `ISAA
   APFS clone (nothing is copied until a file changes). Run `apply_wrap_patches` and `apply_insn_hooks` from `lift_patches.py` on the clone, `cp -Rp output/mac
   <out>`, then `build_native.py --out <out> --lift-dir .scratch/<task>/gu` (about 40 s with a new `host_rgon.c`). The shared binary and lift stay untouched.
   `toolchain/env.sh` is in the workspace folder, one level above the work repo. For a syntax check of a Layer file build `luac` from `tools/lua-5.3.3`.
+- **A TRAP "indirect call to 0x... resolves to neither a host shim nor a lifted function. It is inside the image" is a lift gap (worker liftgap,
+  2026-11-19).** The callee exists in the exe but is not in `output/recomp/lift/starts_union.txt`. Diagnose: `grep -c 0x<va> starts_union.txt`;
+  `python3 scripts/recomp/lift/orphan_starts.py` (report: which test drops it); `sqlite3 output/decomp/*/index/pe-index.sqlite "select va,mn,ops from insn
+  where va between <va-16> and <va+16>"` and `select src,kind from xref where dst=<va>`. Case 0x0060d0e0 (a getter, Epiphany's Remembrance familiar):
+  MSVC packs small members with no int3 between, so the PE index's function bounds merge the neighbours and the "inside a function" test dropped it.
+  `orphan_starts.py` now keeps an aligned escape target right after a `ret` when no Ghidra body spans it and no conditional branch lands on it (10 new
+  starts), and scans .rdata/.data for code pointers too (373 not-yet-start targets, 0 usable: catch funclets only). Fix = re-run build.sh stage 4
+  (lift, which runs `orphan_starts.py --write`). Lab: `lab_liftgap.lua`. Rule: `rule_orphan_starts_packed`.
 - **Game facts found by the player callbacks lab.** The drop-button code (`control_drop_pocket_items`) runs twice per update. Collectible ids: 412 is
   Cambion Conception, 413 Immaculate Conception (their code is 0x19c / 0x19d). Pocket slots are `{id, type}` at player +0x17a0 + 8 * i (type 1 card, 0 pill,
   2 pocket active). Conception familiar flags are at +0x1938, the Immaculate counter at +0x1930, Cambion at +0x1934. An insn hook may only redirect to a
