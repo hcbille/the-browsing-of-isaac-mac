@@ -209,7 +209,44 @@ def rule_room_transition_stand_in(fs):
                              'table, and do not make a second, inert one')
 
 
-RULES = [rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes]
+def rule_roomconfig_both_tables(fs):
+    """RoomConfig and RoomConfigHolder are the same functions under two names (2026-11-19: GetRandomRoom was put on
+    RoomConfig only, so Fiend Folio's RoomConfigHolder.GetRandomRoom call hit nil)."""
+    for f in fs:
+        if not f.endswith('.lua'):
+            continue
+        t = text_of(f)
+        if t is None:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            code = line.split('--')[0]
+            if f.endswith('api_roomconfig.lua'):
+                if re.search(r'\bT\.static\(', code) and 'T.static(tbl, name, fname, f)' not in code:
+                    yield (f, n, 'add a RoomConfig function with `on_both("Name", fn)` so RoomConfig and RoomConfigHolder '
+                                 'both carry it; a bare T.static puts it on one table only')
+            elif re.search(r'static\([^)]*"RoomConfig(Holder)?"\s*,\s*"', code):
+                yield (f, n, 'RoomConfig functions are added in api_roomconfig.lua with `on_both("Name", fn)`, which puts '
+                             'them on RoomConfig and RoomConfigHolder together')
+
+
+def rule_fast_setjmp(fs):
+    """Every Host and lifted TU builds with setjmp/longjmp mapped to _setjmp/_longjmp (2026-11-19: Darwin's setjmp
+    saves the signal mask and sigaltstack, two syscalls per host->guest call, 26.6% of the main thread with 95 mods)."""
+    f = 'scripts/mac/build_native.py'
+    if f not in fs:
+        return
+    t = text_of(f) or ''
+    if not re.search(r'FAST_JMP\s*=\s*\[[^\]]*-Dsetjmp=_setjmp[^\]]*-Dlongjmp=_longjmp', t):
+        yield (f, 0, 'define FAST_JMP = ["-Dsetjmp=_setjmp", "-Dlongjmp=_longjmp"]: Darwin\'s setjmp costs two syscalls per '
+                     'host->guest call; if code must longjmp out of a signal handler, use sigsetjmp/siglongjmp there instead')
+    for name in ('HOST_CFLAGS', 'LIFT_CFLAGS'):
+        m = re.search(r'^%s\s*=.*$' % name, t, re.M)
+        if not m or 'FAST_JMP' not in m.group(0):
+            yield (f, t[:m.start()].count('\n') + 1 if m else 0,
+                   '%s must end with "+ FAST_JMP" so every TU uses _setjmp/_longjmp (no signal-mask syscalls)' % name)
+
+
+RULES = [rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes]
 
 
 def main():

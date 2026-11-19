@@ -63,7 +63,7 @@ void mac_boot_status(const char *text, int force) {
     if (!force && last && now - last < 250000000ull) return;
     last = now;
     printf("[mac][boot] status: %s\n", text);
-    fflush(stdout);
+    fflush(stdout);              /* the Launcher shows these live: never wait for the log's flush timer */
 }
 void mac_boot_ready(void) {
     if (g_boot_ready) return;
@@ -178,8 +178,10 @@ static void *frame_watchdog(void *arg) {
     uint32_t want = (uint32_t)(uintptr_t)arg;
     while (isaac_frames_presented() < want) usleep(20000);
     uint32_t bad = isaac_guard_check();
+    { extern void isaac_mac_log_finish(void); isaac_mac_log_finish(); }   /* the repeat totals come before the verdict line */
     printf("[mac] reached %u frames (wanted %u); guard %s\n", isaac_frames_presented(), want,
            bad ? "CORRUPTED" : "intact");
+    { extern void isaac_mac_log_finish(void); isaac_mac_log_finish(); }
     fflush(NULL);
     _exit(bad ? 3 : 0);
     return NULL;
@@ -189,7 +191,7 @@ void isaac_mac_gl_install_fakes(void);
 int isaac_mac_headless(void);
 
 int main(int argc, char **argv) {
-    setvbuf(stdout, NULL, _IOLBF, 0);      /* the Launcher reads the pipe live */
+    { extern void isaac_mac_log_setup(void); isaac_mac_log_setup(); }   /* buffered log, flushed every 100 ms (mac_log.c) */
     /* --headless anywhere on the line is ISAAC_MAC_HEADLESS=1 */
     for (int i = 1; i < argc; ++i)
         if (!strcmp(argv[i], "--headless")) {
@@ -287,7 +289,6 @@ int main(int argc, char **argv) {
     { char t[64]; snprintf(t, sizeof t, "Reading mods (%u files)", mac_mods_file_count()); mac_boot_status(t, 1); }
     if (chdir(g_mac_instance_dir) != 0) perror("[mac] chdir to the instance");
 
-    setvbuf(stdout, NULL, _IOLBF, 0);
     if (isaac_mac_headless()) {
         isaac_mac_gl_install_fakes();      /* no window, no ANGLE: the fake GL answers */
         printf("[mac] headless: no window\n");

@@ -46,6 +46,19 @@ checkout (`notes/current.md`, `notes/NEXT.md`, `notes/PROGRESS.md`). Uncommitted
   look at log sizes after a run and delete your own scratch output.
 - `screencapture` is denied. Screenshots come from the game itself (`ISAAC_MAC_SHOT`) and the Launcher
   (`REPENTANCE_MAC_LAUNCHER_SNAPSHOT`).
+- **Logging** (`native/mac/host/mac_log.c`). All paths end in stdio: the game's logger (`OutputDebugStringA` shim in
+  `host_shims_gl.c`, `[odsa] ...`, which is also how Lua errors, `Isaac.DebugString` and the engine's `[warn]` lines arrive),
+  `isaac_log` (`host_trap.c`), the Layer's `B.log` (`[isaac][rgon]`, through `isaac_log`), the Host's `printf` (`[mac]...`).
+  The Launcher parses the process's stdout+stderr pipe (`[mac][boot] status:` / `ready`); run.sh redirects both to the log.
+  Before: stderr unbuffered (one `write(2)` per line), stdout line buffered. Now stdout and stderr are one 1 MB buffer
+  (`ISAAC_LOG_BUF_KB`) flushed by a thread every 100 ms (`ISAAC_LOG_FLUSH_MS`), at once for boot status lines, at exit, at the
+  frame-limit exit and on fatal/terminating signals (SEGV BUS ILL FPE ABRT TRAP SYS TERM INT HUP QUIT ALRM: flush, then the
+  default action, so exit statuses and crash reports are unchanged). SIGKILL loses up to 100 ms. Order is exact (one buffer).
+  Repeats: for `[warn]`, `[ERROR]` and `"...failed: ..."` lines the first 3 copies of an exact message are written, then only
+  a note at the 10th/100th/1000th... copy and, at exit, a `[mac][log]` table of counts (`ISAAC_LOG_DEDUP_KEEP=3`). Other
+  lines are never dropped. Switches: `ISAAC_LOG_DEDUP=0` (every line), `ISAAC_LOG_UNBUFFERED=1` (the old per-line writes;
+  also automatic on a terminal). A lab that greps the log for a line counts at most 3 of a `[warn]`/`failed:` line unless
+  `ISAAC_LOG_DEDUP=0`. Bench: `LAB=lab_logbench.lua` (per-path cost per line).
 
 ## 4. Build
 
@@ -57,6 +70,11 @@ python scripts/mac/build_native.py --jobs 3        # -> output/mac/isaac-mac, ab
 
 - `build_native.py` compares file times only. After changing a header (e.g. `mac_launch.h`), touch the `.c`
   files that include it, or delete `output/mac/obj/host/*.o`, or stale objects crash at start.
+- Every TU builds with `FAST_JMP` (`-Dsetjmp=_setjmp -Dlongjmp=_longjmp`, lint `rule_fast_setjmp`). Darwin's own
+  setjmp saves the signal mask and sigaltstack, two syscalls per call. The Host arms one per host-to-guest call and per
+  thread slice. With 95 mods that was 26.6% of the main thread; a 6000-frame lab_trapdoor took 35 s with it and 28 s
+  without. No Host code longjmps out of a signal handler. Code that ever must, uses `sigsetjmp`/`siglongjmp` there.
+  A flag change does not rebuild anything by itself (file times only): delete `<out>/obj` to apply it.
 - Layer Lua needs no build: stage it with `python3 scripts/mac/stage_layer.py <dir>` and point the game at
   `<dir>` (`--layer-dir`). Staging takes a snapshot, so later edits don't change a running game.
 - An engine hook (new row in `scripts/recomp/rgon/tools/hook_table.py`) changes the lifted game:

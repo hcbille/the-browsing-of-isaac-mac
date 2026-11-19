@@ -759,7 +759,7 @@ index f083c69..5b5b9b0 100644
   * without marking the object for finalization: lapi.c lua_setmetatable's
   * LUA_TUSERDATA case less its luaC_checkfinalizer call (the index is read as
 diff --git a/scripts/recomp/host/src/host_rgon.c b/scripts/recomp/host/src/host_rgon.c
-index 25bd680..87eaa68 100644
+index 25bd680..767627c 100644
 --- a/scripts/recomp/host/src/host_rgon.c
 +++ b/scripts/recomp/host/src/host_rgon.c
 @@ -63,6 +63,7 @@ void isaac_lua_guest_invoke(uint32_t fn, CpuState *cpu, const uint32_t *args, un
@@ -770,7 +770,38 @@ index 25bd680..87eaa68 100644
  uint32_t isaac_guest_alloc(uint32_t n);
  void     isaac_guest_free(uint32_t p);
  
-@@ -383,8 +384,14 @@ static int gate_index(lua_State *L) {
+@@ -159,14 +160,14 @@ static int l_alloc(lua_State *L) {
+ }
+ static int l_free(lua_State *L) { isaac_guest_free((uint32_t)luaL_checkinteger(L, 1)); return 0; }
+ 
+-/* call(va, regs, ...) -> eax, st0, edx
++/* call(va, regs, ...) -> eax, st0, edx, xmm0
+  * A guest function by address. `regs` is nil or a table of the registers the
+  * convention wants ({ecx = this} for a thiscall; eax, edx, ebx, esi, edi for
+  * the game's register-argument functions); the rest are stack words, first
+  * argument first. The callee's own `ret n` is irrelevant: the call runs on a
+- * frame of its own. Three results, of which the caller takes the one the
++ * frame of its own. Four results, of which the caller takes the one the
+  * function really returns: EAX as an unsigned integer, ST0 as a number (a
+- * float or double return), EDX. */
++ * float or double return), EDX, XMM0's low float (a return in SSE). */
+ static uint32_t reg_field(lua_State *L, int t, const char *name) {
+     lua_getfield(L, t, name);
+     const uint32_t v = word_arg(L, -1);
+@@ -203,7 +204,11 @@ static int l_call(lua_State *L) {
+     lua_pushinteger(L, (lua_Integer)cpu.EAX);
+     lua_pushnumber(L, (lua_Number)st0);
+     lua_pushinteger(L, (lua_Integer)cpu.EDX);
+-    return 3;
++    /* round 124: a function that returns a float in SSE (`movss xmm0` before its `ret`) */
++    float x0;
++    memcpy(&x0, cpu.ZMM0, 4);
++    lua_pushnumber(L, (lua_Number)x0);
++    return 4;
+ }
+ 
+ /* xmm(n [, value]) -> the low float of SSE register n (0..7) of the hooked
+@@ -383,8 +388,14 @@ static int gate_index(lua_State *L) {
      lua_pushnil(L);
      return 1;
  }
@@ -785,7 +816,7 @@ index 25bd680..87eaa68 100644
      lua_pushglobaltable(L);                                   /* 3 */
      lua_pushnil(L); lua_setfield(L, 3, "REPENTOGON");         /* the lookup must miss */
      if (!lua_getmetatable(L, 3)) { lua_newtable(L); lua_pushvalue(L, -1); lua_setmetatable(L, 3); }   /* 4 */
-@@ -416,6 +423,43 @@ static int l_load(lua_State *L) {
+@@ -416,6 +427,43 @@ static int l_load(lua_State *L) {
      if (luaL_loadbufferx(L, (const char *)src, n, chunk, "t") != LUA_OK) { lua_pushnil(L); lua_insert(L, -2); return 2; }
      return 1;
  }
@@ -829,7 +860,7 @@ index 25bd680..87eaa68 100644
  static int l_env(lua_State *L) {
      const char *v = getenv(luaL_checkstring(L, 1));
      if (v) lua_pushstring(L, v); else lua_pushnil(L);
-@@ -428,7 +472,7 @@ static const luaL_Reg BRIDGE[] = {
+@@ -428,7 +476,7 @@ static const luaL_Reg BRIDGE[] = {
      {"w8", l_w8}, {"w16", l_w16}, {"w32", l_w32}, {"wf32", l_wf32}, {"wf64", l_wf64},
      {"f2i", l_f2i}, {"i2f", l_i2f}, {"str", l_str}, {"stdstr", l_stdstr},
      {"alloc", l_alloc}, {"free", l_free}, {"call", l_call}, {"cfn", l_cfn}, {"obj", l_obj},
@@ -838,10 +869,13 @@ index 25bd680..87eaa68 100644
      {"reg", l_reg},
      {NULL, NULL},
  };
-@@ -442,6 +486,11 @@ void isaac_rgon_push_bridge(lua_State *L) {
+@@ -442,6 +490,14 @@ void isaac_rgon_push_bridge(lua_State *L) {
      /* round 110: this engine runs instruction hooks (lift_patches.py
       * RGON_INSN_HOOKS) and has reg(); a layer asks before it defines one */
      lua_pushinteger(L, 1); lua_setfield(L, -2, "INSN");
++    /* round 124: call() answers a fourth value (XMM0's low float), and hook slot 179 (Entity::GetWaterClipInfo) is wrapped */
++    lua_pushinteger(L, 1); lua_setfield(L, -2, "XMM0RET");
++    lua_pushinteger(L, 1); lua_setfield(L, -2, "WATERCLIP");
 +#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
 +    /* round 123: the Mac Build does not run the layer's mod shell (main.lua), so its save data goes
 +     * to a file of its own (save_read / save_write); the Browser Build keeps it in its mod's data */
@@ -1214,7 +1248,7 @@ index 304f892..646348e 100644
  }
  void imp_api_ms_win_crt_runtime____p___argc(CpuState *restrict cpu) { ensure_argv(); cpu->EAX = g_argv_va ? g_argv_va + 8 : 0; }
 diff --git a/scripts/recomp/host/src/host_shims_gl.c b/scripts/recomp/host/src/host_shims_gl.c
-index e17068a..7bd4a45 100644
+index e17068a..e538df3 100644
 --- a/scripts/recomp/host/src/host_shims_gl.c
 +++ b/scripts/recomp/host/src/host_shims_gl.c
 @@ -128,12 +128,20 @@ static int web_context_ready(void) {
@@ -1306,12 +1340,18 @@ index e17068a..7bd4a45 100644
  #endif /* !ISAAC_WEB */
  
  /* ================= TEMP instrumentation (remove after 0xa6b570 root cause) = */
-@@ -958,6 +995,9 @@ void imp_kernel32__OutputDebugStringA(CpuState *restrict cpu) {
+@@ -957,7 +994,15 @@ void imp_kernel32__OutputDebugStringA(CpuState *restrict cpu) {
+         while (n + 1 < sizeof buf && q[n]) { buf[n] = q[n]; ++n; }
      }
      buf[n] = 0;
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++    { extern void isaac_mac_log_line(const char *line); isaac_mac_log_line(buf); }   /* the script's until=<text> trigger sees every line */
++    { extern int isaac_mac_log_repeat(const char *line);                                /* repeats of [warn]/failed: lines (mac_log.c) */
++      if (isaac_mac_log_repeat(buf)) goto odsa_logged; }
++#endif
      fprintf(stderr, "[odsa] %s\n", buf);
 +#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
-+    { extern void isaac_mac_log_line(const char *line); isaac_mac_log_line(buf); }
++odsa_logged:;
 +#endif
      /* A log line is work, not the idle lap of a lock loop (issue #12). The
       * engine logger 0x00a112c0 takes its Mutex 0xc37958 for every line and
@@ -1601,10 +1641,20 @@ index 4e85a0e..c515b77 100644
  static int isaac_xinput_state_js(int slot, uint8_t *out) { (void)slot; (void)out; return 0; }
  static void isaac_xinput_rumble_js(int slot, int left, int right) { (void)slot; (void)left; (void)right; }
 diff --git a/scripts/recomp/host/src/host_trap.c b/scripts/recomp/host/src/host_trap.c
-index 425aae4..5880866 100644
+index 425aae4..b6e6fa2 100644
 --- a/scripts/recomp/host/src/host_trap.c
 +++ b/scripts/recomp/host/src/host_trap.c
-@@ -376,7 +376,7 @@ void isaac_stub_report(void) {
+@@ -179,8 +179,7 @@ void isaac_log(const char *fmt, ...) {
+         console.warn(body);
+     }, buf, stamp, elapsed_ms);
+ #else
+-    fputs(buf, stderr);
+-    fputc('\n', stderr);
++    fprintf(stderr, "%s\n", buf);      /* one stdio call: one lock, one write into the log buffer (mac_log.c) */
+ #endif
+ }
+ 
+@@ -376,7 +375,7 @@ void isaac_stub_report(void) {
        extern uint32_t isaac_input_dropped(void);
        isaac_log("[isaac][input] %u messages dispatched to the WndProc, %u still queued, %u dropped (queue full)",
                  isaac_input_dispatched(), isaac_input_queued(), isaac_input_dropped()); }
@@ -1665,7 +1715,7 @@ index 6aa6b68..133df95 100644
        > ISAAC_GUARD_VA) {
      printf("  FAIL shim tokens overrun the guard\n");
 diff --git a/scripts/recomp/lift/lift_patches.py b/scripts/recomp/lift/lift_patches.py
-index 659f7ce..9c3bafd 100644
+index 659f7ce..2389771 100644
 --- a/scripts/recomp/lift/lift_patches.py
 +++ b/scripts/recomp/lift/lift_patches.py
 @@ -1339,7 +1339,7 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
@@ -1677,7 +1727,7 @@ index 659f7ce..9c3bafd 100644
      (22, 0x007ebca0, "Room::SpawnGridEntity"),    # ret 0x14; reg Room.SpawnGridEntity; sig Room::SpawnGridEntity
      (23, 0x00709db0, "GridEntity::Init"),    # ret 0x4; sig GridEntity::Init
      (24, 0x0082f1c0, "RoomTransition::StartBossIntro"),    # ret 0x8; sig RoomTransition::StartBossIntro
-@@ -1419,6 +1419,14 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
+@@ -1419,6 +1419,15 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
      (98, 0x004199d0, "Room::RenderEntityPass_004199d0"),    # ret 0x8; asm
      (99, 0x008151e0, "Room::GetShopItemPrice"),    # ret 0x10; asm
      (169, 0x0094d500, "Menu_Character::UpdateRotations"),    # ret 0x0; sig Menu_Character::UpdateRotations
@@ -1689,6 +1739,7 @@ index 659f7ce..9c3bafd 100644
 +    (175, 0x00956110, "Input::IsActionPressed"),    # ret 0x10; asm (batch B4, MC_MENU_INPUT_ACTION)
 +    (176, 0x009561e0, "Input::IsActionTriggered"),    # ret 0x10; asm (batch B4)
 +    (177, 0x009562d0, "Input::GetActionValue"),    # ret 0x10; asm (batch B4)
++    (179, 0x006b6ed0, "Entity::GetWaterClipInfo"),    # ret 0x4; asm (Entity:SetWaterClipFlags override)
      (100, 0x006a93a0, "Entity::Init"),    # ret 0x10; sig Init; vtable 0x00b6730c slot 1
      (101, 0x00755470, "Entity_Player::Init"),    # ret 0x10; vtable 0x00b6bdd0 slot 1
      (102, 0x006b8b20, "Entity_NPC::Init"),    # ret 0x10; vtable 0x00b67468 slot 1
@@ -1727,6 +1778,140 @@ index 1bd7c84..2cdccbf 100644
  `test_ach.lua` checks all of it with the content mod
  `tools/test_ach_mod.mjs` makes (see 21.141 in docs/recomp-architecture.md).
  
+diff --git a/scripts/recomp/rgon/api_ambush.lua b/scripts/recomp/rgon/api_ambush.lua
+new file mode 100644
+index 0000000..16ab5c7
+--- /dev/null
++++ b/scripts/recomp/rgon/api_ambush.lua
+@@ -0,0 +1,128 @@
++-- api_ambush.lua -- the global Ambush, and RoomDescriptor.Data written (worker "ambush", 2026-11-19).
++-- Written against REPENTOGON's behaviour (LuaAmbush.cpp, Ambush.zhl); every number below was measured in THIS
++-- executable (v1.9.7.17), lab_ambush_test.lua is the measurement.
++--
++--   The Ambush object  lives inside the Game object at +0x265c8 (REPENTOGON v1.9.7.12 has +0x25b40). Found from the game's
++--                      own callers: every call of Ambush::StartChallenge (0x00833420) is made with `ecx = game + 0x265c8`
++--                      (the room-clear code at 0x006e3a7f, the boss-rush start at 0x006edf4b, ...).
++--   Fields (this+)     0x18 maximum boss-rush waves (a boss-rush count: the Update function 0x00834350 compares it with the wave),
++--                      0x1c bosses per wave (SpawnBossrushWave loops on it), 0x20 active (byte, StartChallenge sets it to 1 and
++--                      does nothing when it is already set), 0x24 current wave (StartChallenge zeroes it), 0x28 a countdown
++--                      (StartChallenge sets 30).
++--   Functions          StartChallenge __thiscall, plain `ret`, 0x00833420 (read from the epilogue 0x008335fa).
++--                      SpawnWave       __thiscall, plain `ret`, 0x00833600 (the one that calls GetRandomRoom, 0x82c7d0).
++--                      SpawnBossrushWave __thiscall, plain `ret`, 0x00833c40 (matches REPENTOGON's signature; epilogue 0x00834348).
++--                      REPENTOGON's signatures for StartChallenge and SpawnWave do not match this build's bytes; the addresses
++--                      come from the disassembly (the first by its field writes, the second by its GetRandomRoom call).
++--   Maximum waves      of a challenge room (3) and of a boss challenge room (2) are not game fields: the Update function computes
++--                      them from the room's subtype (2 for subtype 1, else 3). So the getters answer those constants, as
++--                      REPENTOGON's own do until a mod sets them; the setters are not provided (the game would not follow them).
++--   GetCurrentWave    is 0 when no ambush runs (the global must exist all the time).
++--
++-- RoomDescriptor.Data (second half of the file): the Data pointer sits at descriptor +0x10 (api_roomconfig.lua).
++
++local T = ...
++local B, R = T.B, T.R
++local r32, r8, w32, call, log = B.r32, B.r8, B.w32, B.call, B.log
++local type, error, rawget, rawset, getmetatable, pairs, pcall = type, error, rawget, rawset, getmetatable, pairs, pcall
++local mathtype = math.type
++
++local GAME_PTR = 0x00c71678
++local AMBUSH = 0x265c8
++local F_MAX_BOSSRUSH, F_BOSSES, F_ACTIVE, F_WAVE = 0x18, 0x1c, 0x20, 0x24
++local START_CHALLENGE, SPAWN_WAVE, SPAWN_BOSSRUSH = 0x00833420, 0x00833600, 0x00833c40
++
++local function ambush(what)
++  local game = r32(GAME_PTR)
++  if game == 0 then error("rgon: Ambush." .. what .. " used with no game", 3) end
++  return game + AMBUSH
++end
++
++local function int_arg(v, n, what)
++  if mathtype(v) == "float" and v == math.floor(v) then v = math.tointeger(v) end
++  if mathtype(v) ~= "integer" then error("bad argument #" .. n .. " to '" .. what .. "' (number expected, got " .. type(v) .. ")", 3) end
++  return v
++end
++
++local Ambush = rawget(_G, "Ambush")
++if type(Ambush) ~= "table" then Ambush = {} rawset(_G, "Ambush", Ambush) end
++
++local function put(name, f)
++  if rawget(Ambush, name) ~= nil then log("Ambush." .. name .. " already exists; left alone") return end
++  T.static(Ambush, "Ambush", name, f)
++end
++
++-- the wave counter: 0 while no ambush runs (the game zeroes it at StartChallenge and leaves it after the last wave)
++put("GetCurrentWave", function() return B.ri32(ambush("GetCurrentWave") + F_WAVE) end)
++put("GetMaxBossrushWaves", function() return B.ri32(ambush("GetMaxBossrushWaves") + F_MAX_BOSSRUSH) end)
++put("SetMaxBossrushWaves", function(n)
++  n = int_arg(n, 1, "SetMaxBossrushWaves")
++  if n > 25 then n = 25 end
++  w32(ambush("SetMaxBossrushWaves") + F_MAX_BOSSRUSH, n & 0xffffffff)
++end)
++put("GetNumBossesPerWave", function() return B.ri32(ambush("GetNumBossesPerWave") + F_BOSSES) end)
++put("SetNumBossesPerWave", function(n)
++  n = int_arg(n, 1, "SetNumBossesPerWave")
++  w32(ambush("SetNumBossesPerWave") + F_BOSSES, n & 0xffffffff)
++end)
++put("GetMaxChallengeWaves", function() return 3 end)
++put("GetMaxBossChallengeWaves", function() return 2 end)
++put("StartChallenge", function() call(START_CHALLENGE, ambush("StartChallenge")) end)
++put("SpawnWave", function() call(SPAWN_WAVE, ambush("SpawnWave")) end)
++put("SpawnBossrushWave", function() call(SPAWN_BOSSRUSH, ambush("SpawnBossrushWave")) end)
++
++------------------------------------------------------------------------------
++-- RoomDescriptor.Data = RoomConfigRoom
++------------------------------------------------------------------------------
++-- The game's descriptor class has a getter for Data and no setter (luabridge answers "no member named 'Data'" on a write).
++-- A __propset entry goes on every class table of a real descriptor (plain and const, the way api_item_fields.lua does it); it
++-- takes the address of the RoomConfigRoom userdata and writes it at descriptor +0x10. nil is refused (a descriptor without
++-- its room data makes the game crash at the next use).
++do
++  local DESC_DATA = 0x10
++  local installed = false
++  local function room_class()
++    local ok, room = pcall(function() return RoomConfig.GetRoomByStageTypeAndVariant(StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1, 0) end)
++    if ok and room ~= nil then return getmetatable(room) end
++  end
++  local function set_data(self, value)
++    local p = B.ptr(self)
++    if p == 0 then error("rgon: RoomDescriptor.Data written without its descriptor", 2) end
++    if type(value) ~= "userdata" then error("bad argument to 'Data' (RoomConfigRoom expected, got " .. type(value) .. ")", 2) end
++    local cls = room_class()
++    if cls == nil or getmetatable(value) ~= cls then error("bad argument to 'Data' (RoomConfigRoom expected)", 2) end
++    local a = B.ptr(value)
++    if a == 0 then error("rgon: RoomDescriptor.Data written with a RoomConfigRoom that has no address", 2) end
++    w32(p + DESC_DATA, a)
++  end
++  local setter = B.cfn(set_data)
++  local function install()
++    if installed then return end
++    local level = Game():GetLevel()
++    local objs = { level:GetCurrentRoomDesc(), level:GetRoomByIdx(level:GetCurrentRoomIndex(), -1) }
++    local any = false
++    for _, o in pairs(objs) do
++      local mt = o ~= nil and getmetatable(o)
++      if type(mt) == "table" then
++        for _, t in pairs({ mt, rawget(mt, "__class"), rawget(mt, "__const") }) do
++          if type(t) == "table" then
++            local ps = rawget(t, "__propset")
++            if type(ps) ~= "table" then ps = {} rawset(t, "__propset", ps) end
++            if rawget(ps, "Data") == nil then rawset(ps, "Data", setter) end
++            any = true
++          end
++        end
++      end
++    end
++    if any then
++      installed = true
++      R.Implemented["RoomDescriptor.Data"] = true
++      log("api_ambush: RoomDescriptor.Data is writable")
++    end
++  end
++  if T.listen then
++    T.listen(ModCallbacks.MC_POST_PLAYER_INIT, install, -math.huge)
++    T.listen(ModCallbacks.MC_POST_NEW_LEVEL, install, -math.huge)
++    T.listen(ModCallbacks.MC_POST_NEW_ROOM, install, -math.huge)
++  end
++end
 diff --git a/scripts/recomp/rgon/api_batch_three.lua b/scripts/recomp/rgon/api_batch_three.lua
 new file mode 100644
 index 0000000..06b7d1c
@@ -3169,6 +3354,251 @@ index 0000000..4205701
 +end
 +-- not here: ProceduralItemManager.CreateProceduralItem (the game's function has no match in this exe yet), the Set*
 +-- functions of the saved-entity records, the Bag of Crafting setters and CalculateBagOfCraftingOutput
+diff --git a/scripts/recomp/rgon/api_entity_more.lua b/scripts/recomp/rgon/api_entity_more.lua
+new file mode 100644
+index 0000000..6ad7a0f
+--- /dev/null
++++ b/scripts/recomp/rgon/api_entity_more.lua
+@@ -0,0 +1,239 @@
++-- api_entity_more.lua -- EntityFamiliar:GetMultiplier, the pathfinder getters, Entity:Get/SetColorParams (class ColorParams)
++-- and Entity:Get/Set/ResetWaterClipFlags, written against REPENTOGON's behaviour (LuaEntityFamiliar.cpp, LuaEntityNPC.cpp,
++-- LuaEntity.cpp, LuaColorParams.cpp); every offset measured in THIS executable (v1.9.7.17) by lab_entity_probe.lua and
++-- checked by lab_entity_more_test.lua.
++--
++--   EntityFamiliar:GetMultiplier   the game's own Entity_Familiar::GetMultiplier, 0x0060dc40 (thiscall, plain `ret`, the
++--       float comes back in XMM0, which call() answers as its fourth value since round 124). It reads the familiar's owner
++--       (+0x410) and its item config (+0x330): BFFS! (247) doubles it. Without an owner it answers 1, as REPENTOGON does
++--       when it has nothing cached.
++--   Entity:Get/Set/ResetWaterClipFlags   the game's Entity::GetWaterClipInfo is 0x006b6ed0 (thiscall(out), `ret 4`,
++--       out = { uint32 flags, float }; not virtual, four direct callers: the room's entity render pass and 0x006b0aaa).
++--       SetWaterClipFlags keeps an override per entity here and hook slot 179 (host_rgon.c WATERCLIP) rewrites out.flags
++--       after the game's own answer, so the render pass sees it, as REPENTOGON's hook does. Get answers what the game
++--       answers (the override included).
++--   Entity:Get/SetColorParams   the colour-params vector at +0x1ac (see api_familiar.lua): 0x3c-byte entries, priority,
++--       colour (tint, colorize, offset as Color stores them), duration (+0x30), lifespan (+0x34), fadeout (+0x38), shared (+0x39).
++local T = ...
++local B, R, method, wrap, this = T.B, T.R, T.method, T.wrap, T.this
++local ptr, r8, r32, ri32, rf32, w8, w32, wf32, call, log = B.ptr, B.r8, B.r32, B.ri32, B.rf32, B.w8, B.w32, B.wf32, B.call, B.log
++local type, error, select, setmetatable, getmetatable, rawget, rawset, tostring, ipairs = type, error, select, setmetatable, getmetatable, rawget, rawset, tostring, ipairs
++local mathtype = math.type
++
++local function argerr(n, fname, want, got)
++  error("bad argument #" .. n .. " to '" .. fname .. "' (" .. want .. " expected, got " .. type(got) .. ")", 3)
++end
++
++------------------------------------------------------------------------------
++-- EntityFamiliar:GetMultiplier() -> number
++------------------------------------------------------------------------------
++if B.XMM0RET then
++  method("EntityFamiliar", "GetMultiplier", function(self)
++    local p = this(self, "GetMultiplier")
++    if r32(p + 0x410) == 0 or r32(p + 0x330) == 0 then return 1.0 end
++    local _, _, _, x = call(0x0060dc40, p)
++    return x
++  end)
++end
++
++------------------------------------------------------------------------------
++-- EntityNPC:GetPathfinder(), EntityFamiliar:GetPathfinder() / GetPathFinder() -> PathFinder
++------------------------------------------------------------------------------
++-- The pathfinder is embedded in the entity: NPC +0x414, familiar +0x5fc (lab_entity_probe: the one word-aligned slot whose
++-- first word is the entity itself, for a gaper, a fly, a spider, Brother Bobby and Little Steven; REPENTOGON's offsets
++-- for v1.9.7.12 hold unchanged). The class is the game's own PathFinder, taken off the userdata the game hands out for
++-- `npc.Pathfinder`; the object is the embedded struct's address, as REPENTOGON pushes it.
++do
++  local PF_MT
++  local function pf_class()
++    if PF_MT then return PF_MT end
++    for _, e in ipairs(Isaac.GetRoomEntities()) do
++      local n = e:ToNPC()
++      if n then
++        local ok, pf = pcall(function() return n.Pathfinder end)
++        if ok and pf ~= nil then PF_MT = getmetatable(pf) return PF_MT end
++      end
++    end
++  end
++  local function get(off, name)
++    return function(self)
++      local p = this(self, name)
++      local mt = pf_class()
++      if not mt then
++        -- no NPC in the room to take the class from: one is made for a moment, then removed
++        local pl = Isaac.GetPlayer(0)
++        local tmp = Isaac.Spawn(18, 0, 0, pl.Position, Vector(0, 0), nil)
++        local n = tmp:ToNPC()
++        local ok, pf = pcall(function() return n.Pathfinder end)
++        if ok and pf ~= nil then PF_MT = getmetatable(pf) end
++        tmp:Remove()
++        mt = PF_MT
++        if not mt then error("rgon: the game's PathFinder class is not reachable", 2) end
++      end
++      return B.obj(mt, p + off, T.vt_ptr())
++    end
++  end
++  method("EntityNPC", "GetPathfinder", get(0x414, "GetPathfinder"))
++  method("EntityFamiliar", "GetPathfinder", get(0x5fc, "GetPathfinder"))
++  method("EntityFamiliar", "GetPathFinder", get(0x5fc, "GetPathFinder"))
++end
++
++------------------------------------------------------------------------------
++-- Entity:GetWaterClipFlags() / SetWaterClipFlags(flags) / ResetWaterClipFlags()
++------------------------------------------------------------------------------
++if B.WATERCLIP then
++  local SLOT = 179
++  local E_INDEX, E_SEED = 0x20, 0x3ec
++  local over, count, armed = {}, 0, false      -- entity address -> { flags, index, init seed }
++  local function arm(on)
++    if on == armed then return end
++    armed = on
++    if on then
++      B.hook(SLOT, function(self, esp) return r32(esp + 4) end, function(self, esp, eax, out)
++        local o = over[self]
++        if not o or not out then return end
++        if r32(self + E_INDEX) == o[2] and r32(self + E_SEED) == o[3] then w32(out, o[1])
++        else over[self] = nil count = count - 1 end
++      end)
++    else
++      B.hook(SLOT)
++    end
++  end
++  method("Entity", "GetWaterClipFlags", function(self)
++    local p = this(self, "GetWaterClipFlags")
++    local out = B.alloc(8)
++    call(0x006b6ed0, p, out)
++    local v = r32(out)
++    B.free(out)
++    return v
++  end)
++  method("Entity", "SetWaterClipFlags", function(self, flags)
++    local p = this(self, "SetWaterClipFlags")
++    if mathtype(flags) ~= "integer" then
++      if type(flags) == "number" and flags == math.floor(flags) then flags = math.tointeger(flags) else argerr(2, "SetWaterClipFlags", "number", flags) end
++    end
++    if not over[p] then count = count + 1 end
++    over[p] = { flags & 0xffffffff, r32(p + E_INDEX), r32(p + E_SEED) }
++    arm(true)
++  end)
++  method("Entity", "ResetWaterClipFlags", function(self)
++    local p = this(self, "ResetWaterClipFlags")
++    if over[p] then over[p] = nil count = count - 1 end
++    if count <= 0 then count = 0 arm(false) end
++  end)
++end
++
++------------------------------------------------------------------------------
++-- ColorParams, Entity:GetColorParams() -> { ColorParams }, Entity:SetColorParams({ ColorParams })
++------------------------------------------------------------------------------
++-- The objects are copies, as REPENTOGON's are: changing one does nothing until SetColorParams writes the list back.
++-- Eleven floats in memory order (tint R G B A, colorize R G B A, offset R G B).
++do
++  local SZ = 0x3c
++  local CP = {}
++  CP.__index = CP
++  CP.__type = "ColorParams"
++  CP.__name = "ColorParams"
++  CP.__tostring = function(c) return string.format("ColorParams[priority %d, duration %d, lifespan %d]", c._priority, c._d1, c._d2) end
++
++  local function color_floats(c, n, fname)
++    local a = type(c) == "userdata" and ptr(c) or 0
++    if a == 0 then argerr(n, fname, "Color", c) end
++    local f = {}
++    for i = 1, 11 do f[i] = rf32(a + (i - 1) * 4) end
++    return f
++  end
++  local function make_color(f)
++    local c = Color(f[1], f[2], f[3], f[4], f[9], f[10], f[11])
++    c:SetColorize(f[5], f[6], f[7], f[8])
++    return c
++  end
++  local function int(v, n, fname)
++    if mathtype(v) == "integer" then return v end
++    if type(v) == "number" and v == math.floor(v) then return math.tointeger(v) end
++    argerr(n, fname, "number", v)
++  end
++  local function bool(v, n, fname)
++    if type(v) ~= "boolean" then argerr(n, fname, "boolean", v) end
++    return v
++  end
++  local function new(f, priority, d1, d2, fadeout, shared)
++    return setmetatable({ _f = f, _priority = priority, _d1 = d1, _d2 = d2, _fadeout = fadeout, _shared = shared }, CP)
++  end
++  local function check(self, fname)
++    if getmetatable(self) ~= CP then argerr(1, fname, "ColorParams", self) end
++    return self
++  end
++
++  function CP:GetColor() return make_color(check(self, "GetColor")._f) end
++  function CP:SetColor(c) check(self, "SetColor")._f = color_floats(c, 2, "SetColor") end
++  function CP:GetPriority() return check(self, "GetPriority")._priority end
++  function CP:SetPriority(v) check(self, "SetPriority")._priority = int(v, 2, "SetPriority") end
++  function CP:GetDuration() return check(self, "GetDuration")._d1 end
++  function CP:SetDuration(v) check(self, "SetDuration")._d1 = int(v, 2, "SetDuration") end
++  function CP:GetLifespan() return check(self, "GetLifespan")._d2 end
++  function CP:SetLifespan(v) check(self, "SetLifespan")._d2 = int(v, 2, "SetLifespan") end
++  function CP:GetFadeout() return check(self, "GetFadeout")._fadeout end
++  function CP:SetFadeout(v) check(self, "SetFadeout")._fadeout = bool(v, 2, "SetFadeout") end
++  function CP:GetShared() return check(self, "GetShared")._shared end
++  function CP:SetShared(v) check(self, "SetShared")._shared = bool(v, 2, "SetShared") end
++
++  -- ColorParams(color, priority, duration, fadeout, shared): REPENTOGON's code (its docs name a sixth argument): the
++  -- duration is also the lifespan. A sixth argument, as the docs have it, is (color, priority, duration, lifespan, fadeout, shared).
++  if rawget(_G, "ColorParams") == nil then
++    rawset(_G, "ColorParams", setmetatable({}, { __call = function(_, color, priority, duration, a4, a5, a6)
++      local f = color_floats(color, 1, "ColorParams")
++      priority, duration = int(priority, 2, "ColorParams"), int(duration, 3, "ColorParams")
++      if a6 ~= nil then
++        return new(f, priority, duration, int(a4, 4, "ColorParams"), bool(a5, 5, "ColorParams"), bool(a6, 6, "ColorParams"))
++      end
++      return new(f, priority, duration, duration, bool(a4, 4, "ColorParams"), bool(a5, 5, "ColorParams"))
++    end }))
++    R.Implemented["ColorParams"] = true
++    R.Implemented["ColorParams.ColorParams"] = true
++    for _, m in ipairs({ "GetColor", "SetColor", "GetPriority", "SetPriority", "GetDuration", "SetDuration", "GetLifespan",
++      "SetLifespan", "GetFadeout", "SetFadeout", "GetShared", "SetShared" }) do
++      R.Implemented["ColorParams." .. m] = true
++    end
++  end
++
++  method("Entity", "GetColorParams", function(self)
++    local p = this(self, "GetColorParams")
++    local out = {}
++    local first, last = r32(p + 0x1ac), r32(p + 0x1b0)
++    for e = first, last - SZ, SZ do
++      local f = {}
++      for i = 1, 11 do f[i] = rf32(e + 4 + (i - 1) * 4) end
++      out[#out + 1] = new(f, ri32(e), ri32(e + 0x30), ri32(e + 0x34), r8(e + 0x38) ~= 0, r8(e + 0x39) ~= 0)
++    end
++    return out
++  end)
++
++  method("Entity", "SetColorParams", function(self, list)
++    local p = this(self, "SetColorParams")
++    if type(list) ~= "table" then error("bad argument #2 to 'SetColorParams' (Expected a table as second argument)", 2) end
++    local n = #list
++    for i = 1, n do
++      if getmetatable(list[i]) ~= CP then argerr(2, "SetColorParams", "table of ColorParams", list[i]) end
++    end
++    local v = p + 0x1ac
++    local first, cap = r32(v), r32(v + 8)
++    if n * SZ > cap - first then
++      local new_first = B.alloc(n * SZ)
++      if new_first == 0 then error("rgon: out of memory growing a colour list", 2) end
++      if first ~= 0 then B.free(first) end
++      first = new_first
++      w32(v, first)
++      w32(v + 8, first + n * SZ)
++    end
++    for i = 1, n do
++      local c, e = list[i], first + (i - 1) * SZ
++      w32(e, c._priority & 0xffffffff)
++      for k = 1, 11 do wf32(e + 4 + (k - 1) * 4, c._f[k]) end
++      w32(e + 0x30, c._d1 & 0xffffffff)
++      w32(e + 0x34, c._d2 & 0xffffffff)
++      w32(e + 0x38, (c._fadeout and 1 or 0) | ((c._shared and 1 or 0) << 8))
++    end
++    w32(v + 4, first + n * SZ)
++  end)
++end
 diff --git a/scripts/recomp/rgon/api_extra.lua b/scripts/recomp/rgon/api_extra.lua
 index e060b4d..b3de696 100644
 --- a/scripts/recomp/rgon/api_extra.lua
@@ -4806,10 +5236,10 @@ index 0000000..a7e598c
 +end
 diff --git a/scripts/recomp/rgon/api_roomconfig.lua b/scripts/recomp/rgon/api_roomconfig.lua
 new file mode 100644
-index 0000000..10f18e9
+index 0000000..dd3192c
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_roomconfig.lua
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,149 @@
 +-- api_roomconfig.lua -- RoomConfig.GetRoomByStageTypeAndVariant (chunk A1, Custom Stage API's first need).
 +-- Written against REPENTOGON's behaviour (LuaRoomConfig.cpp); every number below was measured in THIS executable
 +-- (v1.9.7.17) in a running game (lab_rcprobe.lua, then lab_roomconfig_test.lua).
@@ -4898,12 +5328,17 @@ index 0000000..10f18e9
 +  return make_room(room)
 +end
 +
-+for _, name in ipairs({ "RoomConfig", "RoomConfigHolder" }) do
-+  local tbl = rawget(_G, name)
-+  if type(tbl) ~= "table" then tbl = {} rawset(_G, name, tbl) end
-+  if rawget(tbl, "GetRoomByStageTypeAndVariant") ~= nil then log(name .. ".GetRoomByStageTypeAndVariant already exists; left alone")
-+  else T.static(tbl, name, "GetRoomByStageTypeAndVariant", lookup) end
++-- RoomConfig and RoomConfigHolder are two names for the same functions (REPENTOGON has both; mods call either): every
++-- function goes on both tables through this one helper (lint: roomconfig-both-tables).
++local function on_both(fname, f)
++  for _, name in ipairs({ "RoomConfig", "RoomConfigHolder" }) do
++    local tbl = rawget(_G, name)
++    if type(tbl) ~= "table" then tbl = {} rawset(_G, name, tbl) end
++    if rawget(tbl, fname) ~= nil then log(name .. "." .. fname .. " already exists; left alone")
++    else T.static(tbl, name, fname, f) end
++  end
 +end
++on_both("GetRoomByStageTypeAndVariant", lookup)
 +
 +-- RoomConfig.GetRandomRoom(seed, reduceWeight, stage, type, shape = 13, minVariant = 0, maxVariant = -1, minDifficulty = 0,
 +--   maxDifficulty = 10, requiredDoors = 0, subtype = -1, mode = -1): the game's own picker (see the header).
@@ -4952,9 +5387,7 @@ index 0000000..10f18e9
 +      minv & 0xffffffff, maxv & 0xffffffff, mind & 0xffffffff, maxd & 0xffffffff, doors_cell, subtype & 0xffffffff, mode & 0xffffffff)
 +    return make_room(room)
 +  end
-+  local tbl = rawget(_G, "RoomConfig")
-+  if rawget(tbl, "GetRandomRoom") ~= nil then log("RoomConfig.GetRandomRoom already exists; left alone")
-+  else T.static(tbl, "RoomConfig", "GetRandomRoom", random_room) end
++  on_both("GetRandomRoom", random_room)
 +end
 diff --git a/scripts/recomp/rgon/api_shapes.lua b/scripts/recomp/rgon/api_shapes.lua
 new file mode 100644
@@ -5655,10 +6088,10 @@ index 0000000..8ca40a1
 +  end
 +end
 diff --git a/scripts/recomp/rgon/hook_slots.lua b/scripts/recomp/rgon/hook_slots.lua
-index 2187a0e..bdbbfd1 100644
+index 2187a0e..e2cbbb2 100644
 --- a/scripts/recomp/rgon/hook_slots.lua
 +++ b/scripts/recomp/rgon/hook_slots.lua
-@@ -100,6 +100,14 @@ return {
+@@ -100,6 +100,15 @@ return {
    ["Room::RenderEntityPass_004199d0"] = { 98, 0x8 },
    ["Room::GetShopItemPrice"] = { 99, 0x10 },
    ["Menu_Character::UpdateRotations"] = { 169, 0x0 },
@@ -5670,9 +6103,155 @@ index 2187a0e..bdbbfd1 100644
 +  ["Input::IsActionTriggered"] = { 176, 0x10 },
 +  ["Input::GetActionValue"] = { 177, 0x10 },
 +  ["Game::RestoreStateReal"] = { 178, 0x8 },
++  ["Entity::GetWaterClipInfo"] = { 179, 0x4 },
    ["Entity::Init"] = { 100, 0x10 },
    ["Entity_Player::Init"] = { 101, 0x10 },
    ["Entity_NPC::Init"] = { 102, 0x10 },
+diff --git a/scripts/recomp/rgon/lab_ambush_test.lua b/scripts/recomp/rgon/lab_ambush_test.lua
+new file mode 100644
+index 0000000..574f87a
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_ambush_test.lua
+@@ -0,0 +1,139 @@
++-- lab_ambush_test.lua (development only; ISAAC_RGON_LAB=lab_ambush_test.lua, worker "ambush").
++-- 1. the global Ambush exists with every function, answers 0 / defaults when no ambush runs, and the real fields read back
++--    (SetMaxBossrushWaves / SetNumBossesPerWave write the game's own fields).
++-- 2. RoomDescriptor.Data = RoomConfigRoom: written, read back (same address, Type, Variant), type-checked, and the game follows
++--    (entering the room gives the new room type).
++-- 3. RoomConfigHolder carries GetRandomRoom and gives the same room as RoomConfig for one seed.
++-- 4. a challenge room: StartChallenge sets the game's active byte (read at ambush+0x20), the wave counter moves while the
++--    waves are killed.
++-- Result lines "lab_ambush_test: PASS/FAIL ..." and "lab_ambush_test: DONE pass=N fail=M".
++local T = ...
++local B = T.B
++local r32, r8, ptr = B.r32, B.r8, B.ptr
++local mod = RegisterMod("rgon lab ambush test", 1)
++local pass, fail = 0, 0
++local function say(s) B.log("lab_ambush_test: " .. s) end
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 say("PASS " .. name .. (detail ~= nil and (" (" .. tostring(detail) .. ")") or ""))
++  else fail = fail + 1 say("FAIL " .. name .. (detail ~= nil and (" (" .. tostring(detail) .. ")") or "")) end
++end
++local AMB = r32(0x00c71678) -- re-read at use
++local function amb() return r32(0x00c71678) + 0x265c8 end
++
++local function names_checks()
++  for _, n in ipairs({ "GetCurrentWave", "GetMaxBossrushWaves", "SetMaxBossrushWaves", "GetNumBossesPerWave", "SetNumBossesPerWave",
++    "GetMaxChallengeWaves", "GetMaxBossChallengeWaves", "StartChallenge", "SpawnWave", "SpawnBossrushWave" }) do
++    check("Ambush." .. n .. " is a function", type(Ambush) == "table" and type(Ambush[n]) == "function")
++    check("REPENTOGON.Implemented lists Ambush." .. n, REPENTOGON == nil or REPENTOGON.Implemented == nil or REPENTOGON.Implemented["Ambush." .. n] == true)
++  end
++  check("GetCurrentWave is 0 with no ambush", Ambush.GetCurrentWave() == 0, Ambush.GetCurrentWave())
++  check("active byte is 0", r8(amb() + 0x20) == 0, r8(amb() + 0x20))
++  check("GetMaxBossrushWaves is 15", Ambush.GetMaxBossrushWaves() == 15, Ambush.GetMaxBossrushWaves())
++  check("GetMaxChallengeWaves 3, boss challenge 2", Ambush.GetMaxChallengeWaves() == 3 and Ambush.GetMaxBossChallengeWaves() == 2)
++  local nb = Ambush.GetNumBossesPerWave()
++  say("info: NumBossesPerWave " .. tostring(nb))
++  Ambush.SetNumBossesPerWave(7)
++  check("SetNumBossesPerWave reads back (real field +0x1c)", Ambush.GetNumBossesPerWave() == 7 and r32(amb() + 0x1c) == 7)
++  Ambush.SetNumBossesPerWave(nb)
++  Ambush.SetMaxBossrushWaves(40)
++  check("SetMaxBossrushWaves caps at 25", Ambush.GetMaxBossrushWaves() == 25 and r32(amb() + 0x18) == 25)
++  Ambush.SetMaxBossrushWaves(15)
++  check("SetMaxBossrushWaves restored", Ambush.GetMaxBossrushWaves() == 15)
++  check("a string argument is an error", not pcall(Ambush.SetMaxBossrushWaves, "x"))
++end
++
++local function holder_checks()
++  check("RoomConfigHolder.GetRandomRoom is a function", type(RoomConfigHolder.GetRandomRoom) == "function")
++  local a = RoomConfig.GetRandomRoom(12345, false, StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1)
++  local b = RoomConfigHolder.GetRandomRoom(12345, false, StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1)
++  check("same room from both tables for one seed", a ~= nil and b ~= nil and ptr(a) == ptr(b), a and b and (string.format("%x %x", ptr(a), ptr(b))))
++  for k, v in pairs(RoomConfig) do
++    if type(v) == "function" and type(k) == "string" and k:sub(1, 2) ~= "__" and type(RoomConfigHolder[k]) ~= "function" then check("RoomConfigHolder." .. k, false) end
++  end
++  for k, v in pairs(RoomConfigHolder) do
++    if type(v) == "function" and type(k) == "string" and k:sub(1, 2) ~= "__" and type(RoomConfig[k]) ~= "function" then check("RoomConfig." .. k, false) end
++  end
++end
++
++local function data_checks()
++  local level = Game():GetLevel()
++  local rooms = level:GetRooms()
++  local target, other
++  for i = 0, rooms.Size - 1 do
++    local d = rooms:Get(i)
++    if d.Data and d.Data.Type == RoomType.ROOM_DEFAULT and d.SafeGridIndex ~= level:GetCurrentRoomIndex() and d.VisitedCount == 0 then target = target or d end
++  end
++  say("info: rooms " .. rooms.Size .. " target " .. tostring(target) .. " shape " .. tostring(target and target.Data.Shape))
++
++  local shop = target and RoomConfig.GetRandomRoom(777, false, StbType.SPECIAL_ROOMS, RoomType.ROOM_SHOP, 1)
++  check("a default room and a shop config exist", target ~= nil and shop ~= nil)
++  if not (target and shop) then return end
++  local orig = target.Data
++  local origp = ptr(orig)
++  local ok, err = pcall(function() target.Data = shop end)
++  check("target.Data = shop does not error", ok, err)
++  check("read back is the same address", ptr(target.Data) == ptr(shop), string.format("%x vs %x", ptr(target.Data), ptr(shop)))
++  check("read back Type/Variant", target.Data.Type == RoomType.ROOM_SHOP and target.Data.Variant == shop.Variant, target.Data.Type .. "/" .. target.Data.Variant)
++  check("a number is an error", not pcall(function() target.Data = 5 end))
++  check("nil is an error", not pcall(function() target.Data = nil end))
++  check("a table is an error", not pcall(function() target.Data = {} end))
++  check("the Implemented name", REPENTOGON == nil or REPENTOGON.Implemented == nil or REPENTOGON.Implemented["RoomDescriptor.Data"] == true)
++  -- the const descriptor (current room)
++  local cur = level:GetCurrentRoomDesc()
++  local curdata = cur.Data
++  local ok2, err2 = pcall(function() cur.Data = curdata end)
++  check("writing the same Data to the current descriptor works", ok2 and ptr(cur.Data) == ptr(curdata), err2)
++  -- the game follows: go there
++  Game():StartRoomTransition(target.SafeGridIndex, Direction.NO_DIRECTION, RoomTransitionAnim.TELEPORT)
++  return target, origp, orig
++end
++
++local state = {}
++local step, wait = 0, 0
++mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function()
++  if step == 2 then
++    local t = Game():GetRoom():GetType()
++    check("entering the rewritten room gives a shop room", t == RoomType.ROOM_SHOP, t)
++    step, wait = 3, 0
++  end
++end)
++
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  wait = wait + 1
++  if step == 0 and wait == 20 then
++    names_checks()
++    holder_checks()
++    local target, origp, orig = data_checks()
++    state.target, state.orig = target, orig
++    step, wait = 2, 0
++  elseif step == 2 and wait > 120 then
++    check("MC_POST_NEW_ROOM fired after the rewrite", false, "no room change")
++    step, wait = 3, 0
++  elseif step == 3 and wait == 5 then
++    if state.target and state.orig then pcall(function() state.target.Data = state.orig end) end
++    Isaac.ExecuteCommand("goto s.challenge.0")
++    step, wait = 4, 0
++  elseif step == 4 and wait == 40 then
++    local room = Game():GetRoom()
++    say("info: room type " .. room:GetType())
++    if room:GetType() ~= RoomType.ROOM_CHALLENGE then check("reached a challenge room", false, room:GetType()) step = 9 return end
++    Ambush.StartChallenge()
++    check("StartChallenge sets the active byte", r8(amb() + 0x20) == 1, r8(amb() + 0x20))
++    check("GetCurrentWave is 0 right after", Ambush.GetCurrentWave() == 0, Ambush.GetCurrentWave())
++    step, wait, state.maxwave = 5, 0, 0
++  elseif step == 5 then
++    local w = Ambush.GetCurrentWave()
++    if w > state.maxwave then state.maxwave = w say("info: wave " .. w .. " at frame " .. wait) end
++    for _, e in ipairs(Isaac.GetRoomEntities()) do
++      if e:IsActiveEnemy(false) and e:IsVulnerableEnemy() then e:Kill() end
++    end
++    if wait > 900 or (state.maxwave >= 3 and wait > 100) then
++      check("the wave counter moved up to at least 2", state.maxwave >= 2, state.maxwave)
++      step = 9
++    end
++  end
++  if step == 9 then
++    step = 10
++    say(string.format("DONE pass=%d fail=%d", pass, fail))
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_b2probe.lua b/scripts/recomp/rgon/lab_b2probe.lua
 new file mode 100644
 index 0000000..27dc99b
@@ -7631,6 +8210,244 @@ index 0000000..0a9e655
 +    say(string.format("after the room change: %d effect removals fired", removed))
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_entity_more_test.lua b/scripts/recomp/rgon/lab_entity_more_test.lua
+new file mode 100644
+index 0000000..324615a
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_entity_more_test.lua
+@@ -0,0 +1,181 @@
++-- lab_entity_more_test.lua (development only; ISAAC_RGON_LAB=lab_entity_more_test.lua): EntityFamiliar:GetMultiplier,
++-- Entity/EntityNPC/EntityFamiliar:GetPathfinder, Entity:Get/SetColorParams + ColorParams, Entity:Get/Set/ResetWaterClipFlags
++-- (api_entity_more.lua). Logs "lab_entity_more_test: PASS/FAIL .." and a DONE line. Also spawns Fiend Folio's Baby Bell and
++-- Toadsie (when that mod is on) so the game log shows whether their callbacks still raise these names.
++local T = ...
++local B = T.B
++local r32, rf32 = B.r32, B.rf32
++local mod = RegisterMod("rgon lab entity more test", 1)
++local npass, nfail = 0, 0
++local function check(name, ok, detail)
++  if ok then npass = npass + 1 else nfail = nfail + 1 end
++  B.log("lab_entity_more_test: " .. (ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function try(name, f)
++  local ok, err = pcall(f)
++  if not ok then check(name, false, err) end
++end
++local function ncolors(e) local a = B.ptr(e) return (r32(a + 0x1b0) - r32(a + 0x1ac)) // 0x3c end
++local frame = 0
++local fly, bobby
++local bell_var = -1
++local bell_id = Isaac.GetItemIdByName and Isaac.GetItemIdByName("Baby Bell") or -1
++local toad_var = Isaac.GetEntityVariantByName and Isaac.GetEntityVariantByName("Toadsie") or -1
++
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frame = frame + 1
++  local p = Isaac.GetPlayer(0)
++  if frame == 3 then
++    bell_id = Isaac.GetItemIdByName("Baby Bell")
++    toad_var = Isaac.GetEntityVariantByName("Toadsie")
++    bell_var = Isaac.GetEntityVariantByName("Baby Bell")
++    for _, n in ipairs({ "EntityFamiliar.GetMultiplier", "EntityNPC.GetPathfinder", "EntityFamiliar.GetPathfinder",
++      "EntityFamiliar.GetPathFinder", "Entity.GetColorParams", "Entity.SetColorParams", "Entity.GetWaterClipFlags",
++      "Entity.SetWaterClipFlags", "Entity.ResetWaterClipFlags", "ColorParams.ColorParams", "ColorParams.GetPriority" }) do
++      check("Implemented " .. n, REPENTOGON.Implemented[n] == true)
++    end
++    p:AddCollectible(CollectibleType.COLLECTIBLE_BROTHER_BOBBY, 0, false)
++    fly = Isaac.Spawn(18, 0, 0, p.Position + Vector(80, 0), Vector(0, 0), nil)
++    if bell_id and bell_id > 0 then p:AddCollectible(bell_id, 0, false) end
++    if toad_var and toad_var >= 0 then Isaac.Spawn(570, toad_var, 0, p.Position + Vector(-120, 0), Vector(0, 0), nil) end
++  end
++  if frame == 15 then
++    try("GetMultiplier 1 without BFFS", function()
++      local n = 0
++      for _, e in ipairs(Isaac.FindByType(3, 1)) do
++        bobby = e:ToFamiliar()
++        local m = bobby:GetMultiplier()
++        n = n + 1
++        check("Bobby multiplier is 1 without BFFS", m == 1, m)
++      end
++      check("found a Brother Bobby", n > 0)
++    end)
++    p:AddCollectible(CollectibleType.COLLECTIBLE_BFFS, 0, false)
++  end
++  if frame == 25 then
++    try("GetMultiplier 2 with BFFS", function()
++      check("Bobby multiplier is 2 with BFFS", bobby:GetMultiplier() == 2, bobby:GetMultiplier())
++    end)
++    p:RemoveCollectible(CollectibleType.COLLECTIBLE_BFFS)
++  end
++  if frame == 35 then
++    try("GetMultiplier back to 1", function()
++      check("Bobby multiplier is 1 after BFFS is removed", bobby:GetMultiplier() == 1, bobby:GetMultiplier())
++    end)
++    local nbell, ntoad = 0, 0
++    for _, e in ipairs(Isaac.GetRoomEntities()) do
++      if e.Type == 3 and e.Variant == bell_var then
++        nbell = nbell + 1
++        local m = e:ToFamiliar():GetMultiplier()
++        check("Baby Bell familiar GetMultiplier answers 1 or 2", m == 1 or m == 2, m)
++      end
++      if e.Type == 570 and e.Variant == toad_var then ntoad = ntoad + 1 end
++    end
++    B.log(string.format("lab_entity_more_test: Baby Bell item %s familiars %d; Toadsie variant %s count %d", tostring(bell_id), nbell, tostring(toad_var), ntoad))
++    try("pathfinders", function()
++      local mt
++      for _, e in ipairs(Isaac.GetRoomEntities()) do
++        local npc = e:ToNPC()
++        if npc then
++          local pf = npc:GetPathfinder()
++          check("NPC " .. e.Type .. " pathfinder at +0x414", pf ~= nil and B.ptr(pf) == B.ptr(npc) + 0x414)
++          local vanilla = npc.Pathfinder
++          mt = mt or getmetatable(vanilla)
++          check("NPC " .. e.Type .. " pathfinder is the game's PathFinder class", getmetatable(pf) == getmetatable(vanilla))
++          check("pathfinder owner word is the NPC", r32(B.ptr(pf)) == B.ptr(npc))
++          local ok, r = pcall(function() return pf:HasPathToPos(p.Position, false) end)
++          check("pathfinder:HasPathToPos answers a boolean", ok and type(r) == "boolean", r)
++        end
++      end
++      for _, e in ipairs(Isaac.FindByType(3)) do
++        local fam = e:ToFamiliar()
++        local pf, pf2 = fam:GetPathfinder(), fam:GetPathFinder()
++        check("familiar " .. e.Variant .. " pathfinder at +0x5fc", B.ptr(pf) == B.ptr(fam) + 0x5fc and B.ptr(pf2) == B.ptr(pf))
++        check("familiar pathfinder class", mt == nil or getmetatable(pf) == mt)
++        check("familiar pathfinder owner word is the familiar", r32(B.ptr(pf)) == B.ptr(fam))
++      end
++    end)
++    try("colour params", function()
++      local ref = EntityRef(p)
++      fly:AddBurn(ref, 100, 1) fly:AddPoison(ref, 100, 1) fly:AddFear(ref, 100) fly:AddFreeze(ref, 100)
++    end)
++    try("B.call returns", function()
++      -- existing users take (eax, st0, edx); the fourth value (xmm0) is only added after them
++      local out = B.alloc(8)
++      local a, st0, edx, x0 = B.call(0x006b6ed0, B.ptr(fly), out)
++      check("call: eax is the out pointer (GetWaterClipInfo returns it)", a == out, a)
++      check("call: st0 is a number", type(st0) == "number")
++      check("call: edx is an integer", math.type(edx) == "integer")
++      check("call: xmm0 is a number, 4 results", type(x0) == "number" and select("#", B.call(0x006b6ed0, B.ptr(fly), out)) == 4)
++      local only = B.call(0x006b6ed0, B.ptr(fly), out)
++      check("call: single-value use unchanged", only == out)
++      B.free(out)
++    end)
++    try("water clip flags", function()
++      local before = fly:GetWaterClipFlags()
++      check("GetWaterClipFlags answers an integer", math.type(before) == "integer", before)
++      fly:SetWaterClipFlags(0x25)
++      check("SetWaterClipFlags reads back", fly:GetWaterClipFlags() == 0x25, fly:GetWaterClipFlags())
++      local other = Isaac.Spawn(18, 0, 0, p.Position + Vector(0, 80), Vector(0, 0), nil)
++      check("another entity is unaffected", other:GetWaterClipFlags() == before, other:GetWaterClipFlags())
++      fly:ResetWaterClipFlags()
++      check("ResetWaterClipFlags restores the game's answer", fly:GetWaterClipFlags() == before, fly:GetWaterClipFlags())
++      fly:SetWaterClipFlags(0x3)
++      fly:SetWaterClipFlags(0x6)
++      check("a second Set replaces the first", fly:GetWaterClipFlags() == 6)
++      fly:ResetWaterClipFlags()
++      other:Remove()
++    end)
++  end
++  if frame == 45 then
++    try("GetColorParams", function()
++      local list = fly:GetColorParams()
++      local n = ncolors(fly)
++      check("colour list has the entries of the game's vector", #list == n and n > 0, #list .. " vs " .. n)
++      local first = list[1]
++      check("entry 1 priority 255", first:GetPriority() == 255, first:GetPriority())
++      check("entry 1 lifespan positive", first:GetLifespan() > 0, first:GetLifespan())
++      check("entry 1 colour is a Color", first:GetColor().R ~= nil or first:GetColor():GetTint() ~= nil)
++      local e = r32(B.ptr(fly) + 0x1ac)
++      check("entry 1 fields equal the memory", first:GetDuration() == B.ri32(e + 0x30) and first:GetLifespan() == B.ri32(e + 0x34)
++        and first:GetShared() == (B.r8(e + 0x39) ~= 0) and first:GetFadeout() == (B.r8(e + 0x38) ~= 0))
++      local t = first:GetColor():GetTint()
++      check("entry 1 tint equals the memory", math.abs(t.R - rf32(e + 4)) < 1e-6 and math.abs(t.A - rf32(e + 16)) < 1e-6)
++      -- the way Fiend Folio uses it: drop the priority-255 ones, write the list back
++      for i = #list, 1, -1 do if list[i]:GetPriority() == 255 then table.remove(list, i) end end
++      fly:SetColorParams(list)
++      check("SetColorParams with the 255s removed empties the vector", ncolors(fly) == 0, ncolors(fly))
++      local cp = ColorParams(Color(1, 0, 0, 1, 0, 0, 0), 77, 150, false, true)
++      check("ColorParams constructor", cp:GetPriority() == 77 and cp:GetDuration() == 150 and cp:GetLifespan() == 150 and cp:GetShared() == true and cp:GetFadeout() == false)
++      cp:SetPriority(80) cp:SetLifespan(60) cp:SetFadeout(true)
++      fly:SetColorParams({ cp, ColorParams(Color(0, 1, 0, 1), 10, 20, true, false) })
++      local back = fly:GetColorParams()
++      check("two entries written", #back == 2 and ncolors(fly) == 2, #back)
++      check("entry 1 round trip", back[1]:GetPriority() == 80 and back[1]:GetLifespan() == 60 and back[1]:GetDuration() == 150
++        and back[1]:GetFadeout() == true and back[1]:GetShared() == true)
++      check("entry 1 colour round trip", math.abs(back[1]:GetColor():GetTint().R - 1) < 1e-6)
++      check("entry 2 round trip", back[2]:GetPriority() == 10 and back[2]:GetDuration() == 20 and back[2]:GetFadeout() == true
++        and math.abs(back[2]:GetColor():GetTint().G - 1) < 1e-6)
++      local big = {}
++      for i = 1, 9 do big[i] = ColorParams(Color(1, 1, 1, 1), i, 5, false, false) end
++      fly:SetColorParams(big)
++      check("a longer list grows the vector", ncolors(fly) == 9 and fly:GetColorParams()[9]:GetPriority() == 9, ncolors(fly))
++      fly:SetColorParams({})
++      check("an empty list clears", ncolors(fly) == 0)
++      local ok = pcall(function() fly:SetColorParams(5) end)
++      check("SetColorParams(non-table) raises", not ok)
++    end)
++    -- the game's own reaction: the flies keep updating with the list set, and a tint set through the game's SetColor shows up
++    try("game reaction", function()
++      fly:SetColor(Color(1, 0, 0, 1), 30, 3, false, false)
++      local list = fly:GetColorParams()
++      local found
++      for _, c in ipairs(list) do if c:GetPriority() == 3 then found = c end end
++      check("Entity:SetColor lands in GetColorParams with its priority and lifespan", found ~= nil and found:GetLifespan() == 30, found and found:GetLifespan())
++    end)
++  end
++  if frame == 120 then
++    check("ran to the end", true)
++    B.log(string.format("lab_entity_more_test: DONE pass %d fail %d", npass, nfail))
++  end
++end)
+diff --git a/scripts/recomp/rgon/lab_entity_probe.lua b/scripts/recomp/rgon/lab_entity_probe.lua
+new file mode 100644
+index 0000000..d086a33
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_entity_probe.lua
+@@ -0,0 +1,45 @@
++-- lab_entity_probe.lua (development only; ISAAC_RGON_LAB=lab_entity_probe.lua): measures, in this build, where an
++-- EntityNPC and an EntityFamiliar keep their pathfinder (REPENTOGON: NPC 0x414, familiar 0x5fc for v1.9.7.12). A pathfinder
++-- is recognised by its first word being the owner entity itself (REPENTOGON NPCAI_Pathfinder._entity at 0x0).
++-- Also dumps what the game's own `npc.Pathfinder` userdata points at, and a colour-params vector entry.
++local T = ...
++local B = T.B
++local r32 = B.r32
++local mod = RegisterMod("rgon lab entity probe", 1)
++local function say(s) B.log("lab_entity_probe: " .. s) end
++local frame = 0
++local function scan(name, e, lo, hi)
++  local a = B.ptr(e)
++  say(string.format("%s entity %08x type %d.%d", name, a, e.Type, e.Variant))
++  for o = lo, hi, 4 do
++    if r32(a + o) == a then
++      say(string.format("%s +%04x holds the entity itself (pathfinder candidate); next words %08x %08x grid %d", name, o,
++        r32(a + o + 4), r32(a + o + 8), B.ri32(a + o + 0x20)))
++    end
++  end
++end
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frame = frame + 1
++  local p = Isaac.GetPlayer(0)
++  if frame == 3 then
++    p:AddCollectible(CollectibleType.COLLECTIBLE_BROTHER_BOBBY, 0, false)
++    p:AddCollectible(CollectibleType.COLLECTIBLE_DEAD_BIRD, 0, false)
++    p:AddCollectible(CollectibleType.COLLECTIBLE_LITTLE_STEVEN, 0, false)
++    Isaac.Spawn(10, 0, 0, p.Position + Vector(100, 0), Vector(0, 0), nil)   -- gaper
++    Isaac.Spawn(18, 0, 0, p.Position + Vector(0, 100), Vector(0, 0), nil)   -- fly
++    Isaac.Spawn(26, 0, 0, p.Position + Vector(-100, 0), Vector(0, 0), nil)  -- maw / spider
++  end
++  if frame == 20 then
++    for _, e in ipairs(Isaac.GetRoomEntities()) do
++      local npc = e:ToNPC()
++      if npc then
++        scan("NPC", npc, 0x300, 0x700)
++        local pf = npc.Pathfinder
++        say(string.format("NPC %d.%d vanilla .Pathfinder = %s ptr %08x (entity %08x)", e.Type, e.Variant, tostring(pf),
++          pf and B.ptr(pf) or 0, B.ptr(npc)))
++      end
++      local fam = e:ToFamiliar()
++      if fam then scan("FAM", fam, 0x400, 0xc00) end
++    end
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_familiar_probe.lua b/scripts/recomp/rgon/lab_familiar_probe.lua
 new file mode 100644
 index 0000000..8dc242a
@@ -8189,6 +9006,96 @@ index 0000000..2423b50
 +    say("RESULT " .. (fails == 0 and "PASS" or ("FAIL (" .. fails .. ")")))
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_logbench.lua b/scripts/recomp/rgon/lab_logbench.lua
+new file mode 100644
+index 0000000..38d08dd
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_logbench.lua
+@@ -0,0 +1,84 @@
++-- lab_logbench.lua (development only; ISAAC_RGON_LAB=lab_logbench.lua, headless): what one log line costs on each path.
++-- Phase 1: Isaac.DebugString x N (the game's logger -> OutputDebugStringA -> the Host).
++-- Phase 2: a mod callback that raises an error K times per update (the game logs "failed:" + traceback).
++-- Phase 3: Sprite:Play of a name the anm2 does not have, K times per update (the game logs "[warn] no animation named").
++-- Phase 4: B.log (the Layer's own line) x N.
++-- Phase 5: control, the same loops with no logging (Lua only).
++-- Prints "logbench: <phase> N=.. total_ms=.. us_per_line=.." and a DONE line. Times with os.clock (CPU seconds).
++local T = ...
++local B = T.B
++local say = function(s) B.log("logbench: " .. s) end
++local mod = RegisterMod("rgon lab logbench", 1)
++local N = tonumber(os.getenv and os.getenv("LOGBENCH_N") or "") or 20000
++local K = tonumber(os.getenv and os.getenv("LOGBENCH_K") or "") or 100
++local clock = os.clock
++local frames = 0
++local phase = 0
++local started = false
++local spr
++local base_n, base_t0, base_ms
++local t_phase
++
++local function report(name, n, t)
++  say(string.format("%s N=%d total_ms=%.2f us_per_line=%.3f", name, n, t * 1000, t * 1e6 / n))
++end
++
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frames = frames + 1
++  if frames < 20 then return end
++  if phase == 0 then
++    phase = 1
++    local t = clock()
++    for i = 1, N do Isaac.DebugString("logbench line " .. i) end
++    report("debugstring", N, clock() - t)
++    t = clock()
++    for i = 1, N do local _ = "logbench line " .. i end
++    report("control_lua_loop", N, clock() - t)
++    t = clock()
++    for i = 1, N do B.log("logbench layer line " .. i) end
++    report("layer_B.log", N, clock() - t)
++    spr = Sprite()
++    spr:Load("gfx/001.000_player.anm2", true)
++    t = clock()
++    for i = 1, N do spr:Play("NoSuchAnim", true) end
++    report("missing_anim_warn", N, clock() - t)
++    phase = 1.5
++    return
++  end
++  if phase == 1.5 then
++    -- baseline: 60 updates with nothing failing
++    base_n = (base_n or 0) + 1
++    if base_n == 1 then base_t0 = clock() end
++    if base_n == 61 then
++      base_ms = (clock() - base_t0) * 1000
++      say(string.format("baseline_update total_ms=%.2f ms_per_update=%.3f", base_ms, base_ms / 60))
++      phase = 2
++    end
++    return
++  end
++  if phase == 2 then
++    -- errors: K per update, for 50 updates
++    error("logbench deliberate error")
++  end
++end)
++-- a second callback so each update fires K failing callbacks (each its own pcall + log + traceback)
++for i = 1, 20 do
++  mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++    if phase == 2 then error("logbench deliberate error " .. i) end
++  end)
++end
++local upd0, t0
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  if phase == 2 then
++    upd0 = (upd0 or 0) + 1
++    if upd0 == 1 then t0 = clock() end
++    if upd0 == 61 then
++      local n = 60 * 21
++      local extra = (clock() - t0) * 1000 - base_ms
++      say(string.format("lua_error_callbacks N=%d extra_ms=%.2f us_per_failing_callback=%.1f", n, extra, extra * 1000 / n))
++      phase = 3
++      say("DONE")
++    end
++  end
++end)
++say("loaded N=" .. N)
 diff --git a/scripts/recomp/rgon/lab_minimap_scan.lua b/scripts/recomp/rgon/lab_minimap_scan.lua
 new file mode 100644
 index 0000000..d9b783b
@@ -10503,7 +11410,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..664903c 100644
+index 4175f07..1064c53 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -10561,7 +11468,7 @@ index 4175f07..664903c 100644
    rearm = function() arm(nil) end,
  }
 -for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_hooks.lua" }) do
-+for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_eid.lua", "api_hooks.lua" }) do
++for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_ambush.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_entity_more.lua", "api_eid.lua", "api_hooks.lua" }) do
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)
@@ -10606,7 +11513,7 @@ index 4175f07..664903c 100644
  B.gate(R, ALLOW)
  
 diff --git a/scripts/recomp/rgon/tools/hook_table.py b/scripts/recomp/rgon/tools/hook_table.py
-index 0d1d8bd..dac7bc4 100644
+index 0d1d8bd..ee07277 100644
 --- a/scripts/recomp/rgon/tools/hook_table.py
 +++ b/scripts/recomp/rgon/tools/hook_table.py
 @@ -68,7 +68,7 @@ HOOKS = [
@@ -10618,7 +11525,7 @@ index 0d1d8bd..dac7bc4 100644
      (21, "Game::RestoreState", 0x006bb790, "sig", None, ""),
      (22, "Room::SpawnGridEntity", 0x007ebca0, "reg", None, ""),
      (23, "GridEntity::Init", 0x00709db0, "sig", None, ""),
-@@ -206,6 +206,40 @@ HOOKS = [
+@@ -206,6 +206,45 @@ HOOKS = [
       "character it sets [this+5] from Menu_Character_Entry::IsCharacterAvailable (0x0094d64a, 0x0094d657) and "
       "shows layers 4..15 or 16 of the big page; for a mod's (selected id [this+0x10] >= 0x12, 0x0094d62d) it "
       "always sets [this+5] = 1 (0x0094d700)"),
@@ -10656,6 +11563,11 @@ index 0d1d8bd..dac7bc4 100644
 +     "the same shape; Lua hook id 1 (IS_ACTION_TRIGGERED)"),
 +    (177, "Input::GetActionValue", 0x009562d0, "asm", 0x10,
 +     "the same shape; the float comes back in XMM0; Lua hook id 2 (GET_ACTION_VALUE)"),
++    # Entity::GetWaterClipInfo (the base class's; not virtual, no data reference, four direct callers: 0x00419a18,
++    # 0x00419a52, 0x00419a6a in Room's entity render pass and 0x006b0aaa): thiscall(out) with out = { flags, float },
++    # all the `ret`s pop 4. Entity:SetWaterClipFlags (api_entity_more.lua) overwrites out->flags afterwards.
++    (179, "Entity::GetWaterClipInfo", 0x006b6ed0, "asm", 4,
++     "thiscall(out*); out = { uint32 flags, float }; the layer's Entity:SetWaterClipFlags overrides the flags"),
  ]
  # the entity classes' virtual functions: slots 100 + 12 * k + class index
  _k = 0

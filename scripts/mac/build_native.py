@@ -34,8 +34,12 @@ LUA_SRC = REPO / "tools" / "lua-5.3.3" / "src"
 
 ARCH = ["-arch", "arm64"]
 COMMON = ARCH + ["-DISAAC_NATIVE=1", "-DRECOMP_MEM_IDENTITY=0", "-fno-strict-aliasing"]
-HOST_CFLAGS = COMMON + ["-O2", "-std=gnu11", "-w"]
-LIFT_CFLAGS = COMMON + ["-O2", "-w", "-DRECOMP_MEM_CHECK=0"]
+# Darwin's setjmp saves and restores the signal mask and the sigaltstack state (two syscalls per call,
+# a quarter of the main thread's time in a 95-mod sample, since every host->guest call arms one). Nothing
+# here needs either, so every TU uses the plain _setjmp/_longjmp.
+FAST_JMP = ["-Dsetjmp=_setjmp", "-Dlongjmp=_longjmp"]
+HOST_CFLAGS = COMMON + ["-O2", "-std=gnu11", "-w"] + FAST_JMP
+LIFT_CFLAGS = COMMON + ["-O2", "-w", "-DRECOMP_MEM_CHECK=0"] + FAST_JMP
 
 # Lua: the flags scripts/recomp/host/lua_build.py requires for the Guest's ABI
 # (no LUA_COMPAT_5_2, no LUA_32BITS, no LUA_C89_NUMBERS; C, not C++).

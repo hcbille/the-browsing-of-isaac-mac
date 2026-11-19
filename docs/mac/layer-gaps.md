@@ -706,3 +706,20 @@ the colour `Player::UsePill` was called with is kept on a stack and added by the
 4. The L callbacks the mods use (96), grouped by hook site: grid (rock destroy, grid collision, trapdoor/door update), player
    (trigger death, revive, drop card/pill), HUD (hearts, history HUD), planetarium/devil, completion marks and shop purchase.
 5. ImGui (58 names, none used by a mod) last.
+
+**Entity batch (worker entity, 2026-11-19; `api_entity_more.lua`, lab `lab_entity_more_test.lua`).** `EntityFamiliar:GetMultiplier` (the game's
+own function 0x0060dc40, float in XMM0, which `B.call` now answers as its fourth value), `EntityNPC:GetPathfinder` and
+`EntityFamiliar:GetPathfinder/GetPathFinder` (embedded struct at NPC +0x414, familiar +0x5fc, measured by `lab_entity_probe.lua`; class taken from
+the game's `npc.Pathfinder` userdata), `Entity:GetColorParams/SetColorParams` and the `ColorParams` class (vector at +0x1ac, 0x3c entries),
+`Entity:Get/Set/ResetWaterClipFlags` (the game's `Entity::GetWaterClipInfo` 0x006b6ed0, hook slot 179 rewrites the flags from a per-entity
+override; needs an engine build). GridEntity's water clip flags are not done.
+
+**Ambush batch (worker ambush, 2026-11-19; `api_ambush.lua`, lab `lab_ambush_test.lua`).** The global `Ambush`: GetCurrentWave, Get/SetMaxBossrushWaves,
+Get/SetNumBossesPerWave, GetMaxChallengeWaves (3), GetMaxBossChallengeWaves (2), StartChallenge, SpawnWave, SpawnBossrushWave. The object is at
+game+0x265c8 (REPENTOGON v1.9.7.12: +0x25b40; found from every caller of StartChallenge); fields +0x18 max boss-rush waves, +0x1c bosses per wave,
++0x20 active, +0x24 wave (0 when idle). Functions 0x00833420 / 0x00833600 / 0x00833c40, plain `ret` (REPENTOGON's byte signatures for the first two
+do not match). Measured in a challenge room: active byte 1 after StartChallenge, wave counter 1, 2, 3 as the waves are killed. GetNextWave(s) and
+Set*ChallengeWaves are not done (the game computes those maxima itself). `RoomDescriptor.Data` is writable (`__propset` on the descriptor class
+tables, address written at descriptor +0x10, type-checked); the game follows (teleporting into a rewritten room gives the new room type).
+`RoomConfigHolder` carries every `RoomConfig` function (`on_both` in api_roomconfig.lua; lint rule `roomconfig-both-tables`).
+Lab 57/0 with 95 mods; Fiend Folio's Toadsie now passes SetWaterClipFlags and GetPathfinder and stops at `Sprite:Copy` (toadsie.lua:142, not in the Layer yet).

@@ -320,6 +320,7 @@ void isaac_mac_present(void) {
     /* the game did not leave within a second: end it ourselves */
     if (g_quit_frame >= 0 && (int)frame > g_quit_frame + 90) {
         printf("[mac] the game did not close; exiting\n");
+        { extern void isaac_mac_log_finish(void); isaac_mac_log_finish(); }
         fflush(NULL);
         _exit(0);
     }
