@@ -65,6 +65,32 @@ Not done yet:
   External Item Descriptions and StageAPI still miss a few names each.
 - A from-scratch build check, and a known rare Lua garbage-collector crash.
 
+## REPENTOGON
+
+Many mods need [REPENTOGON](https://github.com/TeamREPENTOGON/REPENTOGON), the script
+extender that adds a large Lua API and new callbacks to the Windows game. REPENTOGON
+itself is a Windows DLL and can't run here, so this project reimplements its features
+for the Mac build: a Lua compatibility layer, started by upstream, plus hooks in the
+game.
+
+- **How:** we read REPENTOGON's source to learn what each function and callback does,
+  then write our own implementation. Its structure layouts are only a starting point:
+  every game field is measured in this build before we use it. None of REPENTOGON's
+  C++ is copied.
+- **Feature-parity target:** REPENTOGON `main` at
+  [`0cd8f863f`](https://github.com/TeamREPENTOGON/REPENTOGON/commit/0cd8f863fe9947a8414d9018a700269603e629e6)
+  (2026-11-09, version 1.1.3, its latest snapshot). That snapshot targets game v1.9.7.12;
+  this build runs v1.9.7.17, which is why fields are re-measured.
+- **Progress:** about 590 of its 1,727 functions and 135 of its 380 callbacks, the ones
+  the tested mods use coming first. `scripts/mac/rgon_census.py` compares the layer
+  against a REPENTOGON checkout, and `docs/mac/layer-gaps.md` has the details.
+- The layer tells each mod whether REPENTOGON is there, and only says yes when every
+  REPENTOGON name the mod uses actually works. A mod that can run without REPENTOGON
+  otherwise keeps running without it.
+
+This is an independent reimplementation, not affiliated with or endorsed by Team
+REPENTOGON.
+
 ## Use
 
 ```sh
