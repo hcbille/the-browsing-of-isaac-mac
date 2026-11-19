@@ -551,7 +551,21 @@ def rule_stdstring_read(fs):
                 yield (f, i, 'a std::string name field is read with B.stdstr(addr); B.str(addr) is for a plain C string: use B.stdstr here')
 
 
-RULES = [rule_type_of_callback_result, rule_stdstring_read, rule_orphan_starts_packed, rule_hurt_func_source, rule_item_name_is_a_key, rule_insn_hook_giant_entry, rule_pgrep_game_by_name, rule_tears_methods_in_lab, rule_cacheflag_literals, rule_health_field_offsets, rule_web_host_mem_base, rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_lab_prints_done, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part]
+def rule_add_cache_flags_one_arg(fs):
+    """The Layer's own Lua never calls player:AddCacheFlags with a second argument (2026-11-19, ffkeys: the game's AddCacheFlags
+    takes only the flags and never evaluates, so mods that passed REPENTOGON's `true` got no key ghosts; api_cacheflags.lua now
+    wraps it for mods). In Layer code call player:AddCacheFlags(flags) and then player:EvaluateItems() yourself."""
+    call = re.compile(r':AddCacheFlags\([^()]*,')
+    for f in fs:
+        if not (f.startswith('scripts/recomp/rgon/') and f.endswith('.lua')) or f.endswith('api_cacheflags.lua'):
+            continue
+        for i, line in enumerate((text_of(f) or '').splitlines(), 1):
+            if call.search(line) and not line.lstrip().startswith('--'):
+                yield (f, i, 'AddCacheFlags takes only the flags in the game: call player:AddCacheFlags(flags) then '
+                       'player:EvaluateItems() (the second argument is for mods, handled by api_cacheflags.lua)')
+
+
+RULES = [rule_add_cache_flags_one_arg, rule_type_of_callback_result, rule_stdstring_read, rule_orphan_starts_packed, rule_hurt_func_source, rule_item_name_is_a_key, rule_insn_hook_giant_entry, rule_pgrep_game_by_name, rule_tears_methods_in_lab, rule_cacheflag_literals, rule_health_field_offsets, rule_web_host_mem_base, rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_lab_prints_done, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part]
 
 
 def main():

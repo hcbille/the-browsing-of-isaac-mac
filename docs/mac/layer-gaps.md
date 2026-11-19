@@ -845,6 +845,16 @@ signature match; "FXLayers::AddPoopFx 0x4dd7f0" is really an NPC update.
 False positives of the backlog tool, now suppressed: `REVEL.RoomLists[...]:AddRooms` (a Revelations function, not RoomConfig.AddRooms) and StageAPI's
 `:SetMusic` (not RoomConfigStage). Lint rules: `hurt-func-source`, and `backlog-narrowing` now needs MODLIB.
 
+### Fiend Folio key blocks: `AddCacheFlags(flags, true)` (`api_cacheflags.lua`, lab `lab_ffkeys.lua`, 2026-11-19)
+Play report: in "Vermin - Key Chain" the coloured key blocks never opened. Cause: Fiend Folio's `CollectPuzzleKey` calls
+`player:AddCacheFlags(CACHE_FAMILIARS, true)` to get its key-ghost familiars from `MC_EVALUATE_CACHE` -> `CheckFamiliar`. The game's own
+`AddCacheFlags` takes only the flags and evaluates nothing (nothing runs `EvaluateItems` on its own), so no ghost ever appeared. REPENTOGON's
+second argument means "EvaluateItems now"; the Layer now wraps the game's function and does that. The `[warn] Pickup variant 752 not implemented
+yet!` line is the game's harmless message for a mod pickup variant. Lab: a key is collected next to a custom grid `FFKeyBlock{Blue,Green,Red}`, the ghost
+spawns, binds to the key, flies to the block and the block opens (`Breaking`, then the grid is cleared): 3 colours pass. The mod opens a block only when
+the player is within `Size + 26` (36) of its centre; a player against a wall is about 30 away. Not tested: chain blocks (`FFChainBlock*`, broken by
+the BFS from a key block), the tricolor key and the gray block (Dungeon Master). Lint rule: `add_cache_flags_one_arg`.
+
 ### Next batches (proposed)
 
 0. (done, B1: quad getters, Copy, Translate, Flip. B2: Capsule value type, Shape, FindInCapsule; left: Capsule:Collide and the game-made capsules. B3: pause/daily/prompt state, Delirium fields, GetDimension; left: the rest of GenericPrompt, selected elements, Delirium's other fields.)

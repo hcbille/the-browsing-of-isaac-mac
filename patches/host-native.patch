@@ -2847,6 +2847,33 @@ index 0000000..a0034bf
 +  R.Implemented["EntityKnife.SetHitboxParentKnife"] = nil
 +  if T.listen and ModCallbacks.MC_POST_NEW_ROOM then T.listen(ModCallbacks.MC_POST_NEW_ROOM, function() parent_of = {} end) end
 +end
+diff --git a/scripts/recomp/rgon/api_cacheflags.lua b/scripts/recomp/rgon/api_cacheflags.lua
+new file mode 100644
+index 0000000..c0b62a7
+--- /dev/null
++++ b/scripts/recomp/rgon/api_cacheflags.lua
+@@ -0,0 +1,21 @@
++-- api_cacheflags.lua: EntityPlayer:AddCacheFlags(flags, evaluate = false)
++-- The game's own takes only the flags and leaves the work for the next EvaluateItems, which nothing runs
++-- by itself. REPENTOGON adds the second argument: when true, EvaluateItems runs at once. Mods written for it
++-- rely on that (Fiend Folio's puzzle keys call AddCacheFlags(CACHE_FAMILIARS, true) to get their key-ghost
++-- familiars from MC_EVALUATE_CACHE -> CheckFamiliar; without the immediate pass no ghost ever appeared).
++local T = ...
++local B, R = T.B, T.R
++local log = B.log
++local rawget, rawset, type = rawget, rawset, type
++
++local c = T.class_tables("EntityPlayer")
++local game_add = c and rawget(c, "AddCacheFlags")
++if type(game_add) == "function" then
++  rawset(c, "AddCacheFlags", B.cfn(function(self, flags, evaluate)
++    game_add(self, flags)
++    if evaluate == true then self:EvaluateItems() end
++  end))
++  R.Implemented["EntityPlayer.AddCacheFlags"] = true
++else
++  log("api_cacheflags: no EntityPlayer.AddCacheFlags to extend")
++end
 diff --git a/scripts/recomp/rgon/api_callbacks.lua b/scripts/recomp/rgon/api_callbacks.lua
 index 5391065..79b14e5 100644
 --- a/scripts/recomp/rgon/api_callbacks.lua
@@ -13834,6 +13861,136 @@ index 0000000..7205632
 +    step = 4
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_ffkeys.lua b/scripts/recomp/rgon/lab_ffkeys.lua
+new file mode 100644
+index 0000000..a1fd942
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_ffkeys.lua
+@@ -0,0 +1,124 @@
++-- lab_ffkeys.lua (development only; ISAAC_RGON_LAB=lab_ffkeys.lua with Fiend Folio + StageAPI installed):
++-- Fiend Folio puzzle keys (pickup 5.752) and the coloured key blocks (StageAPI custom grids FFKeyBlock*).
++-- Chain: key collision -> key ghost familiar -> ghost flies to the block -> UseKey event -> block opens.
++-- Logs "lab_ffkeys: PASS/FAIL .." and a DONE line. Run in a start room.
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab ffkeys", 1)
++local npass, nfail = 0, 0
++local function check(name, ok, detail)
++  if ok then npass = npass + 1 else nfail = nfail + 1 end
++  B.log("lab_ffkeys: " .. (ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function info(s) B.log("lab_ffkeys: info " .. s) end
++
++local frame = 0
++local state = {}
++local COLORS = { { "Blue", 0 }, { "Green", 1 }, { "Red", 2 } }
++local colorIdx = 1
++local keyEnt, blockIdx, cg
++
++local function ghosts(variant)
++  local n = 0
++  for _, e in ipairs(Isaac.FindByType(3, variant, -1, false, false)) do n = n + 1 end
++  return n
++end
++
++local function setup(c)
++  local p = Isaac.GetPlayer(0)
++  local room = Game():GetRoom()
++  local ff = FiendFolio
++  local base = room:GetGridIndex(p.Position)
++  blockIdx = base + 1
++  local bpos = room:GetGridPosition(blockIdx)
++  p.Position = bpos - Vector(30, 0) -- a player against the wall is about 30 from its centre; the mod needs <= Size + 26
++  p.Velocity = Vector.Zero
++  local name = "FFKeyBlock" .. c[1]
++  local gcfg = StageAPI.CustomGridTypes[name]
++  check(c[1] .. " custom grid type registered", gcfg ~= nil)
++  if not gcfg then return end
++  cg = gcfg:Spawn(blockIdx, true, false, {})
++  check(c[1] .. " custom grid spawned with a grid entity", cg ~= nil and cg.GridEntity ~= nil,
++    cg and tostring(cg.GridEntity))
++  info(string.format("%s block idx=%d pos=%s player=%s gridtype=%s", c[1], blockIdx, tostring(bpos), tostring(p.Position),
++    cg and cg.GridEntity and tostring(cg.GridEntity:GetType()) or "nil"))
++  -- key goes onto the player (collision picks it up)
++  keyEnt = Isaac.Spawn(5, ff.PICKUP.VARIANT.PUZZLE_KEY, c[2], p.Position, Vector.Zero, nil)
++  info("key spawned " .. tostring(keyEnt.Type) .. "." .. tostring(keyEnt.Variant) .. "." .. tostring(keyEnt.SubType))
++end
++
++mod:AddCallback(ModCallbacks.MC_EVALUATE_CACHE, function() state.evalFam = (state.evalFam or 0) + 1 end, CacheFlag.CACHE_FAMILIARS)
++local t0
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frame = frame + 1
++  if frame == 5 then
++    check("FiendFolio + StageAPI loaded", FiendFolio ~= nil and StageAPI ~= nil)
++    check("PlayerManager.GetPlayers", type(PlayerManager.GetPlayers) == "function" and #PlayerManager.GetPlayers() >= 1)
++    local p = Isaac.GetPlayer(0)
++    local d = FiendFolio and FiendFolio.GetEntityData and FiendFolio:GetEntityData(p)
++    check("player KeyGhostData initialised", d and type(d.KeyGhostData) == "table")
++    check("player:CheckFamiliar exists", type(p.CheckFamiliar) == "function")
++    check("familiar FollowParent exists", true)
++  end
++  if frame == 10 then
++    local c = COLORS[colorIdx]
++    t0 = frame
++    setup(c)
++  end
++  if t0 and frame > t0 then
++    local c = COLORS[colorIdx]
++    local k = frame - t0
++    local p = Isaac.GetPlayer(0)
++    local gv = FiendFolio.KeyToGhostMap[c[2]]
++    if k == 20 or k == 60 then
++      local touched = keyEnt and keyEnt:Exists() and keyEnt:ToPickup().Touched
++      local anim = keyEnt and keyEnt:Exists() and keyEnt:GetSprite():GetAnimation()
++      info(string.format("%s k=%d key exists=%s touched=%s anim=%s ghosts=%d data=%d", c[1], k, tostring(keyEnt and keyEnt:Exists()),
++        tostring(touched), tostring(anim), ghosts(gv), #FiendFolio:GetEntityData(p).KeyGhostData[gv]))
++    end
++    if k == 25 then
++      check(c[1] .. " key collected (Touched / collect anim)", keyEnt:ToPickup().Touched == true)
++      check(c[1] .. " key recorded in KeyGhostData", #FiendFolio:GetEntityData(p).KeyGhostData[gv] >= 1)
++      check(c[1] .. " key ghost familiar spawned", ghosts(gv) >= 1, ghosts(gv))
++      for _, e in ipairs(Isaac.FindByType(3, gv, -1, false, false)) do
++        local f = e:ToFamiliar()
++        check(c[1] .. " ghost familiar.Player is the player", f.Player ~= nil and GetPtrHash(f.Player) == GetPtrHash(p))
++        check(c[1] .. " ghost IsFollower", f.IsFollower == true)
++        state.ghost = f
++      end
++    end
++    if k == 32 then
++      local g = Isaac.FindByType(3, gv, -1, false, false)[1]
++      check(c[1] .. " ghost bound to key (KeyGhostUpdate ran)", g ~= nil and FiendFolio:GetEntityData(g).key ~= nil,
++        g and tostring(FiendFolio:GetEntityData(g).key) or "no ghost")
++    end
++    if k >= 30 and k % 30 == 0 and k < 400 then
++      local ghost = Isaac.FindByType(3, gv, -1, false, false)[1]
++      do
++        local e1 = FiendFolio:GetEntityData(p).KeyGhostData[gv][1]
++        info(string.format("  dbg key=%s entry.Ghost=%s exists=%s ghostdata.key=%s dist=%s size=%s vel=%s", tostring(e1 and e1.Key),
++          tostring(e1 and e1.Ghost), tostring(e1 and e1.Ghost and e1.Ghost:Exists()),
++          tostring(ghost and FiendFolio:GetEntityData(ghost).key), tostring((p.Position + p.Velocity):Distance(Game():GetRoom():GetGridPosition(blockIdx))),
++          tostring(p.Size), tostring(p.Velocity)))
++      end
++      local tgt = ghost and FiendFolio:GetEntityData(ghost).target
++      info(string.format("%s k=%d grid exists=%s breakStarted=%s friend=%s ghostTarget=%s ghostpos=%s unlock=%s anim=%s", c[1], k,
++        tostring(cg:Exists()), tostring(cg.PersistentData.BreakStarted), tostring(cg.PersistentData.friend ~= nil),
++        tostring(tgt ~= nil), ghost and tostring(ghost.Position) or "-", tostring(cg.PersistentData.Unlock) .. " fc=" .. tostring(cg.PersistentData.FrameCount) .. " bd=" .. tostring(cg.PersistentData.BreakDelay),
++        cg.GridEntity and cg.GridEntity:GetSprite():GetAnimation() or "-"))
++    end
++    if k == 400 or (k > 40 and not cg:Exists()) then
++      check(c[1] .. " key block opened", not cg:Exists(), "k=" .. k)
++      local now = Game():GetRoom():GetGridEntity(blockIdx)
++      check(c[1] .. " grid wall cleared", now == nil or now:GetType() ~= GridEntityType.GRID_WALL,
++        now and tostring(now:GetType()) or "nil")
++      colorIdx = colorIdx + 1
++      t0 = nil
++      if colorIdx <= #COLORS then t0 = frame + 5 - 10; frame = frame; setup(COLORS[colorIdx]); t0 = frame
++      else
++        B.log(string.format("lab_ffkeys: DONE %d pass, %d fail", npass, nfail))
++      end
++    end
++  end
++end)
++B.log("lab_ffkeys: listening")
 diff --git a/scripts/recomp/rgon/lab_game_misc.lua b/scripts/recomp/rgon/lab_game_misc.lua
 new file mode 100644
 index 0000000..3b56ad9
@@ -19212,7 +19369,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..ffb9084 100644
+index 4175f07..a547f9f 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -19271,7 +19428,7 @@ index 4175f07..ffb9084 100644
    rearm = function() arm(nil) end,
  }
 -for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_hooks.lua" }) do
-+for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_ambush.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_entity_more.lua", "api_player_health.lua", "api_npc.lua", "api_tears_more.lua", "api_eid.lua", "api_pickup_more.lua", "api_player_items.lua", "api_game_misc.lua", "api_rooms_more.lua", "api_hooks.lua", "api_framectx.lua" }) do
++for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_ambush.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_entity_more.lua", "api_player_health.lua", "api_npc.lua", "api_tears_more.lua", "api_eid.lua", "api_pickup_more.lua", "api_player_items.lua", "api_game_misc.lua", "api_rooms_more.lua", "api_cacheflags.lua", "api_hooks.lua", "api_framectx.lua" }) do
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)
