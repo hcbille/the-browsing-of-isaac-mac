@@ -53,8 +53,11 @@ Working, on an M2 MacBook Air:
   and now checks each name on the class the mod calls it on (a method one class has no
   longer counts for another). New: the player death, revive, health type, birth, bed,
   pocket swap and card and pill callbacks, and more entity methods that Fiend Folio and
-  Epiphany use (familiars, enemy shields and splitting, capsule collision).
-  It has 710 of REPENTOGON's 1,727 functions and 155 of its 380 callbacks, the
+  Epiphany use (familiars, enemy shields and splitting, capsule collision), the player
+  health names (Candy Heart, Soul Locket, Keeper's Sack, the hearts on the HUD), tears,
+  lasers, knives and effects, pickups, loot lists and item pools, and the shop purchase,
+  Void, Compost, ghost pickup, Devil Room and Planetarium chance callbacks.
+  It has 799 of REPENTOGON's 1,727 functions and 165 of its 380 callbacks, the
   ones the tested mods use first. Item settings such as `ChargeType` are writable, as
   with REPENTOGON. `scripts/mac/rgon_census.py` measures the rest.
 - One pinned game version. The recompilation only works with one exact `isaac-ng.exe`
@@ -98,7 +101,7 @@ game.
   [`0cd8f863f`](https://github.com/TeamREPENTOGON/REPENTOGON/commit/0cd8f863fe9947a8414d9018a700269603e629e6)
   (2026-11-09, version 1.1.3, its latest snapshot). That snapshot targets game v1.9.7.12;
   this build runs v1.9.7.17, which is why fields are re-measured.
-- **Progress:** 710 of its 1,727 functions and 155 of its 380 callbacks, the ones
+- **Progress:** 799 of its 1,727 functions and 165 of its 380 callbacks, the ones
   the tested mods use coming first. `scripts/mac/rgon_census.py` compares the layer
   against a REPENTOGON checkout, and `docs/mac/layer-gaps.md` has the details.
 - The layer tells each mod whether REPENTOGON is there, and only says yes when every

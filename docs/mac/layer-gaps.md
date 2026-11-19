@@ -724,6 +724,57 @@ Capsule:Collide. Every address and offset is in the header of `api_npc.lua`. Lab
 Not registered: `Entity:GetNullCapsule` (0x006b6c20 is understood, but no null layer of size > 0 was found to prove it); ThrowMaggot(AtPos), NPC:GetLootList,
 Shape.Capsule (see the header). `EntityNPC:ReplaceSpritesheet` is the plain case: it does not append the champion/stage suffix.
 
+### Tears, lasers, knives, effects, projectiles (`api_tears_more.lua`, lab `lab_tears_more.lua`, 2026-11-19)
+
+TearParams Mass/Knockback/SpeedMultiplier and TearDisplacement (+0x54, 0x58, 0x5c, 0x60, as REPENTOGON); EntityTear SetMultidimensionalTouched,
+In/Add/RemoveFromHitList, Set/GetBackdropType, ResetSpriteScale(force) (writes -1 to the scale animation number 0x45c, which the game's
+0x00677780 compares), SetInitSound; EntityLaser Get/SetShrink, Get/SetDisableFollowParent, GetOneHit, Get/SetTimeout, SetScale/ResetSpriteScale
+(game function 0x0097fc10), RotateToAngle (0x0096f470, xmm1/xmm2), RecalculateSamplesNextUpdate (empties the four sample vectors at once),
+hit list, SetMultidimensionalTouched; EntityKnife InitHomingPath (0x00961320, ret 0xc, path offset in xmm3); EntityProjectile Deflect
+(Reflect 0x00652fa0, ret 8); EntityEffect Get/Set/Add/Clear/HasTearFlags (+ Aquarius aliases; variants 54, 113, 126, 167, variant data at 0x420) and
+the static CreateLight; FireSplitTear on tear/laser/knife written in Lua (fires MC_POST_FIRE_SPLIT_TEAR for its own calls).
+- Init sound: the tear's first Update runs init_tear (0x00666d40), which plays the fire sound unless byte 0x7ea is set; the laser's is byte 0x518.
+  SetInitSound(SOUND_NULL) sets that byte; another sound sets it and plays the chosen one at the entity's first POST_*_UPDATE.
+- Deferred: `EntityKnife:GetHitboxParentKnife` (a bone club's hitbox knife, SubType 4, has the player as Parent and byte 0x4e7 = 0: the link needs
+  an engine hook in update_bone_swing), `EntityEffect:CreateLootPreview`/`GetGridEntityDesc` (no user), laser `HomingType` (the game has it).
+- Backlog tool: `TearFlagsLib.FireSplitTear` (Fiend Folio's own library) and `Mod.Room():SetBackdropType` are no longer counted against these classes.
+
+### CB-b: shop, pickups, devil and planetarium chances (hooks 193-204, lab `lab_cb_b.lua`, 2026-11-19)
+
+Needs an engine build. Callbacks real (10): MC_POST_PICKUP_SHOP_PURCHASE 1062, MC_PRE_PICKUP_VOIDED 1265, MC_PRE_PICKUP_COMPOSTED 1267, MC_PRE_PICKUP_UPDATE_GHOST_PICKUPS 1335, MC_PRE_DEVIL_APPLY_ITEMS 1130 / SPECIAL_ITEMS 1132 / MC_POST_DEVIL_CALCULATE 1133 and MC_PRE_PLANETARIUM_APPLY_ITEMS 1113 / APPLY_TELESCOPE_LENS 1114 / MC_POST_PLANETARIUM_CALCULATE 1115.
+
+| Callback | Site (v1.9.7.17) | Notes |
+|---|---|---|
+| 1062 | `Entity_Pickup::TriggerShopPurchase` 0x006e84d0, ret 8 (slot 193) | `(pickup, player, moneySpent)`, param = variant. REPENTOGON's signature matches 0x00918d00 here, which is wrong. Lab calls the game function directly; the natural collision path calls the same address. |
+| 1265 | Void: insn 0x005be7e1 in the item-use giant (slot 194); Black Rune: 0x007b451c in `UseCard` (slot 195) | `(pickup, isBlackRune)`; `false` keeps the pedestal. Void's case is found from collectible 477 through the byte table 0x005c7760 and jump table 0x005c7598 (lint rule `insn-hook-giant-entry`). |
+| 1267 | Compost: insn 0x005bde0c in the giant (slot 196) | `(pickup)`; `false` keeps the pickup. |
+| 1335 | `UpdatePickupGhosts` 0x006e17c0, insn 0x006e17f0 (slot 204) | `(pickup)`; `false` removes the ghost (lab: proven). `true` jumps past the game's own Guppy's Eye test; the lab could not show a ghost for a chest without Guppy's Eye (the loot list is probably empty), so that half is unproven. |
+| 1130 1132 1133 | `Room::GetDevilRoomChance` 0x007f92b0, insns 0x007f92cb / 0x007f962b / 0x007f96a4 (slots 197-199) | Chance is the local [esp+0xc]; a number answer replaces it (lab: proven for each). |
+| 1113 1114 1115 | `Game::GetPlanetariumChance` 0x0074dbd0, insns 0x0074dd3f / 0x0074ddc1 / 0x0074ddcf / 0x0074de05 (slots 200-203) | Chance is [ebp-8] or xmm0; with Telescope Lens the callback sees the chance before the game's own lens term (lab: proven, applied once). |
+
+Deferred: MC_PRE_LOOT_LIST_PUT / LootList callbacks 1334 and 1336 (the game's loot list is an MSVC `std::deque<LootListEntry>` and the Layer has no LootList class; the producer is 0x006dae40); MC_PRE_SLOT_DROP / explosion drops 1123 (the drops are inlined per variant in `Entity_Slot::TakeDamage` 0x00664560, no function boundary). Lint rule `insn-hook-giant-entry` was added.
+
+### Pickups and pools (`api_pickup_more.lua`, lab `lab_pickup_more.lua`, 2026-11-19)
+
+EntityPickup: Get/SetVarData, Get/SetDropDelay, AddCollectibleCycle, RemoveCollectibleCycle, HasFlipData, GetPickupGhost, GetPriceSprite,
+TryInitOptionCycle, SetNewOptionsPickupIndex, TriggerTheresOptionsPickup, MakeShopItem, TryRemoveCollectible, UpdatePickupGhosts, ReloadGraphics,
+CanJeraDuplicate, GetLootList, and the statics SetupCollectibleGraphics and GetRandomPickupVelocity; Room:GetShopItemPrice; the Lua classes LootList
+(constructor, PushEntry, GetEntries) and LootListEntry (GetType, GetVariant, GetSubType, GetSeed, GetRNG); ItemPool HasCollectible, HasTrinket,
+PickCollectible, AddCollectible. Every address, offset and calling convention is in the header of the module. Lab: see the hand-back (all PASS).
+- The item pool: `GetPool(i)` = pool + 4 + i * 0x34 (31 pools); a pool is { float total weight, vector of 0x18-byte PoolItems }. The total weight
+  includes the locked items (measured: it is the sum of all weights, not only the unlocked ones). The removed-collectible and room-blacklist
+  bitsets are at pool + 0x67c / + 0x68c, the trinket vector (8-byte entries, byte 4 = in pool, byte 5 = unlocked) at pool + 0x794.
+- AddCollectible grows the pool's own vector and is replayed at MC_POST_GAME_STARTED (pools are rebuilt per run, an entry already there is not
+  doubled). The lab proves the game draws the added item (weight 1e7 -> `GetCollectible` answers it) and that PickCollectible sees it.
+- `Pickup::GetLootList` (0x006dae40) takes a hidden deque return, `shouldAdvance`, and a player (0 works). The deque has one entry per block.
+- `Isaac.GetItemIdByName` takes the English name ('The Inner Eye'); `ItemConfigItem.Name` is the localization key. Lint rule `item-name-is-a-key`.
+- `ItemPool:GetTrinket(dontAdvance, seed)`: the first argument is NOT "decrease"; `GetTrinket(false)` removes the drawn trinket from the pool.
+Not done (deferred): EntityPickup Set/Get/ClearCanRerollOverride (the override must change the game's own D6 and reroll code: needs a hook on
+`CanReroll` 0x006ee200, belongs with the engine-hook worker); Room Get/SetItemPool (SetItemPool needs a hook on the static `Room::GetItemPool`);
+ItemPool:GetCollectible's Flags argument: the game's Lua binding ignores a fifth argument (BAN_ACTIVES and BAN_PASSIVES drew the same items),
+the game function 0x00733610 does take the flags (ecx pool, stack poolType, seed, flags word = flags << 1 | not-decrease, default), but a wrapper
+put over the class table's entry was never the function a lookup answered (the lab's call went to the game's own binding), so it is not Implemented.
+
 ### Next batches (proposed)
 
 0. (done, B1: quad getters, Copy, Translate, Flip. B2: Capsule value type, Shape, FindInCapsule; left: Capsule:Collide and the game-made capsules. B3: pause/daily/prompt state, Delirium fields, GetDimension; left: the rest of GenericPrompt, selected elements, Delirium's other fields.)
@@ -780,3 +831,17 @@ code only when `B.HOOKS >= 224`, so an older binary still runs the Layer). Needs
 Not done: the twin (Jacob/Esau) sync and the Forgotten/Keeper heart fixes after a revive; heart conversion on a health type change and the XML `healthtype`
 default; MC_POST_PLAYER_REMOVE_CARD/PILL (1354/1355); the drops caused by a lost pocket slot; MC_PRE_PLAYER_COLLECT_CARD/PILL (1356/1358).
 REPENTOGON's byte signatures for the two birth sites match nothing in this build; the sites were found from the store `or [player+0x1938], reg`.
+
+**Player health batch (worker player-health, 2026-11-19; `api_player_health.lua`, lab `lab_player_health.lua` 115 PASS / 0 FAIL, probe `lab_player_health_probe.lua`).**
+Offsets measured in v1.9.7.17 (REPENTOGON's are 0x14 to 0x24 lower): Candy Heart ups 0x1db0 and Soul Locket ups 0x1dbc (six u16: Damage, FireDelay,
+TearRange, ShotSpeed, MoveSpeed, Luck; 5 written into each word moved exactly that stat in `EvaluateItems` 0x00763570), Keeper's Sack 0x1fbc (raises Damage, Range,
+Speed; not Luck), Red Stew duration 0x1e74 (Damage), Maggy drain cooldown 0x1ef4 (300 as Tainted Magdalene, one fewer a frame), Immaculate state 0x1930
+(+1 per heart pickup, birth at 15), Cambion state 0x1934, ConceptionFamiliarFlags 0x1938 (0x200 after a birth). `UpdateIsaacPregnancy(bool)` is 0x007c7d70
+(thiscall, ret 4); `HUD::GetPlayerHUDLayout(index, player)` 0x009a6570 (thiscall, ret 8). PlayerHUD slot: flash counters are the bytes at +0xc, +0xd, +0xe
+(the game counts one down every two frames), 24 hearts of 0x10 bytes from +0x10 as in REPENTOGON (animation names are C strings at +8 and +0xc).
+Done: EntityPlayer Get/Set Immaculate/Cambion ConceptionState (Immaculate clamped 0..14), Get/SetConceptionFamiliarFlags, Get/SetKeepersSackBonus,
+Get/SetMaggyHealthDrainCooldown, Get/SetRedStewBonusDuration, UpdateIsaacPregnancy, Get/AddCandyHeartBonus, Get/AddSoulLocketBonus; PlayerHUD
+Get/SetFlashRed/Soul/GoldHearts, GetLayout, GetHearts, GetHeartByIndex; PlayerHUDHeart (all seven). Backlog EntityPlayer missing 42 -> 27, PlayerHUD 7 -> 0,
+PlayerHUDHeart 2 -> 0; census 743 functions / 155 callbacks (was 710 / 155). Not done: Red Stew's own use did not set the duration when `UseActiveItem`
+was called from a script (only the field and its effect on Damage were measured); PlayerHUD hearts are copies (as REPENTOGON's); a co-op layout (1 to 3) was not seen.
+Lint rules: `health-field-offsets`, `cacheflag-literals`.

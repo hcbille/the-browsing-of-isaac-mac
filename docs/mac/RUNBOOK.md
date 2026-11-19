@@ -110,6 +110,15 @@ python scripts/mac/build_native.py --jobs 3        # -> output/mac/isaac-mac, ab
   `<Caskroom>/steamcmd/<ver>/MacOS/steamapps/content/`. SteamCMD prints that path with backslashes, and
   the script reads it from SteamCMD's output. If the merge step fails, rerun with
   `--merge-from <that content folder>`; no new download is needed.
+- **The web build.** `build.sh` stage 5 runs `build_boot.py --web --fast`, which compiles every
+  `scripts/recomp/host/src/*.c` a second time for the browser: emcc, 32-bit wasm, `-DISAAC_WEB=1`, no `ISAAC_NATIVE`.
+  There the Guest base is address 0 and the symbol `recomp_mem_base` does not exist, so host code must use
+  `isaac_g(0)` (or sit under `#if defined(ISAAC_NATIVE) && ISAAC_NATIVE`); lint rule `rule_web_host_mem_base`
+  checks it. A native build never shows this (2026-11-19: the Lua heap-debug code broke the web compile). To check a
+  host change for the web without running `build_boot.py` (it rewrites the lift in place): `source toolchain/env.sh`,
+  then `emcc -c -O3 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DISAAC_WEB=1 -sSUPPORT_LONGJMP=wasm -msimd128
+  -I scripts/recomp/host/include -I scripts/recomp/host/generated -I scripts/recomp/lift -I <lift>/gu
+  -I tools/lua-5.3.3/src <file.c> -o <scratch>/x.o` for each changed file (the lift is only read), through `heavy.sh`.
 
 ## 5. Run
 
@@ -169,7 +178,7 @@ game's own `TryUnlock` for achievements 1..637 and the Layer's `unlock_modded` f
 `lab_unlock_all: slot N: game achievements 1..637: A already unlocked, B newly unlocked, C failed; 637 unlocked in
 total now; M mod achievement(s) newly unlocked` in `.scratch/play/support/logs/game.log`. First run on the play
 save: 31 already, 606 new, 0 failed, 136 mod achievements. The user confirmed all Tainted characters show on the character menu afterwards. Only that play save is touched. Before any agent
-game run or heavy compile: `pgrep -f isaac-mac` must be empty (the user may be playing).
+game run or heavy compile: `pgrep -x isaac-mac` must print nothing (the user may be playing).
 
 ## 6. Testing recipes and game facts
 

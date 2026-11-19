@@ -302,6 +302,8 @@ def rule_backlog_narrowing(fs):
     for needle, msg in (
         ("(?:sprite|spr)$", 'a variable whose name ends in sprite/spr is a Sprite: narrow it (h = "Sprite") so its method calls are not counted against another class'),
         ("call chain ends in", 'a chain whose last call is GetSprite()/To*() has that return class whatever the head: narrow it to the return class'),
+        ("MODACCESS", 'a mod\'s cached accessor chain (`Mod.Room():Name()`) returns the game\'s object of that name: narrow it via MODACCESS so Room:SetBackdropType is not counted against EntityTear'),
+        ("'TearFlagsLib'", 'a mod\'s own library table (TearFlagsLib.FireSplitTear) is not a REPENTOGON class: keep it in MODISH so its functions are not counted as misses'),
         ("field of the mod's own table", 'a dot access `x.Name` that is not called or constructed, where every REPENTOGON candidate is a function, is a field of the mod\'s own table: suppress it'),
     ):
         if needle not in t:
@@ -322,6 +324,19 @@ def rule_entity_methods_in_lab(fs):
                    'effect, action by the game\'s reaction), or leave the method out of api_npc.lua' % (cls, name))
 
 
+def rule_tears_methods_in_lab(fs):
+    """Every method api_tears_more.lua registers is named in lab_tears_more.lua (2026-11-19, tears: a name with no check is a name
+    nobody proved; the lab's "Implemented" list and a check that calls it)."""
+    src = text_of(RGON + '/api_tears_more.lua')
+    lab = text_of(RGON + '/lab_tears_more.lua')
+    if src is None or lab is None:
+        return
+    names = set(re.findall(r'method\("(\w+)", "(\w+)"', src)) | set(re.findall(r'static\([^,]+, "(\w+)", "(\w+)"', src))
+    for cls, name in sorted(names):
+        if '"%s.%s"' % (cls, name) not in lab:
+            yield (RGON + '/lab_tears_more.lua', 0, 'add "%s.%s" to the Implemented list and a check that calls it, or leave the method out of api_tears_more.lua' % (cls, name))
+
+
 def rule_read_of_call_result(fs):
     """A memory reader wrapped around call(): r32/ri32/rf32/r8/r16 READ GUEST MEMORY at the number they get (2026-11-19, entity3:
     `ri32((call(GetRandomWisp, ..)))` read memory at the collectible id and raised a garbled error). call's first result is eax
@@ -335,6 +350,20 @@ def rule_read_of_call_result(fs):
         for n, line in enumerate((t or '').splitlines(), 1):
             if pat.search(line) and 'eax is a pointer' not in line:
                 yield (f, n, 'a memory reader on call()\'s result reads memory at eax: take the result directly, or mark a real pointer with `-- eax is a pointer`')
+
+
+def rule_item_name_is_a_key(fs):
+    """ItemConfigItem.Name is the localization KEY ('#THE_INNER_EYE_NAME'), not a name Isaac.GetItemIdByName knows (2026-11-19, pickup:
+    a lab fed `config.Name` to GetItemIdByName and got -1; the English name 'The Inner Eye' answered 2)."""
+    pat = re.compile(r'GetItemIdByName\(\s*[^()]*\.Name\b')
+    for f in fs:
+        if not (f.startswith(RGON + '/') and f.endswith('.lua')):
+            continue
+        t = text_of(f)
+        for n, line in enumerate((t or '').splitlines(), 1):
+            if pat.search(line):
+                yield (f, n, 'GetItemIdByName(x.Name) looks up a localization key and answers -1: pass the English name as a string literal, '
+                             'or find the id by scanning Isaac.GetItemConfig():GetCollectibles()')
 
 
 def rule_conception_pairing(fs):
@@ -353,6 +382,35 @@ def rule_conception_pairing(fs):
                            'instead of assuming from function order' % (name, va))
 
 
+def rule_health_field_offsets(fs):
+    """The Layer's player health fields sit at measured offsets, not REPENTOGON's (2026-11-19, player-health: v1.9.7.12 has them
+    0x14 to 0x24 lower; Candy Heart 0x1d9c -> 0x1db0, Soul Locket 0x1da8 -> 0x1dbc, Immaculate 0x191c -> 0x1930, Cambion 0x1920 -> 0x1934,
+    familiar flags 0x1924 -> 0x1938, Red Stew 0x1e58 -> 0x1e74, Maggy drain 0x1ed0 -> 0x1ef4, Keeper's Sack 0x1f98 -> 0x1fbc)."""
+    bad = re.compile(r'(?<![0-9A-Za-z_])0x(191c|1920|1924|1d9c|1da8|1ed0|1e58|1f98)(?![0-9A-Za-z_])', re.I)
+    for f in fs:
+        if not re.search(r'rgon/api_[a-z_]+\.lua$', f):
+            continue
+        for i, line in enumerate((text_of(f) or '').splitlines(), 1):
+            code = line.split('--', 1)[0]
+            m = bad.search(code)
+            if m:
+                yield (f, i, '%s is REPENTOGON\'s offset for v1.9.7.12: use the one measured in this build (see api_player_health.lua\'s table, '
+                       'or measure it with a diff probe like lab_player_health_probe.lua); never write to a guessed offset' % m.group(0))
+
+
+def rule_cacheflag_literals(fs):
+    """CacheFlag values come from the game's CacheFlag table, never as numbers (2026-11-19, player-health: CACHE_LUCK was written as 32,
+    which is CACHE_TEARFLAG; CACHE_LUCK is 1 << 10 and CACHE_ALL is 0xffff, so Luck bonuses never moved Luck)."""
+    bad = re.compile(r'\{\s*1\s*,\s*2\s*,\s*(?:4|8)\s*,\s*(?:8|4)\s*,\s*16\s*,\s*32\s*\}')
+    for f in fs:
+        if not re.search(r'rgon/(api|lab)_[a-z_0-9]+\.lua$', f):
+            continue
+        for i, line in enumerate((text_of(f) or '').splitlines(), 1):
+            if bad.search(line.split('--', 1)[0]):
+                yield (f, i, 'a table of cache flag numbers: read CacheFlag.CACHE_DAMAGE, CACHE_FIREDELAY, CACHE_RANGE, CACHE_SHOTSPEED, '
+                       'CACHE_SPEED, CACHE_LUCK from the game\'s CacheFlag table (LUCK is 1 << 10, 32 is TEARFLAG)')
+
+
 def rule_lua_format_options(fs):
     """luaL_error/lua_pushfstring take only %d %s %f %p %c %% (2026-11-19: host_rgon.c's "0x%08x" messages came out as
     "invalid option '%0' to 'lua_pushfstring'" and hid the real error behind EntityFamiliar.GetRandomWisp)."""
@@ -369,7 +427,63 @@ def rule_lua_format_options(fs):
                        'first (e.g. hex32() in host_rgon.c) and pass the text as %%s' % m.group(1))
 
 
-RULES = [rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part]
+def rule_pgrep_game_by_name(fs):
+    """Detect a running game with `pgrep -x isaac-mac`, never `pgrep -f` with a path (2026-11-19: heavy.sh waited 40 min
+    for a game that was not running, because -f matched the waiting worker's own parent shell, whose command line
+    mentioned output/mac/isaac-mac)."""
+    for f in fs:
+        if not (f.endswith('.sh') or f == 'docs/mac/RUNBOOK.md'):
+            continue
+        for n, line in enumerate((text_of(f) or '').splitlines(), 1):
+            if re.search(r'pgrep\s+-[a-z]*f[a-z]*\s+.*isaac-mac', line):
+                yield (f, n, 'use `pgrep -x isaac-mac` (a process NAMED isaac-mac): `pgrep -f` with a path also matches '
+                             'the shell command line of any caller that mentions the path, so a waiting job blocks on its own parent')
+
+
+def rule_web_host_mem_base(fs):
+    """Host TUs also build for the browser (build_boot.py --web, 32-bit wasm), where there is no recomp_mem_base
+    (2026-11-19: the heap-debug code broke the web build of host_lua.c)."""
+    for f in fs:
+        if not (f.startswith('scripts/recomp/host/src/') and f.endswith('.c')):
+            continue
+        t = text_of(f) or ''
+        stack = []
+        for n, line in enumerate(t.splitlines(), 1):
+            st = line.strip()
+            m = re.match(r'#\s*(if|ifdef|ifndef|endif)\b(.*)', st)
+            if m:
+                if m.group(1) == 'endif':
+                    if stack:
+                        stack.pop()
+                elif m.group(1) == 'else' :
+                    pass
+                else:
+                    stack.append(m.group(1) == 'if' and 'ISAAC_NATIVE' in m.group(2) and '!' not in m.group(2))
+                continue
+            if st.startswith(('/*', '*', '//')):
+                continue
+            if 'recomp_mem_base' in line and not any(stack):
+                yield (f, n, 'recomp_mem_base does not exist in the web build: use isaac_g(0) for the Guest base (it is 0 '
+                             'there), or put the code under #if defined(ISAAC_NATIVE) && ISAAC_NATIVE')
+
+
+def rule_insn_hook_giant_entry(fs):
+    """An instruction hook inside the split item-use giant names its lift entry, 0x005b39d0 (2026-11-19, cb-b: rows for sites in
+    the Void and Compost cases named the pequery function 0x005ba56f and the apply failed with "in 0 TU(s)"; the lift TU is the
+    whole function). Also the item cases are found from the collectible id, not by looking at a loop: Void is 477 (0x1dd), not 0x206."""
+    row = re.compile(r'^\s*\((\d+),\s*(0x[0-9a-fA-F]+),\s*(0x[0-9a-fA-F]+),\s*"')
+    for f in fs:
+        if not f.endswith('lift_patches.py'):
+            continue
+        for i, line in enumerate((text_of(f) or '').splitlines(), 1):
+            m = row.match(line)
+            if m and 0x005b39d0 < int(m.group(3), 16) < 0x005d0000 and int(m.group(2), 16) != 0x005b39d0:
+                yield (f, i, 'the site %s is inside the item-use giant: use 0x005b39d0 as the function (the lift entry, a split '
+                       'TU), and find the case through the byte table 0x005c7760 and jump table 0x005c7598 from the collectible id'
+                       % m.group(3))
+
+
+RULES = [rule_item_name_is_a_key, rule_insn_hook_giant_entry, rule_pgrep_game_by_name, rule_tears_methods_in_lab, rule_cacheflag_literals, rule_health_field_offsets, rule_web_host_mem_base, rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part]
 
 
 def main():

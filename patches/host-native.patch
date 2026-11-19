@@ -316,7 +316,7 @@ index 98869fc..641d6c5 100644
 -#endif /* ISAAC_WEB */
 +#endif /* ISAAC_WEB || ISAAC_NATIVE */
 diff --git a/scripts/recomp/host/src/host_lua.c b/scripts/recomp/host/src/host_lua.c
-index d845225..3a8f735 100644
+index d845225..e36075f 100644
 --- a/scripts/recomp/host/src/host_lua.c
 +++ b/scripts/recomp/host/src/host_lua.c
 @@ -41,6 +41,7 @@
@@ -356,7 +356,7 @@ index d845225..3a8f735 100644
  
  /* A 64-bit by-value argument occupies two stack slots. */
  static lua_Integer i64_arg(const CpuState *cpu, unsigned slot) {
-@@ -113,8 +123,170 @@ extern uint32_t isaac_guest_alloc(uint32_t n);
+@@ -113,8 +123,171 @@ extern uint32_t isaac_guest_alloc(uint32_t n);
  extern void     isaac_guest_free(uint32_t p);
  extern uint32_t isaac_guest_realloc(uint32_t p, uint32_t n);
  
@@ -384,7 +384,7 @@ index d845225..3a8f735 100644
 +static uint64_t g_rz_live_bytes;
 +static uint32_t *g_rz_q; static uint32_t g_rz_qcap, g_rz_qhead, g_rz_qn; static uint64_t g_rz_qbytes, g_rz_qmax;
 +static unsigned g_rz_scan;                 /* where the quarantine slice scan stands */
-+static int g_rz_faults;
++static int g_rz_faults __attribute__((unused));   /* only counted */
 +extern int isaac_lua_heap_walk(lua_State *L, int (*okblock)(const void *p), char *msg, unsigned msgn, unsigned long *count);
 +
 +static void rz_init(void) {
@@ -424,7 +424,8 @@ index d845225..3a8f735 100644
 +}
 +/* the size of what is at hva-(a guest malloc block): ok for a pointer Lua holds */
 +static int rz_okblock(const void *p) {
-+    const uintptr_t d = (uintptr_t)p - (uintptr_t)recomp_mem_base;
++    /* isaac_g(0) is the Guest base in both builds (recomp_mem_base native, 0 in the 32-bit web build, which has no such symbol) */
++    const uint64_t d = (uint64_t)(uintptr_t)p - (uint64_t)(uintptr_t)isaac_g(0);
 +    if ((d >> 32) || d < 0x10000u || !isaac_is_guest_va((uint32_t)d)) return 0;
 +    if (!g_rz_on) return 1;
 +    return rz_h((uint32_t)d - RZ_FRONT)->magic == RZ_LIVE;
@@ -527,7 +528,7 @@ index d845225..3a8f735 100644
      if (nsize == 0) {
          if (ptr) isaac_guest_free(isaac_va(ptr));
          return NULL;
-@@ -1231,6 +1403,20 @@ unsigned isaac_lua_trampolines_used(void) { return g_tramp_n; }
+@@ -1231,6 +1404,20 @@ unsigned isaac_lua_trampolines_used(void) { return g_tramp_n; }
      } \
      static void lua_shim_##name(CpuState *restrict cpu)
  
@@ -548,7 +549,7 @@ index d845225..3a8f735 100644
  /* state */
  LUA_SHIM(luaL_newstate) {
      /* luaL_newstate uses the default allocator; we must not. lua_newstate with
-@@ -1264,7 +1450,7 @@ LUA_SHIM(lua_atpanic)    {
+@@ -1264,7 +1451,7 @@ LUA_SHIM(lua_atpanic)    {
  /* stack */
  LUA_SHIM(lua_absindex)   { cpu->EAX = (uint32_t)lua_absindex(L_ARG(0), I_ARG(1)); }
  LUA_SHIM(lua_gettop)     { cpu->EAX = (uint32_t)lua_gettop(L_ARG(0)); }
@@ -557,7 +558,7 @@ index d845225..3a8f735 100644
  LUA_SHIM(lua_rotate)     { lua_rotate(L_ARG(0), I_ARG(1), I_ARG(2)); cpu->EAX = 0; }
  LUA_SHIM(lua_copy)       { lua_copy(L_ARG(0), I_ARG(1), I_ARG(2)); cpu->EAX = 0; }
  LUA_SHIM(lua_pushvalue)  { lua_pushvalue(L_ARG(0), I_ARG(1)); cpu->EAX = 0; }
-@@ -1348,7 +1534,7 @@ LUA_SHIM(lua_isstring)    { cpu->EAX = (uint32_t)lua_isstring(L_ARG(0), I_ARG(1)
+@@ -1348,7 +1535,7 @@ LUA_SHIM(lua_isstring)    { cpu->EAX = (uint32_t)lua_isstring(L_ARG(0), I_ARG(1)
  LUA_SHIM(lua_isuserdata)  { cpu->EAX = (uint32_t)lua_isuserdata(L_ARG(0), I_ARG(1)); }
  LUA_SHIM(lua_iscfunction) { cpu->EAX = (uint32_t)lua_iscfunction(L_ARG(0), I_ARG(1)); }
  LUA_SHIM(lua_rawequal)    { cpu->EAX = (uint32_t)lua_rawequal(L_ARG(0), I_ARG(1), I_ARG(2)); }
@@ -566,7 +567,7 @@ index d845225..3a8f735 100644
  LUA_SHIM(lua_tolstring)   {
      uint32_t lenp = isaac_arg(cpu, 2);
      size_t n = 0;
-@@ -1367,7 +1553,7 @@ LUA_SHIM(lua_rawset)      { lua_rawset(L_ARG(0), I_ARG(1)); cpu->EAX = 0; }
+@@ -1367,7 +1554,7 @@ LUA_SHIM(lua_rawset)      { lua_rawset(L_ARG(0), I_ARG(1)); cpu->EAX = 0; }
  LUA_SHIM(lua_rawgetp)     { cpu->EAX = (uint32_t)lua_rawgetp(L_ARG(0), I_ARG(1), P_ARG(2)); }
  LUA_SHIM(lua_rawsetp)     { lua_rawsetp(L_ARG(0), I_ARG(1), P_ARG(2)); cpu->EAX = 0; }
  /* lua_rawgeti(L, int idx, lua_Integer n): 4 + 4 + 8 = 16-byte argument area. */
@@ -575,7 +576,7 @@ index d845225..3a8f735 100644
  LUA_SHIM(lua_len)         { lua_len(L_ARG(0), I_ARG(1)); cpu->EAX = 0; }
  LUA_SHIM(lua_getglobal)   { cpu->EAX = (uint32_t)lua_getglobal(L_ARG(0), S_ARG(1)); }
  LUA_SHIM(lua_setglobal)   { lua_setglobal(L_ARG(0), S_ARG(1)); cpu->EAX = 0; }
-@@ -1663,7 +1849,22 @@ static void gc_cycle_ended(lua_State *L) {
+@@ -1663,7 +1850,22 @@ static void gc_cycle_ended(lua_State *L) {
          isaac_log("[isaac][lua] collector: cycle %u ended at %d KB; %u step(s) asked, %u deferred",
                    g_gc_cycles, g_gc_base_kb, g_gc_asked, g_gc_deferred);
  }
@@ -598,7 +599,7 @@ index d845225..3a8f735 100644
      if (g_gc_pct < 0) {
          const char *e = getenv("ISAAC_LUA_GC");
          int v = (e && *e) ? atoi(e) : ISAAC_GC_DEFAULT_PCT;
-@@ -1737,10 +1938,76 @@ int isaac_lua_gc(lua_State *L, int what, int data) {
+@@ -1737,10 +1939,76 @@ int isaac_lua_gc(lua_State *L, int what, int data) {
      return r;
  }
  LUA_SHIM(lua_gc)      { cpu->EAX = (uint32_t)isaac_lua_gc(L_ARG(0), I_ARG(1), I_ARG(2)); }
@@ -675,7 +676,7 @@ index d845225..3a8f735 100644
  
  /* auxiliary */
  LUA_SHIM(luaL_checkinteger) { ret_int(cpu, luaL_checkinteger(L_ARG(0), I_ARG(1))); }
-@@ -1820,8 +2087,15 @@ LUA_SHIM(luaL_loadfilex) {
+@@ -1820,8 +2088,15 @@ LUA_SHIM(luaL_loadfilex) {
       * sites; the buffer loader below has one, the console's). The layer boots
       * before the first of them that is a mod's. */
      isaac_rgon_before_chunk(L_ARG(0), S_ARG(1));
@@ -1761,7 +1762,7 @@ index 6aa6b68..133df95 100644
        > ISAAC_GUARD_VA) {
      printf("  FAIL shim tokens overrun the guard\n");
 diff --git a/scripts/recomp/lift/lift_patches.py b/scripts/recomp/lift/lift_patches.py
-index 659f7ce..0fb52a0 100644
+index 659f7ce..1e15002 100644
 --- a/scripts/recomp/lift/lift_patches.py
 +++ b/scripts/recomp/lift/lift_patches.py
 @@ -1339,7 +1339,7 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
@@ -1773,7 +1774,7 @@ index 659f7ce..0fb52a0 100644
      (22, 0x007ebca0, "Room::SpawnGridEntity"),    # ret 0x14; reg Room.SpawnGridEntity; sig Room::SpawnGridEntity
      (23, 0x00709db0, "GridEntity::Init"),    # ret 0x4; sig GridEntity::Init
      (24, 0x0082f1c0, "RoomTransition::StartBossIntro"),    # ret 0x8; sig RoomTransition::StartBossIntro
-@@ -1419,6 +1419,20 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
+@@ -1419,6 +1419,21 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
      (98, 0x004199d0, "Room::RenderEntityPass_004199d0"),    # ret 0x8; asm
      (99, 0x008151e0, "Room::GetShopItemPrice"),    # ret 0x10; asm
      (169, 0x0094d500, "Menu_Character::UpdateRotations"),    # ret 0x0; sig Menu_Character::UpdateRotations
@@ -1791,10 +1792,11 @@ index 659f7ce..0fb52a0 100644
 +    (182, 0x007a3cb0, "Entity_Player::SetCard"),    # ret 0x8; asm
 +    (183, 0x007a3cf0, "Entity_Player::SetPill"),    # ret 0x8; asm
 +    (184, 0x007a48f0, "Entity_Player::DropPocketItem"),    # ret 0x8; asm
++    (193, 0x006e84d0, "Entity_Pickup::TriggerShopPurchase"),    # ret 0x8; asm
      (100, 0x006a93a0, "Entity::Init"),    # ret 0x10; sig Init; vtable 0x00b6730c slot 1
      (101, 0x00755470, "Entity_Player::Init"),    # ret 0x10; vtable 0x00b6bdd0 slot 1
      (102, 0x006b8b20, "Entity_NPC::Init"),    # ret 0x10; vtable 0x00b67468 slot 1
-@@ -1523,7 +1537,7 @@ if len({_s for _s, _, _ in RGON_HOOKS}) != len(RGON_HOOKS) or len({_v for _, _v,
+@@ -1523,7 +1538,7 @@ if len({_s for _s, _, _ in RGON_HOOKS}) != len(RGON_HOOKS) or len({_v for _, _v,
  # reaches it: spill, set the trampoline's next block, return.
  #
  # Each entry: (slot, function VA, instruction VA, name, (redirect targets...)).
@@ -1803,7 +1805,7 @@ index 659f7ce..0fb52a0 100644
  # The table is checked by scripts/recomp/rgon/tools/hook_table.py, which prints
  # it (`--write`); edit it there. A build error, never a silent skip: the
  # function not in exactly one TU, the marker not exactly once in it, a target
-@@ -1539,8 +1553,16 @@ RGON_INSN_HOOKS: list[tuple[int, int, int, str, tuple[int, ...]]] = [
+@@ -1539,8 +1554,27 @@ RGON_INSN_HOOKS: list[tuple[int, int, int, str, tuple[int, ...]]] = [
      (167, 0x00676be0, 0x006770c2, "Entity_Tear::Collision_00676be0@ParasiteSplit", ()),    # 0x006770c2  mov eax, dword ptr [ebp - 0x64]
      (168, 0x00676be0, 0x00677498, "Entity_Tear::Collision_00676be0@BoneSplit", ()),    # 0x00677498  mov eax, dword ptr [ebp - 0x60]
      (170, 0x008f8860, 0x008f89c4, "ModManager::RenderCharacterPortrait_008f8860@Frame", ()),    # 0x008f89c4  mov edx, dword ptr [edi + 0x138]
@@ -1815,6 +1817,17 @@ index 659f7ce..0fb52a0 100644
 +    (190, 0x007c8119, 0x007c81a6, "Entity_Player::GiveBirthImmaculate@Flag", ()),    # 0x007c81a6  or dword ptr [edi + 0x1938], ebx
 +    (191, 0x007729d0, 0x00775e1b, "Entity_Player::GiveBirthCambion@Flag", ()),    # 0x00775e1b  or dword ptr [edi + 0x1938], eax
 +    (192, 0x007a48f0, 0x007a4986, "Entity_Player::DropPocketItem@Spawned", ()),    # 0x007a4986  mov dword ptr [eax + 0x54c], 4
++    (194, 0x005b39d0, 0x005be7e1, "Entity_Player::UseActiveItem@VoidPickup", (0x005be7ed,)),    # 0x005be7e1  push eax
++    (195, 0x007b2230, 0x007b451c, "Entity_Player::UseCard@BlackRune", (0x007b46d1,)),    # 0x007b451c  call 0x417270
++    (196, 0x005b39d0, 0x005bde0c, "Entity_Player::UseActiveItem@Compost", (0x005bde64,)),    # 0x005bde0c  mov eax, dword ptr [eax + 0x28]
++    (197, 0x007f92b0, 0x007f92cb, "Room::GetDevilRoomChance@Items", ()),    # 0x007f92cb  mov ecx, dword ptr [0xc71678]
++    (198, 0x007f92b0, 0x007f962b, "Room::GetDevilRoomChance@SpecialItems", ()),    # 0x007f962b  push 1
++    (199, 0x007f92b0, 0x007f96a4, "Room::GetDevilRoomChance@Post", ()),    # 0x007f96a4  mov edx, dword ptr [0xc71678]
++    (200, 0x0074dbd0, 0x0074dd3f, "Game::GetPlanetariumChance@Items", ()),    # 0x0074dd3f  push 1
++    (201, 0x0074dbd0, 0x0074ddc1, "Game::GetPlanetariumChance@LensNew", ()),    # 0x0074ddc1  test bh, bh
++    (202, 0x0074dbd0, 0x0074ddcf, "Game::GetPlanetariumChance@LensVisited", ()),    # 0x0074ddcf  movss xmm0, dword ptr [ebp - 8]
++    (203, 0x0074dbd0, 0x0074de05, "Game::GetPlanetariumChance@Post", ()),    # 0x0074de05  minss xmm0, dword ptr [0xbaa454]
++    (204, 0x006e17c0, 0x006e17f0, "Entity_Pickup::UpdatePickupGhosts@Condition", (0x006e1833, 0x006e18eb,)),    # 0x006e17f0  push 1
  ]
 -RGON_SLOTS = 192            # host_rgon.c RGON_HOOKS
 +RGON_SLOTS = 224            # host_rgon.c RGON_HOOKS
@@ -3701,7 +3714,7 @@ index 0000000..6ad7a0f
 +  end)
 +end
 diff --git a/scripts/recomp/rgon/api_extra.lua b/scripts/recomp/rgon/api_extra.lua
-index e060b4d..b3de696 100644
+index e060b4d..10ce4e0 100644
 --- a/scripts/recomp/rgon/api_extra.lua
 +++ b/scripts/recomp/rgon/api_extra.lua
 @@ -62,7 +62,13 @@ end
@@ -3740,6 +3753,15 @@ index e060b4d..b3de696 100644
  end
  
  ------------------------------------------------------------------------------
+@@ -103,7 +120,7 @@ do
+     if sound == 0 then
+       B.w8(a + 0x518, 1)
+     else
+-      unsupported("EntityLaser:SetInitSound", "a laser's start sound other than SOUND_NULL (it keeps its own)")
++      T.init_sound_laser(a, sound)      -- api_tears_more.lua: silences the game's sound, plays this one at the first update
+     end
+   end)
+ end
 diff --git a/scripts/recomp/rgon/api_familiar.lua b/scripts/recomp/rgon/api_familiar.lua
 new file mode 100644
 index 0000000..893760b
@@ -4464,7 +4486,7 @@ index 0000000..1e8ff7d
 +  R.Unsupported["EntityPlayer:Add*Effect cooldown"] = "the cooldown and additive arguments are not applied"
 +end
 diff --git a/scripts/recomp/rgon/api_hooks.lua b/scripts/recomp/rgon/api_hooks.lua
-index 92f9c5b..e031015 100644
+index 92f9c5b..22b6f73 100644
 --- a/scripts/recomp/rgon/api_hooks.lua
 +++ b/scripts/recomp/rgon/api_hooks.lua
 @@ -179,12 +179,23 @@ local CLASSES = {
@@ -4632,10 +4654,25 @@ index 92f9c5b..e031015 100644
  end
  
  ------------------------------------------------------------------------------
-@@ -1532,6 +1613,34 @@ if M.MC_GET_SHOP_ITEM_PRICE then
+@@ -1532,6 +1613,49 @@ if M.MC_GET_SHOP_ITEM_PRICE then
    end)
  end
  
++-- MC_POST_PICKUP_SHOP_PURCHASE (1062): (pickup, player, moneySpent), param = the pickup's variant, after the purchase.
++--   Entity_Pickup::TriggerShopPurchase 0x006e84d0 (slot 193), ecx = the pickup, (player, spentMoney), ret 8. The money is
++--   passed as the caller gave it (0 from one caller, meaning the pickup's price), as REPENTOGON does.
++if M.MC_POST_PICKUP_SHOP_PURCHASE and B.HOOKS >= 224 then
++  local id = M.MC_POST_PICKUP_SHOP_PURCHASE
++  on("Entity_Pickup::TriggerShopPurchase", { id }, function(self, esp)
++    return { r32(esp + 4), ri32(esp + 8) }
++  end, function(self, esp, eax, k)
++    if not k then return end
++    local p = as("EntityPickup", self, "TriggerShopPurchase (the pickup)")
++    local pl = p and as("EntityPlayer", k[1], "TriggerShopPurchase (the player)")
++    if pl then run(id, p.Variant, p, pl, k[2]) end
++  end)
++end
++
 +-- MC_PRE_BOSS_SELECT (1280): (bossId, pool, levelType, levelVariant), param = the boss id the game picked -> an
 +--   integer boss id to use instead (a negative one, the double-trouble marker, is ignored as in REPENTOGON).
 +--   BossPool::GetBossId 0x00422830 (slot 174), ecx = the boss pool, (levelType, levelVariant, rng*), ret 0xc,
@@ -4667,7 +4704,7 @@ index 92f9c5b..e031015 100644
  -- MC_EVALUATE_MULTI_SHOT_PARAMS (1289): (player, params, weaponType), param = player type -> a MultiShotParams:
  --   that one for the functions after it and for the game. The deprecated MC_POST_PLAYER_GET_MULTI_SHOT_PARAMS
  --   (1251, (player) -> a MultiShotParams) runs first, as REPENTOGON's main_ex.lua does.
-@@ -1587,6 +1696,123 @@ do
+@@ -1587,6 +1711,123 @@ do
    end
  end
  
@@ -4791,7 +4828,7 @@ index 92f9c5b..e031015 100644
  ------------------------------------------------------------------------------
  -- round 110: callbacks from inside a game function (instruction hooks)
  ------------------------------------------------------------------------------
-@@ -1715,11 +1941,177 @@ if B.INSN and B.reg and B.xmm then
+@@ -1715,11 +1956,276 @@ if B.INSN and B.reg and B.xmm then
        call(0x0040a7e0, spr, 0, frame)
      end)
    end
@@ -4868,6 +4905,105 @@ index 92f9c5b..e031015 100644
 +    if POST_DROP[1] and POST_DROP[0] then
 +      at("Entity_Player::DropPocketItem@Spawned", { POST_DROP[1], POST_DROP[0] }, function()
 +        dropped_pickup = reg("eax")
++      end)
++    end
++  end
++
++  -- worker cb-b (hook slots 193-204): pickups voided or composted, the devil and planetarium chances, Guppy's Eye ghosts.
++  -- Needs the 224-slot engine built with the rows of hook_table.py slots 193-204; an older binary runs none of them.
++  if CBA then
++    local function is_number(v) return type(v) == "number" and v == v end
++    local function is_pickup(pa, what)
++      if pa == 0 or vt_of(pa) ~= VTABLE.EntityPickup then wrong(what, pa) return nil end
++      return wrap("EntityPickup", pa)
++    end
++
++    -- MC_PRE_PICKUP_VOIDED (1265): (pickup, isBlackRune), param = the pickup's variant -> false: the pickup is not consumed.
++    --   Void: the loop over the room's pickups in the item-use function (Void's case 0x005be71c, at the `push eax` of the vector push_back
++    --   at 0x005be7e1; eax = &pickup); cancelling goes to the loop's tail 0x005be7ed. Black Rune: in the card-use function
++    --   (0x007b2230, at 0x007b451c; ecx = the pickup, [ebp-0x294]), for every pickup the rune looks at, as REPENTOGON does
++    --   (pedestals and small pickups); cancelling goes where the `je` before it goes, 0x007b46d1.
++    local VOIDED = M.MC_PRE_PICKUP_VOIDED
++    if VOIDED then
++      at("Entity_Player::UseActiveItem@VoidPickup", { VOIDED }, function(esp, ebp)
++        local pa = r32(reg("eax"))
++        local p = is_pickup(pa, "UseActiveItem@VoidPickup (the pickup)")
++        if p and T.wants(VOIDED, p.Variant) and run(VOIDED, p.Variant, p, false) == false then return 0x005be7ed end
++      end)
++      at("Entity_Player::UseCard@BlackRune", { VOIDED }, function(esp, ebp)
++        local p = is_pickup(r32(ebp - 0x294), "UseCard@BlackRune (the pickup)")
++        if p and T.wants(VOIDED, p.Variant) and run(VOIDED, p.Variant, p, true) == false then return 0x007b46d1 end
++      end)
++    end
++
++    -- MC_PRE_PICKUP_COMPOSTED (1267): (pickup), param = the pickup's variant -> false: the pickup is not consumed. The Compost
++    --   active (collectible 480): the pickup's Remove call in the item-use function, at 0x005bde0c (edi = the pickup);
++    --   cancelling goes to 0x005bde64.
++    local COMPOSTED = M.MC_PRE_PICKUP_COMPOSTED
++    if COMPOSTED then
++      at("Entity_Player::UseActiveItem@Compost", { COMPOSTED }, function()
++        local p = is_pickup(reg("edi"), "UseActiveItem@Compost (the pickup)")
++        if p and T.wants(COMPOSTED, p.Variant) and run(COMPOSTED, p.Variant, p) == false then return 0x005bde64 end
++      end)
++    end
++
++    -- MC_PRE_PICKUP_UPDATE_GHOST_PICKUPS (1335): (pickup), param = variant -> true: the Guppy's Eye ghost of the pickup's loot is
++    --   shown (the game's own tests are skipped, but not the pickup's timeout), false: it is not. Entity_Pickup::UpdatePickupGhosts
++    --   0x006e17c0 (edi = the pickup) at the Guppy's Eye test; the game's own answer stands when nothing answers a boolean.
++    local GHOST = M.MC_PRE_PICKUP_UPDATE_GHOST_PICKUPS
++    if GHOST then
++      at("Entity_Pickup::UpdatePickupGhosts@Condition", { GHOST }, function()
++        local p = is_pickup(reg("edi"), "UpdatePickupGhosts@Condition (the pickup)")
++        if not p or not T.wants(GHOST, p.Variant) then return end
++        local res = run(GHOST, p.Variant, p)
++        if res == true then return 0x006e1833 elseif res == false then return 0x006e18eb end
++      end)
++    end
++
++    -- The devil and planetarium chances are computed by the game's own functions, with the running chance in a local; each
++    -- callback is told it where REPENTOGON's reimplementation tells it and its number answer replaces it (REPENTOGON runs
++    -- them only when a mod listens, as here). Not done: REPENTOGON's skip for daily runs.
++    local function chance_at(slot_name, id, where, can_run)
++      at(slot_name, { id }, function(esp, ebp)
++        if can_run and not can_run() then return end
++        local addr = where(esp, ebp)
++        local v = rf32(addr)
++        local res = run(id, nil, v)
++        if is_number(res) then wf32(addr, res) end
++      end)
++    end
++    -- Room::GetDevilRoomChance 0x007f92b0: the chance is [esp+0xc]. MC_PRE_DEVIL_APPLY_ITEMS (1130) runs on the starting 0.01
++    -- before the item terms (not when the deal is disabled, [game+9]); MC_PRE_DEVIL_APPLY_SPECIAL_ITEMS (1132) after the stage
++    -- penalty, before Goat Head and Eucharist; MC_POST_DEVIL_CALCULATE (1133) after them, before the Greed Mode override.
++    -- (MC_PRE_DEVIL_APPLY_STAGE_PENALTY 1131 is not done.)
++    local function devil_on() return r8(r32(GAME_PTR) + 9) == 0 end
++    local function esp12(esp) return esp + 0xc end
++    if M.MC_PRE_DEVIL_APPLY_ITEMS then chance_at("Room::GetDevilRoomChance@Items", M.MC_PRE_DEVIL_APPLY_ITEMS, esp12, devil_on) end
++    if M.MC_PRE_DEVIL_APPLY_SPECIAL_ITEMS then chance_at("Room::GetDevilRoomChance@SpecialItems", M.MC_PRE_DEVIL_APPLY_SPECIAL_ITEMS, esp12) end
++    if M.MC_POST_DEVIL_CALCULATE then chance_at("Room::GetDevilRoomChance@Post", M.MC_POST_DEVIL_CALCULATE, esp12) end
++    -- Game::GetPlanetariumChance 0x0074dbd0: the chance is [ebp-8] (or xmm0 at the points where the game keeps it there).
++    -- MC_PRE_PLANETARIUM_APPLY_ITEMS (1113) after the treasure-room term, before Magic 8 Ball, Crystal Ball's second term, Sausage
++    -- and the Telescope Lens's 0.15; MC_PRE_PLANETARIUM_APPLY_TELESCOPE_LENS (1114) after those, before the Lens's 0.09 (with the
++    -- 0.15 already in when the Lens is held, and in the already-visited case too); MC_POST_PLANETARIUM_CALCULATE (1115) at the end,
++    -- before the cap at 1.0. (1110, 1111 and 1112, the penalties, are not done.)
++    if M.MC_PRE_PLANETARIUM_APPLY_ITEMS then
++      chance_at("Game::GetPlanetariumChance@Items", M.MC_PRE_PLANETARIUM_APPLY_ITEMS, function(esp, ebp) return ebp - 8 end)
++    end
++    local LENS = M.MC_PRE_PLANETARIUM_APPLY_TELESCOPE_LENS
++    if LENS then
++      chance_at("Game::GetPlanetariumChance@LensVisited", LENS, function(esp, ebp) return ebp - 8 end)
++      at("Game::GetPlanetariumChance@LensNew", { LENS }, function()
++        local lens = (reg("ebx") >> 8) & 0xff ~= 0          -- bh: Telescope Lens held; the game adds its 0.15 next
++        local v = xmm(0)
++        local res = run(LENS, nil, lens and v + 0.15 or v)
++        if is_number(res) then xmm(0, lens and res - 0.15 or res) end
++      end)
++    end
++    local PLAN_POST = M.MC_POST_PLANETARIUM_CALCULATE
++    if PLAN_POST then
++      at("Game::GetPlanetariumChance@Post", { PLAN_POST }, function()
++        local res = run(PLAN_POST, nil, xmm(0))
++        if is_number(res) then xmm(0, res) end
 +      end)
 +    end
 +  end
@@ -4969,7 +5105,7 @@ index 92f9c5b..e031015 100644
  T.rearm()
  
  ------------------------------------------------------------------------------
-@@ -1729,8 +2121,30 @@ T.rearm()
+@@ -1729,8 +2235,30 @@ T.rearm()
  -- collision code, and the POST handlers above must then stay quiet. The
  -- engine's runner is watched for those eight callbacks (api_callbacks.lua).
  if T.engine_callback then
@@ -5565,10 +5701,18 @@ index b34e4e1..7301240 100644
  end
  
 diff --git a/scripts/recomp/rgon/api_more.lua b/scripts/recomp/rgon/api_more.lua
-index 468ce51..a7ce9b1 100644
+index 468ce51..f952a0a 100644
 --- a/scripts/recomp/rgon/api_more.lua
 +++ b/scripts/recomp/rgon/api_more.lua
-@@ -547,3 +547,23 @@ method("Entity", "ToDelirium", function(self)
+@@ -376,6 +376,7 @@ do
+   end
+ 
+   local H = {}                                   -- PlayerHUD's methods
++  T.playerhud_methods = H                        -- api_player_health.lua adds the flash, layout and heart ones
+   local function at(self)
+     local p = B.ptr(self)
+     if p == 0 then error("rgon: PlayerHUD method called without its object", 3) end
+@@ -547,3 +548,23 @@ method("Entity", "ToDelirium", function(self)
  end)
  R.Unsupported = R.Unsupported or {}
  R.Unsupported["Entity:ToDelirium"] = "answers with the NPC; Delirium's own functions are not there"
@@ -5871,6 +6015,581 @@ index 0000000..cf09d8d
 +  else
 +    B.log("api_npc: this build's " .. n[1] .. " has no " .. n[2] .. "; left unregistered")
 +  end
++end
+diff --git a/scripts/recomp/rgon/api_pickup_more.lua b/scripts/recomp/rgon/api_pickup_more.lua
+new file mode 100644
+index 0000000..d2f9fcf
+--- /dev/null
++++ b/scripts/recomp/rgon/api_pickup_more.lua
+@@ -0,0 +1,343 @@
++-- api_pickup_more.lua -- chunk 4: the rest of EntityPickup, Room:GetShopItemPrice, LootList / LootListEntry, and the
++-- ItemPool names (HasCollectible, HasTrinket, PickCollectible, AddCollectible, ...). Written against REPENTOGON's
++-- behaviour (LuaEntityPickup.cpp, LuaLootList.cpp, LuaItemPool.cpp); every address and offset below was found in THIS
++-- executable (v1.9.7.17) and read back by lab_pickup_probe.lua / lab_pickup_more.lua.
++--
++-- EntityPickup, the game's own functions (all thiscall, ecx = the pickup):
++--   0x006e1910 TryInitOptionCycle(num) `ret 4`, bool in AL     0x006eed30 SetNewOptionsPickupIndex, the index in EAX
++--   0x006ee750 TriggerTheresOptionsPickup                       0x006eea30 MakeShopItem(shopId) `ret 4`
++--   0x006ed580 TryRemoveCollectible, bool in AL                 0x006e17c0 UpdatePickupGhosts
++--   0x006e21f0 ReloadGraphics(ignoreBlind) `ret 4`              0x006ee3f0 CanJeraDuplicate, bool in AL
++--   0x006e1e90 SetupCollectibleGraphics: static, ecx = the ANM2, edx = layer, stack (id, seed, blind byte)
++--   0x005b19b0 GetRandomPickupVelocity: ecx = out Vector*, edx = position Vector*, stack (rng*, velType)
++--   0x006dae40 Pickup::GetLootList: ecx = the pickup, stack (return deque*, shouldAdvance, player*)
++-- Fields (offsets from the pickup): 0x410 price sprite, 0x554 drop delay, 0x590 pickup ghost (an Entity_Effect*),
++-- 0x594/0x598 mega chest collectibles, 0x59c var data, 0x5a0 cycle list (8 words), 0x5c0 its count, 0x5c8 flip record.
++local T = ...
++local B, R, method, static, wrap, this = T.B, T.R, T.method, T.static, T.wrap, T.this
++local r8, r32, ri32, rf32, w8, w32, wf32, call, log = B.r8, B.r32, B.ri32, B.rf32, B.w8, B.w32, B.wf32, B.call, B.log
++local type, error, setmetatable, getmetatable, rawget, rawset, tostring, ipairs, pairs, pcall = type, error, setmetatable, getmetatable, rawget, rawset, tostring, ipairs, pairs, pcall
++local mathtype = math.type
++
++local function argerr(n, fname, want, got)
++  error("bad argument #" .. n .. " to '" .. fname .. "' (" .. want .. " expected, got " .. type(got) .. ")", 3)
++end
++local function int_arg(v, n, fname)
++  if mathtype(v) == "integer" then return v end
++  if type(v) == "number" and v == v // 1 then return math.tointeger(v) end
++  argerr(n, fname, "integer", v)
++end
++local function signed(v) return v >= 0x80000000 and v - 0x100000000 or v end
++
++local P_PRICE_ANM, P_DROP_DELAY, P_GHOST, P_MEGA_L, P_MEGA_R, P_VARDATA = 0x410, 0x554, 0x590, 0x594, 0x598, 0x59c
++local P_CYCLE, P_CYCLE_COUNT, P_FLIP = 0x5a0, 0x5c0, 0x5c8
++
++------------------------------------------------------------------------------
++-- EntityPickup: fields
++------------------------------------------------------------------------------
++method("EntityPickup", "GetVarData", function(self) return ri32(this(self, "GetVarData") + P_VARDATA) end)
++method("EntityPickup", "SetVarData", function(self, v)
++  w32(this(self, "SetVarData") + P_VARDATA, int_arg(v, 1, "SetVarData") & 0xffffffff)
++end)
++method("EntityPickup", "GetDropDelay", function(self) return ri32(this(self, "GetDropDelay") + P_DROP_DELAY) end)
++method("EntityPickup", "SetDropDelay", function(self, v)
++  w32(this(self, "SetDropDelay") + P_DROP_DELAY, int_arg(v, 1, "SetDropDelay") & 0xffffffff)
++end)
++
++method("EntityPickup", "AddCollectibleCycle", function(self, id)
++  local p = this(self, "AddCollectibleCycle")
++  id = int_arg(id, 1, "AddCollectibleCycle")
++  if r32(p + 0x2c) ~= 100 then return false end
++  local n = r32(p + P_CYCLE_COUNT)
++  if n >= 8 or Isaac.GetItemConfig():GetCollectible(id) == nil then return false end
++  w32(p + P_CYCLE + 4 * n, id & 0xffffffff)
++  w32(p + P_CYCLE_COUNT, n + 1)
++  return true
++end)
++method("EntityPickup", "RemoveCollectibleCycle", function(self)
++  local p = this(self, "RemoveCollectibleCycle")
++  for i = 0, 7 do w32(p + P_CYCLE + 4 * i, 0) end
++  w32(p + P_CYCLE_COUNT, 0)
++end)
++
++method("EntityPickup", "HasFlipData", function(self)
++  local p = this(self, "HasFlipData")
++  return r32(p + 0x2c) == 100 and r32(p + P_FLIP) ~= 0
++end)
++
++method("EntityPickup", "GetPickupGhost", function(self)
++  local g = r32(this(self, "GetPickupGhost") + P_GHOST)
++  if g == 0 then return nil end
++  return wrap("EntityEffect", g)
++end)
++
++method("EntityPickup", "GetPriceSprite", function(self)
++  local p = this(self, "GetPriceSprite")
++  return B.obj(getmetatable(self:GetSprite()), p + P_PRICE_ANM, T.vt_ptr())
++end)
++
++------------------------------------------------------------------------------
++-- EntityPickup: the game's own functions
++------------------------------------------------------------------------------
++method("EntityPickup", "TryInitOptionCycle", function(self, n)
++  local p = this(self, "TryInitOptionCycle")
++  n = int_arg(n, 1, "TryInitOptionCycle")
++  return (call(0x006e1910, p, n) & 0xff) ~= 0
++end)
++method("EntityPickup", "SetNewOptionsPickupIndex", function(self)
++  return signed(call(0x006eed30, this(self, "SetNewOptionsPickupIndex")))
++end)
++method("EntityPickup", "TriggerTheresOptionsPickup", function(self)
++  call(0x006ee750, this(self, "TriggerTheresOptionsPickup"))
++end)
++method("EntityPickup", "MakeShopItem", function(self, id)
++  call(0x006eea30, this(self, "MakeShopItem"), int_arg(id, 1, "MakeShopItem"))
++end)
++method("EntityPickup", "TryRemoveCollectible", function(self)
++  return (call(0x006ed580, this(self, "TryRemoveCollectible")) & 0xff) ~= 0
++end)
++method("EntityPickup", "UpdatePickupGhosts", function(self)
++  call(0x006e17c0, this(self, "UpdatePickupGhosts"))
++end)
++method("EntityPickup", "ReloadGraphics", function(self, ignoreBlind)
++  call(0x006e21f0, this(self, "ReloadGraphics"), ignoreBlind and 1 or 0)
++end)
++method("EntityPickup", "CanJeraDuplicate", function(self)
++  return (call(0x006ee3f0, this(self, "CanJeraDuplicate")) & 0xff) ~= 0
++end)
++
++------------------------------------------------------------------------------
++-- Room:GetShopItemPrice(variant, subtype, shopItemId) -> integer
++------------------------------------------------------------------------------
++method("Room", "GetShopItemPrice", function(self, variant, subtype, shopId)
++  local rp = this(self, "GetShopItemPrice")
++  return signed(call(0x008151e0, rp, int_arg(variant, 1, "GetShopItemPrice"), int_arg(subtype, 2, "GetShopItemPrice"),
++    int_arg(shopId, 3, "GetShopItemPrice"), 0))
++end)
++
++------------------------------------------------------------------------------
++-- EntityPickup:GetLootList(shouldAdvance = false, player = nil) -> LootList; LootList(); LootListEntry
++------------------------------------------------------------------------------
++-- The game's list is a std::deque (MSVC: +0 proxy, +4 map, +8 map size, +0xc first index, +0x10 count) of 0x14-byte
++-- entries (type, variant, subtype, seed, RNG*), one entry to a block, so entry i is the block pointer at
++-- map[(first + i) % mapsize]. The deque is made by the game into a buffer the caller gives (the first stack word),
++-- read out here into Lua tables (each RNG is COPIED, the game's own die with the deque) and destroyed with the game's
++-- deque destructor 0x006da850 (ecx, plain `ret`) plus the proxy block, which is an 8-byte allocation.
++local LL, LLE = {}, {}
++LL.__index = LL
++LLE.__index = LLE
++LL.__type, LLE.__type = "LootList", "LootListEntry"
++
++local function entry_of(ty, variant, subtype, seed, rng)
++  return setmetatable({ _t = ty, _v = variant, _s = subtype, _seed = seed, _rng = rng }, LLE)
++end
++function LLE:GetType() return self._t end
++function LLE:GetVariant() return self._v end
++function LLE:GetSubType() return self._s end
++function LLE:GetSeed() return self._seed end
++function LLE:GetRNG() return self._rng end
++
++local function copy_rng(rp)
++  local rng = RNG()
++  local d = B.ptr(rng)
++  for i = 0, 3 do w32(d + 4 * i, r32(rp + 4 * i)) end
++  return rng
++end
++
++function LL:GetEntries() local out = {} for i, e in ipairs(self._e) do out[i] = e end return out end
++function LL:PushEntry(ty, variant, subtype, seed, rng)
++  ty, variant, subtype = int_arg(ty, 1, "PushEntry"), int_arg(variant, 2, "PushEntry"), int_arg(subtype, 3, "PushEntry")
++  if seed == nil then seed = Random() end
++  seed = int_arg(seed, 4, "PushEntry")
++  if seed == 0 then seed = 1 end
++  if rng ~= nil and (type(rng) ~= "userdata" or rng.GetSeed == nil) then argerr(5, "PushEntry", "RNG", rng) end
++  self._e[#self._e + 1] = entry_of(ty, variant, subtype, seed & 0xffffffff, rng)
++end
++
++if rawget(_G, "LootList") == nil then
++  rawset(_G, "LootList", setmetatable({}, { __call = function() return setmetatable({ _e = {} }, LL) end }))
++  R.Implemented["LootList"] = true
++  R.Implemented["LootList.LootList"] = true
++  for _, m in ipairs({ "GetEntries", "PushEntry" }) do R.Implemented["LootList." .. m] = true end
++  for _, m in ipairs({ "GetType", "GetVariant", "GetSubType", "GetSeed", "GetRNG" }) do R.Implemented["LootListEntry." .. m] = true end
++end
++
++method("EntityPickup", "GetLootList", function(self, advance, player)
++  local p = this(self, "GetLootList")
++  local pl = 0
++  if player ~= nil then pl = this(player, "GetLootList") end
++  local buf = B.alloc(0x20)
++  call(0x006dae40, p, buf, advance and 1 or 0, pl)
++  local out = setmetatable({ _e = {} }, LL)
++  local map, mapsize, first, count = r32(buf + 4), r32(buf + 8), r32(buf + 0xc), r32(buf + 0x10)
++  for i = 0, count - 1 do
++    local e = r32(map + 4 * ((first + i) % mapsize))
++    local rp = r32(e + 0x10)
++    out._e[#out._e + 1] = entry_of(ri32(e), ri32(e + 4), ri32(e + 8), r32(e + 0xc), rp ~= 0 and copy_rng(rp) or nil)
++  end
++  call(0x006da850, buf)
++  B.free(r32(buf))
++  B.free(buf)
++  return out
++end)
++
++------------------------------------------------------------------------------
++-- EntityPickup.SetupCollectibleGraphics(sprite, layer, collectible, blind = false, seed = Random(), loadGraphics = false)
++-- EntityPickup.GetRandomPickupVelocity(position, rng = nil, velocityType = 0) -> Vector
++------------------------------------------------------------------------------
++do
++  local EP = rawget(_G, "EntityPickup")
++  if type(EP) == "table" then
++    static(EP, "EntityPickup", "SetupCollectibleGraphics", function(sprite, layer, id, blind, seed, load)
++      if type(sprite) ~= "userdata" or sprite.GetLayerCount == nil then argerr(1, "SetupCollectibleGraphics", "Sprite", sprite) end
++      layer, id = int_arg(layer, 2, "SetupCollectibleGraphics"), int_arg(id, 3, "SetupCollectibleGraphics")
++      if layer < 0 or layer >= sprite:GetLayerCount() then argerr(2, "SetupCollectibleGraphics", "a layer of the sprite", layer) end
++      if Isaac.GetItemConfig():GetCollectible(id) == nil then argerr(3, "SetupCollectibleGraphics", "a valid collectible", id) end
++      seed = seed == nil and Random() or int_arg(seed, 5, "SetupCollectibleGraphics")
++      if seed == 0 then seed = 1 end
++      call(0x006e1e90, { ecx = this(sprite, "SetupCollectibleGraphics"), edx = layer }, id & 0xffffffff, seed & 0xffffffff, blind and 1 or 0)
++      if load then sprite:LoadGraphics() end
++    end)
++    static(EP, "EntityPickup", "GetRandomPickupVelocity", function(pos, rng, vtype)
++      if type(pos) ~= "userdata" or pos.X == nil then argerr(1, "GetRandomPickupVelocity", "Vector", pos) end
++      vtype = vtype == nil and 0 or int_arg(vtype, 3, "GetRandomPickupVelocity")
++      if rng == nil then rng = RNG() rng:SetSeed(Random() | 1, 35) end
++      if type(rng) ~= "userdata" or rng.GetSeed == nil then argerr(2, "GetRandomPickupVelocity", "RNG", rng) end
++      local buf = B.alloc(0x10)
++      wf32(buf + 8, pos.X) wf32(buf + 12, pos.Y)
++      call(0x005b19b0, { ecx = buf, edx = buf + 8 }, B.ptr(rng), vtype)
++      local v = Vector(rf32(buf), rf32(buf + 4))
++      B.free(buf)
++      return v
++    end)
++  end
++end
++
++------------------------------------------------------------------------------
++-- ItemPool: HasCollectible, HasTrinket, PickCollectible, AddCollectible
++------------------------------------------------------------------------------
++-- Layout measured by lab_pickup_probe.lua (the probe's log lines are in notes/pickup.md):
++--   ItemPool::GetPool(index) 0x00732c70 (ecx, `ret 4`) answers pool + 4 + index * 0x34, 31 pools; each is
++--   { float totalWeight, vector<PoolItem> (begin +4, end +8, capacity +0xc), RNGs, ... } and a PoolItem is 0x18 bytes
++--   { id, initialWeight, weight, decreaseBy, removeOn, byte isUnlocked, byte isSpecial, 2 pad }.
++--   The removed-collectibles bitset (a vector<bool>: begin, end, capacity, bit count) is at pool + 0x67c, the
++--   room blacklist at + 0x68c; the trinket pool is a vector of 8-byte entries { id, byte inPool, byte isAvailable }
++--   at pool + 0x794 (begin, end, capacity).
++--   ItemPool::pick_collectible 0x00732fa0: ecx = the ItemPool, XMM1 = the weight to land on, stack (the pool data
++--   pointer, flags); answers the PoolItem* in EAX or 0. The flags word is (GetCollectibleFlags << 1) | (not decrease).
++local PICK, POOL_AT, POOL_STRIDE, NUM_POOLS = 0x00732fa0, 0x00732c70, 0x34, 31
++local REMOVED, TRINKETS = 0x67c, 0x794
++
++local function pool_data(pool, idx, fname)
++  idx = int_arg(idx, 1, fname)
++  if idx < 0 or idx >= NUM_POOLS then argerr(1, fname, "a valid ItemPoolType", idx) end
++  return call(POOL_AT, pool, idx)
++end
++local function bit_set(vec, id)
++  local first = r32(vec)
++  if first == 0 or id >= r32(vec + 0xc) then return false end
++  return (r32(first + 4 * (id >> 5)) >> (id & 31)) & 1 == 1
++end
++local function ncollectibles() return Isaac.GetItemConfig():GetCollectibles().Size end
++
++method("ItemPool", "HasCollectible", function(self, id)
++  local pool = this(self, "HasCollectible")
++  id = int_arg(id, 1, "HasCollectible")
++  if id < 0 or id >= ncollectibles() then return false end
++  return not bit_set(pool + REMOVED, id)
++end)
++
++method("ItemPool", "HasTrinket", function(self, id)
++  local pool = this(self, "HasTrinket")
++  id = int_arg(id, 1, "HasTrinket")
++  local first, last = r32(pool + TRINKETS), r32(pool + TRINKETS + 4)
++  if id < 1 or id >= (last - first) // 8 then return false end
++  return r8(first + 8 * id + 4) ~= 0
++end)
++
++method("ItemPool", "PickCollectible", function(self, poolType, decrease, rng, flags)
++  local pool = this(self, "PickCollectible")
++  local data = pool_data(pool, poolType, "PickCollectible")
++  if rng == nil then rng = RNG() rng:SetSeed(Random() | 1, 4)
++  elseif type(rng) ~= "userdata" or rng.RandomFloat == nil then argerr(3, "PickCollectible", "RNG", rng) end
++  flags = flags == nil and 0 or int_arg(flags, 4, "PickCollectible")
++  local weight = rng:RandomFloat() * rf32(data)
++  local item = call(PICK, { ecx = pool, xmm1 = weight }, data, ((flags << 1) | (decrease and 0 or 1)) & 0xffffffff)
++  if item == 0 then return nil end
++  return { itemID = ri32(item), initialWeight = rf32(item + 4), weight = rf32(item + 8), decreaseBy = rf32(item + 12),
++    removeOn = rf32(item + 16), isUnlocked = r8(item + 20) ~= 0 }
++end)
++
++-- AddCollectible(pool, items): the pool's own vector grows (a new buffer, the old one freed through the game's own
++-- allocator) and the pool's total weight with it. The pools are rebuilt at every run start, so what was added is kept
++-- in Lua and put back at MC_POST_GAME_STARTED (an entry already in the pool is not doubled).
++do
++  local ADDED = {}
++  local function in_pool(data, id)
++    for e = r32(data + 4), r32(data + 8) - 1, 0x18 do if ri32(e) == id then return true end end
++    return false
++  end
++  local function push(pool, idx, it)
++    local data = call(POOL_AT, pool, idx)
++    if in_pool(data, it.id) then return end
++    local first, last, cap = r32(data + 4), r32(data + 8), r32(data + 0xc)
++    local n = (last - first) // 0x18
++    if last + 0x18 > cap then
++      local ncap = (n + 1) * 0x18 + 0x18 * 8
++      local buf = B.alloc(ncap)
++      for i = 0, n * 6 - 1 do w32(buf + 4 * i, r32(first + 4 * i)) end
++      if first ~= 0 then B.free(first) end
++      first = buf
++      w32(data + 4, buf) w32(data + 0xc, buf + ncap)
++    end
++    local e = first + n * 0x18
++    w32(e, it.id & 0xffffffff) wf32(e + 4, it.weight) wf32(e + 8, it.weight) wf32(e + 12, it.dec) wf32(e + 16, it.rem)
++    w32(e + 20, it.unlocked and 1 or 0)
++    w32(data + 8, e + 0x18)
++    wf32(data, rf32(data) + it.weight)
++  end
++  local function field(t, name)
++    for k, v in pairs(t) do if type(k) == "string" and k:lower() == name then return v end end
++  end
++  local function parse(t)
++    local id = field(t, "itemid")
++    if id == nil then
++      local name = field(t, "name")
++      if type(name) == "string" then id = Isaac.GetItemIdByName(name) end
++    end
++    if mathtype(id) ~= "integer" or id <= 0 or Isaac.GetItemConfig():GetCollectible(id) == nil then
++      log("ItemPool.AddCollectible: skipped an entry with no valid collectible (" .. tostring(id) .. ")")
++      return nil
++    end
++    local function num(name, d) local v = field(t, name) return type(v) == "number" and v or d end
++    local cfg = Isaac.GetItemConfig():GetCollectible(id)
++    local ok, avail = pcall(cfg.IsAvailable, cfg)
++    return { id = id, weight = num("weight", 1.0), dec = num("decreaseby", 0.5), rem = num("removeon", 0.1), unlocked = not ok or avail ~= false }
++  end
++  method("ItemPool", "AddCollectible", function(self, poolType, items)
++    local pool = this(self, "AddCollectible")
++    pool_data(pool, poolType, "AddCollectible")
++    if type(items) ~= "table" then argerr(2, "AddCollectible", "table", items) end
++    local list = items[1] ~= nil and items or { items }
++    for _, t in ipairs(list) do
++      local it = type(t) == "table" and parse(t)
++      if it then
++        ADDED[#ADDED + 1] = { poolType, it }
++        push(pool, poolType, it)
++      end
++    end
++  end)
++  T.listen(ModCallbacks.MC_POST_GAME_STARTED, function()
++    local pool = this(Game():GetItemPool(), "AddCollectible")
++    for _, a in ipairs(ADDED) do push(pool, a[1], a[2]) end
++  end, -math.huge)
++end
++
++-- ItemPool:GetCollectible(pool, decrease = false, seed = Random(), default = 0, flags = 0): the game's own binding takes
++-- no fifth argument (measured by lab_pickup_more: BAN_ACTIVES and BAN_PASSIVES changed nothing), but the game's function
++-- 0x00733610 does: ecx = the pool, stack (poolType, seed, flags word, defaultItem), `ret 0x10`, the flags word being
++-- (GetCollectibleFlags << 1) | (not decrease), as pick_collectible takes it. Called with a fifth argument the wrapper
++-- calls that function; without, the game's own binding runs untouched.
++-- NOT DONE (deferred): the wrapper that would call the game function directly could not be made to take effect. A
++-- rawset on the class table was not what `pool.GetCollectible` then answered (the game's own closure came back), so the
++-- name is left out of Implemented. Flags for GetCollectible belong with an engine hook (cb-b).
+diff --git a/scripts/recomp/rgon/api_player_health.lua b/scripts/recomp/rgon/api_player_health.lua
+new file mode 100644
+index 0000000..28c6cd2
+--- /dev/null
++++ b/scripts/recomp/rgon/api_player_health.lua
+@@ -0,0 +1,220 @@
++-- api_player_health.lua -- the health-related names the Custom Health API (Fiend Folio, Epiphany) uses: the Candy
++-- Heart / Soul Locket / Keeper's Sack bonuses, the Immaculate and Cambion Conception states and familiar flags,
++-- Maggy's health drain cooldown, Red Stew's duration, UpdateIsaacPregnancy, and PlayerHUD's flash counters,
++-- layout and hearts (PlayerHUDHeart). Written against REPENTOGON's behaviour; every offset below was measured in
++-- THIS executable (v1.9.7.17) by lab_player_health_probe.lua (a diff of the player while the game did the thing,
++-- or a value written and the game's own EvaluateItems watched), and is checked again by lab_player_health.lua.
++--
++--   EntityPlayer       REPENTOGON  here    how it was measured
++--   Candy Heart ups    0x1d9c      0x1db0  six uint16 (Damage, FireDelay, TearRange, ShotSpeed, MoveSpeed, Luck): 5 written
++--                                          into each word moved exactly that stat (EvaluateItems 0x00763570 reads them
++--                                          behind HasCollectible 0x29f); a red heart pickup moved two words by 1
++--   Soul Locket ups    0x1da8      0x1dbc  the same six, behind HasCollectible 0x2ae; a soul heart pickup moved one by 1
++--   Keeper's Sack      0x1f98      0x1fbc  int; 3, 6 and 30 written with the item held raised Damage, TearRange and
++--                                          MoveSpeed (EvaluateItems)
++--   Immaculate state   0x191c      0x1930  int, +1 for every heart picked up with Immaculate Conception; birth at 15
++--   Cambion state      0x1920      0x1934  int (GetCambionPregnancyLevel 0x007c90b0 reads it)
++--   familiar flags     0x1924      0x1938  the birth functions OR the ConceptionFamiliarFlag in (0x200 after a birth)
++--   Red Stew duration  0x1e58      0x1e74  int; 600 written with Red Stew held raised Damage by 3.4 (EvaluateItems adds
++--                                          the value / 10 times a factor, only while a single player)
++--   Maggy drain        0x1ed0      0x1ef4  Tainted Magdalene: 300 on the first frame, then one fewer each frame
++--   PlayerHUD          as REPENTOGON for the first 0x10 bytes of a slot: flash counters (red, soul, gold) are the bytes
++--                      at +0xc, +0xd, +0xe (the game counts them down), then 24 hearts of 0x10 bytes from +0x10:
++--                      +0 visible, +1 eternal overlay, +2 golden overlay, +3 fading, +4 flash type, +8 and +0xc the
++--                      animation and overlay animation names (C strings)
++--   HUD::GetPlayerHUDLayout(index, player)  0x009a6570, thiscall on the HUD, ret 8 (0 for a lone player)
++--   Entity_Player::UpdateIsaacPregnancy(bool cambion)  0x007c7d70, thiscall, ret 4
++
++local T = ...
++local B, R, method, wrap, this = T.B, T.R, T.method, T.wrap, T.this
++local ptr, r8, r16, r32, ri32, w8, w16, w32, log, call = B.ptr, B.r8, B.r16, B.r32, B.ri32, B.w8, B.w16, B.w32, B.log, B.call
++local type, tostring, pairs, ipairs, setmetatable, error, rawget = type, tostring, pairs, ipairs, setmetatable, error, rawget
++local mathtype = math.type
++
++local function int_arg(v, n, what)
++  if mathtype(v) == "float" and v == math.floor(v) then v = math.tointeger(v) end
++  if mathtype(v) ~= "integer" then error("bad argument #" .. n .. " to '" .. what .. "' (integer expected, got " .. type(v) .. ")", 3) end
++  return v
++end
++local function opt_int(v, n, what, default)
++  if v == nil then return default end
++  return int_arg(v, n, what)
++end
++local function bool_arg(v, n, what)
++  if type(v) ~= "boolean" then error("bad argument #" .. n .. " to '" .. what .. "' (boolean expected, got " .. type(v) .. ")", 3) end
++  return v
++end
++
++local P = "EntityPlayer"
++
++------------------------------------------------------------------------------
++-- plain int fields
++------------------------------------------------------------------------------
++local IMMACULATE, CAMBION, FLAMILIAR_FLAGS = 0x1930, 0x1934, 0x1938
++local KEEPERS_SACK, MAGGY_DRAIN, RED_STEW = 0x1fbc, 0x1ef4, 0x1e74
++
++method(P, "GetImmaculateConceptionState", function(self) return ri32(this(self, "GetImmaculateConceptionState") + IMMACULATE) end)
++-- clamped to 0..14 as REPENTOGON does: the game crashes on the pregnancy update with a bigger one, and 14 is the
++-- last value that still gives birth at the next heart
++method(P, "SetImmaculateConceptionState", function(self, v)
++  local p = this(self, "SetImmaculateConceptionState")
++  v = int_arg(v, 1, "SetImmaculateConceptionState")
++  if v < 0 then v = 0 elseif v > 14 then v = 14 end
++  w32(p + IMMACULATE, v)
++end)
++method(P, "GetCambionConceptionState", function(self) return ri32(this(self, "GetCambionConceptionState") + CAMBION) end)
++method(P, "SetCambionConceptionState", function(self, v)
++  w32(this(self, "SetCambionConceptionState") + CAMBION, int_arg(v, 1, "SetCambionConceptionState") & 0xffffffff)
++end)
++method(P, "GetConceptionFamiliarFlags", function(self) return ri32(this(self, "GetConceptionFamiliarFlags") + FLAMILIAR_FLAGS) end)
++method(P, "SetConceptionFamiliarFlags", function(self, v)
++  w32(this(self, "SetConceptionFamiliarFlags") + FLAMILIAR_FLAGS, int_arg(v, 1, "SetConceptionFamiliarFlags") & 0xffffffff)
++end)
++method(P, "GetKeepersSackBonus", function(self) return ri32(this(self, "GetKeepersSackBonus") + KEEPERS_SACK) end)
++method(P, "SetKeepersSackBonus", function(self, v)
++  w32(this(self, "SetKeepersSackBonus") + KEEPERS_SACK, int_arg(v, 1, "SetKeepersSackBonus") & 0xffffffff)
++end)
++method(P, "GetMaggyHealthDrainCooldown", function(self) return r32(this(self, "GetMaggyHealthDrainCooldown") + MAGGY_DRAIN) end)
++method(P, "SetMaggyHealthDrainCooldown", function(self, v)
++  w32(this(self, "SetMaggyHealthDrainCooldown") + MAGGY_DRAIN, int_arg(v, 1, "SetMaggyHealthDrainCooldown") & 0xffffffff)
++end)
++
++method(P, "GetRedStewBonusDuration", function(self) return ri32(this(self, "GetRedStewBonusDuration") + RED_STEW) end)
++method(P, "SetRedStewBonusDuration", function(self, v)
++  w32(this(self, "SetRedStewBonusDuration") + RED_STEW, int_arg(v, 1, "SetRedStewBonusDuration") & 0xffffffff)
++end)
++
++-- EntityPlayer:UpdateIsaacPregnancy(cambion): the game's own, 0x007c7d70 (true: the Cambion Conception costume,
++-- false: Immaculate Conception's)
++method(P, "UpdateIsaacPregnancy", function(self, cambion)
++  local p = this(self, "UpdateIsaacPregnancy")
++  call(0x007c7d70, p, bool_arg(cambion, 1, "UpdateIsaacPregnancy") and 1 or 0)
++end)
++
++------------------------------------------------------------------------------
++-- Candy Heart and Soul Locket stat bonuses
++------------------------------------------------------------------------------
++-- Six uint16 each, in this order; AddCandyHeartBonus(cacheFlags = 0, amount = 1) adds to every stat in cacheFlags
++-- (a random one of the six, drawn from the item's own RNG, when none is given), clamps to 0..0xffff, and has the
++-- player re-evaluate.
++do
++  local NAMES = { "Damage", "FireDelay", "TearRange", "ShotSpeed", "MoveSpeed", "Luck" }
++  local CF = rawget(_G, "CacheFlag")
++  if type(CF) ~= "table" then log("api_player_health: no CacheFlag table; the Candy Heart and Soul Locket bonuses are left out") CF = nil end
++  local FLAGS = CF and { CF.CACHE_DAMAGE, CF.CACHE_FIREDELAY, CF.CACHE_RANGE, CF.CACHE_SHOTSPEED, CF.CACHE_SPEED, CF.CACHE_LUCK }
++  local ALL = 0xffff                            -- CACHE_ALL
++  local function pair(label, base, item)
++    method(P, "Get" .. label .. "Bonus", function(self)
++      local p = this(self, "Get" .. label .. "Bonus")
++      local out = {}
++      for i = 1, 6 do out[NAMES[i]] = r16(p + base + 2 * (i - 1)) end
++      return out
++    end)
++    method(P, "Add" .. label .. "Bonus", function(self, flags, amount)
++      local p = this(self, "Add" .. label .. "Bonus")
++      flags = opt_int(flags, 1, "Add" .. label .. "Bonus", 0) & ALL
++      amount = opt_int(amount, 2, "Add" .. label .. "Bonus", 1)
++      if amount == 0 then return end
++      if flags == 0 then
++        flags = FLAGS[self:GetCollectibleRNG(item):RandomInt(6) + 1]
++      end
++      local touched = false
++      for i = 1, 6 do
++        if flags & FLAGS[i] ~= 0 then
++          local at = p + base + 2 * (i - 1)
++          local v = r16(at) + amount
++          if v < 0 then v = 0 elseif v > 0xffff then v = 0xffff end
++          w16(at, v)
++          touched = true
++        end
++      end
++      if touched then
++        self:AddCacheFlags(flags)
++        self:EvaluateItems()
++      end
++    end)
++  end
++  if FLAGS then
++    pair("CandyHeart", 0x1db0, 671)
++    pair("SoulLocket", 0x1dbc, 686)
++  end
++end
++
++------------------------------------------------------------------------------
++-- PlayerHUD: flash counters, layout, hearts; PlayerHUDHeart
++------------------------------------------------------------------------------
++local H = T.playerhud_methods
++if type(H) ~= "table" then
++  log("api_player_health: api_more.lua did not hand out PlayerHUD's methods; the PlayerHUD names are left out")
++else
++  local function at(self, what)
++    local p = ptr(self)
++    if p == 0 then error("rgon: PlayerHUD:" .. what .. " called without its object (use ':')", 3) end
++    return p
++  end
++  local FLASH = { Red = 0xc, Soul = 0xd, Gold = 0xe }
++  for kind, off in pairs(FLASH) do
++    H["GetFlash" .. kind .. "Hearts"] = function(self)
++      local v = r8(at(self, "GetFlash" .. kind .. "Hearts") + off)
++      return v >= 0x80 and v - 0x100 or v
++    end
++    H["SetFlash" .. kind .. "Hearts"] = function(self, frames)
++      local p = at(self, "SetFlash" .. kind .. "Hearts")
++      frames = opt_int(frames, 1, "SetFlash" .. kind .. "Hearts", 4)
++      if frames < 0 then frames = 0 elseif frames > 127 then frames = 127 end
++      w8(p + off, frames)
++    end
++    R.Implemented["PlayerHUD.GetFlash" .. kind .. "Hearts"] = true
++    R.Implemented["PlayerHUD.SetFlash" .. kind .. "Hearts"] = true
++  end
++
++  -- PlayerHUD:GetLayout() -> PlayerHUDLayout (0 normal, 1 Jacob and Esau, 2 compact, 3 J&E compact)
++  H.GetLayout = function(self)
++    local p = at(self, "GetLayout")
++    local hud = ptr(Game():GetHUD())
++    local player = r32(p)
++    return call(0x009a6570, hud, B.r16(p + 8), player) & 0xffffffff
++  end
++  R.Implemented["PlayerHUD.GetLayout"] = true
++
++  -- PlayerHUDHeart: a copy of the heart's 0x10 bytes (as REPENTOGON hands out copies), animation names read
++  -- when it is made
++  local HEART = {}
++  local function bit(self, i) return self[i] ~= 0 end
++  function HEART:IsVisible() return bit(self, 1) end
++  function HEART:IsEternalHeartOverlayVisible() return bit(self, 2) end
++  function HEART:IsGoldenHeartOverlayVisible() return bit(self, 3) end
++  function HEART:IsFadingHeart() return bit(self, 4) end
++  function HEART:GetFlashType()
++    local v = self[5]
++    return v >= 0x80 and v - 0x100 or v
++  end
++  function HEART:GetHeartAnim() return self[6] end
++  function HEART:GetHeartOverlayAnim() return self[7] end
++  local HEART_MT = { __index = HEART, __name = "PlayerHUDHeart", __type = "PlayerHUDHeart",
++    __tostring = function(self) return "PlayerHUDHeart(" .. tostring(self[6]) .. ")" end }
++  for k in pairs(HEART) do R.Implemented["PlayerHUDHeart." .. k] = true end
++
++  local function str_at(a)
++    if a == 0 then return nil end
++    return B.str(a)
++  end
++  local function heart(p, i)
++    local h = p + 0x10 + 0x10 * i
++    return setmetatable({ r8(h), r8(h + 1), r8(h + 2), r8(h + 3), r8(h + 4), str_at(r32(h + 8)), str_at(r32(h + 0xc)) }, HEART_MT)
++  end
++  H.GetHeartByIndex = function(self, index)
++    local p = at(self, "GetHeartByIndex")
++    index = int_arg(index, 1, "GetHeartByIndex")
++    if index < 0 or index > 23 then error("Invalid index: " .. index, 2) end
++    return heart(p, index)
++  end
++  H.GetHearts = function(self)
++    local p = at(self, "GetHearts")
++    local out = {}
++    for i = 0, 23 do out[i + 1] = heart(p, i) end
++    return out
++  end
++  R.Implemented["PlayerHUD.GetHeartByIndex"] = true
++  R.Implemented["PlayerHUD.GetHearts"] = true
 +end
 diff --git a/scripts/recomp/rgon/api_pocket_item.lua b/scripts/recomp/rgon/api_pocket_item.lua
 new file mode 100644
@@ -6817,6 +7536,456 @@ index 0000000..8ca40a1
 +    end
 +  end
 +end
+diff --git a/scripts/recomp/rgon/api_tears_more.lua b/scripts/recomp/rgon/api_tears_more.lua
+new file mode 100644
+index 0000000..bd7c0ae
+--- /dev/null
++++ b/scripts/recomp/rgon/api_tears_more.lua
+@@ -0,0 +1,444 @@
++-- api_tears_more.lua -- the rest of REPENTOGON's EntityTear, EntityLaser, EntityKnife, EntityEffect and
++-- EntityProjectile names, and TearParams' four fields. Written against REPENTOGON's behaviour (LuaInterfaces/
++-- Entities/Lua*.cpp); every offset and address was measured in THIS executable (v1.9.7.17), by lab_tears_more.lua
++-- and the probes lab_tears_probe*.lua, and is named where it is used. Lua only: no engine hook (what REPENTOGON
++-- does with an ASM patch is done here by the layer's own callback listener or by the game's own field).
++--
++--   TearParams (0x64 bytes, as REPENTOGON): +0x54 mass multiplier, +0x58 knockback multiplier, +0x5c speed
++--     multiplier (floats), +0x60 tear displacement (int). Seen in a TearParams the game made (defaults 1, 1.7,
++--     1, 1 next to the damage 3.5 at +0x48, the scale at +0x4c and the height at +0x50 that the game's own
++--     properties answer).
++--   EntityTear: hit list = the vector at 0x444 (api_game.lua), tear index 0x450 (the backdrop of a variant 40 grid
++--     tear), scale animation number 0x45c (the tear's ResetSpriteScale 0x00677780 compares it with the one the
++--     scale needs and redraws only when they differ: writing -1 forces it, REPENTOGON's `Force`), the
++--     multidimensional-touched byte 0x468. Init sound: the tear's first Update (vtable slot 3, 0x006670f0) calls
++--     init_tear 0x00666d40 while the byte 0x46a is set; init_tear plays the fire sound unless the variant is
++--     9, 0x2e or 0x28 or the byte 0x7ea is set (`cmp byte [edi+0x7ea], 0; jne` at 0x00666d69).
++--   EntityLaser: timeout 0x458, shrink 0x45e, disable-follow-parent 0x4e4, scale 0x4e0, one-hit 0x515, hit list
++--     0x520 (REPENTOGON's layout, each read where the game's own property answers the same). ResetSpriteScale is
++--     0x0097fc10 (thiscall, plain ret; the game's own scale setter code at 0x00977668 calls it right after
++--     writing 0x4e0; REPENTOGON's signature for it matches nothing here). RotateToAngle is 0x0096f470 (angle in
++--     xmm1, speed in xmm2, plain ret). The samples (HomingLaser at 0x464) are four std::vectors: 0x480, 0x48c,
++--     0x498 and the bezier vector 0x4ac.
++--   EntityKnife: InitHomingPath 0x00961320 (ecx = knife, the direction's two floats and the source on the stack,
++--     the path offset in xmm3, `ret 0xc`). GetHitboxParentKnife stays deferred (api_batch_two.lua): measured on a
++--     bone club's hitbox knife (SubType 4), its Parent (0x3bc) is the player and the byte 0x4e7 is 0, so the game
++--     keeps no link to the main knife; REPENTOGON records it with an ASM patch in update_bone_swing.
++--   EntityProjectile: Reflect 0x00652fa0 (thiscall, (unused entity, Vector* velocity), `ret 8`).
++--   EntityEffect: the variant data (BitSet128, REPENTOGON's tear flags of the Aquarius creep, the brimstone ball,
++--     the tech dot and the chain lightning) at 0x420; CreateLight is variant 121 with state, timeout, lifespan,
++--     colour and the sprite scale set after the spawn.
++
++local T = ...
++local B, R, method, property, static, wrap, this, class_tables = T.B, T.R, T.method, T.property, T.static, T.wrap, T.this, T.class_tables
++local ptr, r8, r32, ri32, rf32, w8, w32, wf32, log, call = B.ptr, B.r8, B.r32, B.ri32, B.rf32, B.w8, B.w32, B.wf32, B.log, B.call
++local type, pcall, rawget, rawset, ipairs, pairs, tostring = type, pcall, rawget, rawset, ipairs, pairs, tostring
++local mathtype = math.type
++
++local function int_arg(v, n, what)
++  if mathtype(v) == "float" and v == math.floor(v) then v = math.tointeger(v) end
++  if mathtype(v) ~= "integer" then error("bad argument #" .. n .. " to '" .. what .. "' (number expected, got " .. type(v) .. ")", 3) end
++  return v
++end
++local function num_arg(v, n, what)
++  if type(v) ~= "number" then error("bad argument #" .. n .. " to '" .. what .. "' (number expected, got " .. type(v) .. ")", 3) end
++  return v
++end
++local function bool_arg(v, n, what)
++  if type(v) ~= "boolean" then error("bad argument #" .. n .. " to '" .. what .. "' (boolean expected, got " .. type(v) .. ")", 3) end
++  return v
++end
++local function userdata_arg(v, n, what, cls)
++  if type(v) ~= "userdata" or ptr(v) == 0 then error("bad argument #" .. n .. " to '" .. what .. "' (" .. cls .. " expected, got " .. type(v) .. ")", 3) end
++  return v
++end
++
++-- a method of a class the game already has (its own C function is kept as `orig` and may be called)
++local function override(cls, name, f)
++  local c, const = class_tables(cls)
++  if not c then log("api_tears_more: no class " .. cls .. " for " .. name) return end
++  local wrapped = B.cfn(f)
++  rawset(c, name, wrapped)
++  if const and rawget(const, name) ~= nil then rawset(const, name, wrapped) end
++  R.Implemented[cls .. "." .. name] = true
++end
++
++------------------------------------------------------------------------------
++-- TearParams
++------------------------------------------------------------------------------
++do
++  local function f32(name, off, positive)
++    property("TearParams", name, function(self) return rf32(this(self, name) + off) end, function(self, v)
++      num_arg(v, 2, name)
++      if positive and v <= 0 then error("bad argument #2 to '" .. name .. "' (" .. name .. " must be positive!)", 2) end
++      wf32(this(self, name) + off, v)
++    end)
++  end
++  f32("MassMultiplier", 0x54, true)
++  f32("KnockbackMultiplier", 0x58, true)
++  f32("SpeedMultiplier", 0x5c, false)
++  property("TearParams", "TearDisplacement", function(self) return ri32(this(self, "TearDisplacement") + 0x60) end, function(self, v)
++    v = int_arg(v, 2, "TearDisplacement")
++    if v < -1 or v > 1 then error("bad argument #2 to 'TearDisplacement' (TearDisplacement may only be set to -1 or 1)", 2) end
++    w32(this(self, "TearDisplacement") + 0x60, v & 0xffffffff)
++  end)
++end
++
++------------------------------------------------------------------------------
++-- hit lists (std::vector<unsigned> of Entity:GetHitListIndex values): EntityTear at 0x444, EntityLaser at 0x520
++------------------------------------------------------------------------------
++do
++  local function vec(self, what, off)
++    local v = this(self, what) + off
++    local first, last, cap = r32(v), r32(v + 4), r32(v + 8)
++    if last < first or last - first > 0x10000 or (last - first) % 4 ~= 0 then error("rgon: this entity's hit list is not laid out as expected", 3) end
++    return v, first, last, cap
++  end
++  local function index_of(entity, n, what)
++    userdata_arg(entity, n, what, "Entity")
++    return entity:GetHitListIndex()
++  end
++  local function define(cls, off)
++    method(cls, "InHitList", function(self, entity)
++      local idx = index_of(entity, 1, "InHitList")
++      local _, first, last = vec(self, "InHitList", off)
++      for a = first, last - 4, 4 do if r32(a) == idx then return true end end
++      return false
++    end)
++    method(cls, "AddToHitList", function(self, entity)
++      local idx = index_of(entity, 1, "AddToHitList")
++      local v, first, last, cap = vec(self, "AddToHitList", off)
++      for a = first, last - 4, 4 do if r32(a) == idx then return end end
++      if last >= cap then
++        -- grow as the game's vector does: a new buffer from the game's allocator, the old one freed
++        local n = (last - first) // 4
++        local new = B.alloc(4 * (n * 2 + 4))
++        if new == 0 then error("rgon: out of memory growing a hit list", 2) end
++        for i = 0, n - 1 do w32(new + 4 * i, r32(first + 4 * i)) end
++        if first ~= 0 then B.free(first) end
++        w32(v, new)
++        first, last = new, new + 4 * n
++        w32(v + 8, new + 4 * (n * 2 + 4))
++      end
++      w32(last, idx)
++      w32(v + 4, last + 4)
++    end)
++    method(cls, "RemoveFromHitList", function(self, entity)
++      local idx = index_of(entity, 1, "RemoveFromHitList")
++      local v, first, last = vec(self, "RemoveFromHitList", off)
++      for a = first, last - 4, 4 do
++        if r32(a) == idx then
++          w32(a, r32(last - 4))               -- swap with the last entry and drop it, as REPENTOGON does
++          w32(v + 4, last - 4)
++          return
++        end
++      end
++    end)
++  end
++  define("EntityTear", 0x444)
++  define("EntityLaser", 0x520)
++end
++
++------------------------------------------------------------------------------
++-- EntityTear
++------------------------------------------------------------------------------
++method("EntityTear", "SetMultidimensionalTouched", function(self, v)
++  bool_arg(v, 1, "SetMultidimensionalTouched")
++  w8(this(self, "SetMultidimensionalTouched") + 0x468, v and 1 or 0)
++end)
++
++-- the backdrop of a grid tear (variant 40) is its tear index
++method("EntityTear", "SetBackdropType", function(self, backdrop)
++  local a = this(self, "SetBackdropType")
++  backdrop = int_arg(backdrop, 1, "SetBackdropType")
++  if backdrop >= 0 and ri32(a + 0x2c) == 40 then w32(a + 0x450, backdrop & 0xffffffff) end
++end)
++method("EntityTear", "GetBackdropType", function(self)
++  local a = this(self, "GetBackdropType")
++  if ri32(a + 0x2c) == 40 then return ri32(a + 0x450) end
++  return 0
++end)
++
++-- ResetSpriteScale(force = false): the game's own, after forgetting which scale animation the tear shows
++do
++  local c = class_tables("EntityTear")
++  local orig = rawget(c, "ResetSpriteScale")
++  if orig then
++    override("EntityTear", "ResetSpriteScale", function(self, force)
++      if force ~= nil and type(force) ~= "boolean" then error("bad argument #2 to 'ResetSpriteScale' (boolean expected, got " .. type(force) .. ")", 2) end
++      if force then w32(this(self, "ResetSpriteScale") + 0x45c, 0xffffffff) end
++      return orig(self)
++    end)
++  end
++end
++
++------------------------------------------------------------------------------
++-- SetInitSound (EntityTear, EntityLaser): SOUND_NULL turns the game's sound off with the game's own byte; any
++-- other sound turns it off too and plays the chosen one at the entity's first update, where the game plays its
++-- own (REPENTOGON swaps the sound inside the game's call; no hook here)
++------------------------------------------------------------------------------
++do
++  local pending = { tear = {}, laser = {} }
++  local listening = {}
++  local LAYER_PLAY = function(id)
++    local ok, err = pcall(function() SFXManager():Play(id, 1.0, 2, false, 1.0, 0) end)
++    if not ok then log("api_tears_more: could not play sound " .. tostring(id) .. ": " .. tostring(err)) end
++  end
++  local function arm(kind, callback)
++    if listening[kind] or not T.listen or not callback then return end
++    listening[kind] = true
++    T.listen(callback, function(_, e)
++      local p = ptr(e)
++      local s = pending[kind][p]
++      if s then pending[kind][p] = nil LAYER_PLAY(s) end
++    end, -math.huge)
++  end
++  if T.listen and ModCallbacks.MC_POST_NEW_ROOM then
++    T.listen(ModCallbacks.MC_POST_NEW_ROOM, function() pending.tear, pending.laser = {}, {} end, -math.huge)
++  end
++  local function sound_arg(sound, what)
++    sound = int_arg(sound, 1, what)
++    if sound < 0 then error("bad argument #1 to '" .. what .. "' (Invalid SoundEffect)", 3) end
++    return sound
++  end
++  -- the byte that silences the game's own sound, and the byte that says the first update (which plays it) is still to come
++  T.init_sound_tear = function(a, sound)
++    if r8(a + 0x46a) == 0 then return end                     -- init_tear already ran: too late, as in REPENTOGON
++    w8(a + 0x7ea, 1)
++    if sound ~= 0 then pending.tear[a] = sound else pending.tear[a] = nil end
++    arm("tear", ModCallbacks.MC_POST_TEAR_UPDATE)
++  end
++  T.init_sound_laser = function(a, sound)
++    w8(a + 0x518, 1)
++    if sound ~= 0 then pending.laser[a] = sound else pending.laser[a] = nil end
++    arm("laser", ModCallbacks.MC_POST_LASER_UPDATE)
++  end
++  method("EntityTear", "SetInitSound", function(self, sound)
++    T.init_sound_tear(this(self, "SetInitSound"), sound_arg(sound, "SetInitSound"))
++  end)
++end
++
++------------------------------------------------------------------------------
++-- EntityLaser
++------------------------------------------------------------------------------
++do
++  local L = "EntityLaser"
++  local function bool_at(get, set, off)
++    if get then method(L, get, function(self) return r8(this(self, get) + off) ~= 0 end) end
++    if set then
++      method(L, set, function(self, v)
++        bool_arg(v, 1, set)
++        w8(this(self, set) + off, v and 1 or 0)
++      end)
++    end
++  end
++  bool_at("GetShrink", "SetShrink", 0x45e)
++  bool_at("GetDisableFollowParent", "SetDisableFollowParent", 0x4e4)
++  bool_at("GetOneHit", nil, 0x515)
++  override(L, "SetMultidimensionalTouched", function(self, v)
++    bool_arg(v, 1, "SetMultidimensionalTouched")
++    w8(this(self, "SetMultidimensionalTouched") + 0x500, v and 1 or 0)
++  end)
++  method(L, "GetTimeout", function(self) return ri32(this(self, "GetTimeout") + 0x458) end)
++  override(L, "SetTimeout", function(self, v) w32(this(self, "SetTimeout") + 0x458, int_arg(v, 1, "SetTimeout") & 0xffffffff) end)
++
++  local RESET = 0x0097fc10
++  method(L, "ResetSpriteScale", function(self) call(RESET, this(self, "ResetSpriteScale")) end)
++  method(L, "SetScale", function(self, v)
++    local a = this(self, "SetScale")
++    wf32(a + 0x4e0, num_arg(v, 1, "SetScale"))
++    call(RESET, a)
++  end)
++  method(L, "RotateToAngle", function(self, angle, speed)
++    local a = this(self, "RotateToAngle")
++    if speed == nil then speed = 8.0 end
++    call(0x0096f470, { ecx = a, xmm1 = num_arg(angle, 1, "RotateToAngle"), xmm2 = num_arg(speed, 2, "RotateToAngle") })
++  end)
++
++  -- the game rebuilds a laser's samples when its sample lists are empty: empty them (REPENTOGON does it at the start of
++  -- the laser's next update, which is the same thing for a mod that changes the laser and expects new samples)
++  method(L, "RecalculateSamplesNextUpdate", function(self)
++    local a = this(self, "RecalculateSamplesNextUpdate")
++    for _, o in ipairs({ 0x480, 0x48c, 0x498, 0x4ac }) do
++      local first, last = r32(a + o), r32(a + o + 4)
++      if last >= first then w32(a + o + 4, first) end
++    end
++  end)
++end
++
++------------------------------------------------------------------------------
++-- EntityKnife
++------------------------------------------------------------------------------
++do
++  -- InitHomingPath(direction, source = the knife's parent or itself)
++  method("EntityKnife", "InitHomingPath", function(self, dir, source)
++    local a = this(self, "InitHomingPath")
++    userdata_arg(dir, 1, "InitHomingPath", "Vector")
++    local src
++    if source ~= nil then
++      src = ptr(userdata_arg(source, 2, "InitHomingPath", "Entity"))
++    else
++      src = r32(a + 0x3bc)
++      if src == 0 then src = a end
++    end
++    local path = rf32(a + 0x4bc)                     -- the path offset the game keeps in the knife (PathOffset)
++    call(0x00961320, { ecx = a, xmm3 = path }, B.f2i(dir.X), B.f2i(dir.Y), src)
++  end)
++end
++
++------------------------------------------------------------------------------
++-- EntityProjectile:Deflect(velocity)
++------------------------------------------------------------------------------
++method("EntityProjectile", "Deflect", function(self, vel)
++  local a = this(self, "Deflect")
++  userdata_arg(vel, 1, "Deflect", "Vector")
++  call(0x00652fa0, a, 0, ptr(vel))
++end)
++
++------------------------------------------------------------------------------
++-- EntityEffect: tear flags (only the variants that keep them there), CreateLight
++------------------------------------------------------------------------------
++do
++  local E = "EntityEffect"
++  local ALLOWED = { [54] = true, [113] = true, [126] = true, [167] = true }   -- Aquarius creep, brimstone ball, tech dot, chain lightning
++  local DATA = 0x420
++  local function allowed(a) return ALLOWED[ri32(a + 0x2c)] == true end
++  local function bits(f, n, what)
++    if type(f) ~= "userdata" then error("bad argument #" .. n .. " to '" .. what .. "' (BitSet128 expected, got " .. type(f) .. ")", 3) end
++    local ok, l, h = pcall(function() return f.l, f.h end)
++    if not ok or mathtype(l) ~= "integer" or mathtype(h) ~= "integer" then error("bad argument #" .. n .. " to '" .. what .. "' (BitSet128 expected, got " .. type(f) .. ")", 3) end
++    return l, h
++  end
++  local function get64(a) return r32(a) | (r32(a + 4) << 32), r32(a + 8) | (r32(a + 12) << 32) end
++  local function put64(a, l, h)
++    w32(a, l & 0xffffffff) w32(a + 4, (l >> 32) & 0xffffffff)
++    w32(a + 8, h & 0xffffffff) w32(a + 12, (h >> 32) & 0xffffffff)
++  end
++  local function define(prefix)
++    method(E, "Get" .. prefix .. "TearFlags", function(self)
++      local a = this(self, "Get" .. prefix .. "TearFlags")
++      if not allowed(a) then return nil end
++      local l, h = get64(a + DATA)
++      return BitSet128(l, h)
++    end)
++    method(E, "Set" .. prefix .. "TearFlags", function(self, f)
++      local a = this(self, "Set" .. prefix .. "TearFlags")
++      local l, h = bits(f, 1, "Set" .. prefix .. "TearFlags")
++      if allowed(a) then put64(a + DATA, l, h) end
++    end)
++    method(E, "Add" .. prefix .. "TearFlags", function(self, f)
++      local a = this(self, "Add" .. prefix .. "TearFlags")
++      local l, h = bits(f, 1, "Add" .. prefix .. "TearFlags")
++      if allowed(a) then local cl, ch = get64(a + DATA) put64(a + DATA, cl | l, ch | h) end
++    end)
++    method(E, "Clear" .. prefix .. "TearFlags", function(self, f)
++      local a = this(self, "Clear" .. prefix .. "TearFlags")
++      local l, h = bits(f, 1, "Clear" .. prefix .. "TearFlags")
++      if allowed(a) then local cl, ch = get64(a + DATA) put64(a + DATA, cl & ~l, ch & ~h) end
++    end)
++    method(E, "Has" .. prefix .. "TearFlags", function(self, f)
++      local a = this(self, "Has" .. prefix .. "TearFlags")
++      local l, h = bits(f, 1, "Has" .. prefix .. "TearFlags")
++      if not allowed(a) then return false end
++      local cl, ch = get64(a + DATA)
++      return (cl & l) ~= 0 or (ch & h) ~= 0
++    end)
++  end
++  define("")
++  define("Aquarius")
++
++  -- EntityEffect.CreateLight(position, scale = random 0..1, lifespan = -1, state = 6, color = default) -> the effect
++  local EE = rawget(_G, "EntityEffect")
++  if type(EE) == "table" then
++    static(EE, "EntityEffect", "CreateLight", function(pos, scale, lifespan, state, color)
++      userdata_arg(pos, 1, "CreateLight", "Vector")
++      if scale == nil then scale = math.random() else num_arg(scale, 2, "CreateLight") end
++      lifespan = lifespan == nil and -1 or int_arg(lifespan, 3, "CreateLight")
++      state = state == nil and 6 or int_arg(state, 4, "CreateLight")
++      if color ~= nil and type(color) ~= "userdata" then error("bad argument #5 to 'CreateLight' (Color expected, got " .. type(color) .. ")", 2) end
++      if lifespan < 1 then lifespan = -1 end
++      if state < 1 then state = 6 end
++      local e = Isaac.Spawn(1000, 121, 0, pos, Vector(0, 0), nil)
++      if not e then return nil end
++      local fx = e:ToEffect()
++      fx.State = state
++      fx.Timeout = lifespan
++      fx.LifeSpan = lifespan
++      fx:SetColor(color or Color(1, 1, 1, 1, 0, 0, 0), -1, 255, false, false)
++      fx.SpriteScale = fx.SpriteScale * scale
++      return fx
++    end)
++  else
++    log("api_tears_more: no EntityEffect table; CreateLight left out")
++  end
++end
++
++------------------------------------------------------------------------------
++-- :FireSplitTear(position, velocity, damageMultiplier = 0.5, sizeMultiplier = 0.6, variant = 0, splitType = SPLIT_GENERIC)
++-- on EntityTear, EntityLaser and EntityKnife: a new tear that takes the source's flags, damage, size and colour
++------------------------------------------------------------------------------
++do
++  local SET_SCALE = 0x00676120                       -- Entity_Tear::SetScale(float), thiscall, ret 4
++  local function fire(self, pos, vel, dmul, smul, variant, split)
++    local src = self
++    userdata_arg(pos, 1, "FireSplitTear", "Vector")
++    userdata_arg(vel, 2, "FireSplitTear", "Vector")
++    dmul = dmul == nil and 0.5 or num_arg(dmul, 3, "FireSplitTear")
++    smul = smul == nil and 0.6 or num_arg(smul, 4, "FireSplitTear")
++    variant = variant == nil and 0 or int_arg(variant, 5, "FireSplitTear")
++    local kind = split == nil and (SplitTearType and SplitTearType.SPLIT_GENERIC or 0) or split
++    local damage, scale, flags, color = 3.5, 1.0, nil, nil
++    local t = src.Type
++    if t == 2 then
++      local s = src:ToTear()
++      damage, scale, flags, color = s.CollisionDamage, s.Scale, s.TearFlags, s:GetSprite().Color
++    elseif t == 7 then
++      local s = src:ToLaser()
++      damage, scale, flags, color = s.CollisionDamage, s:GetScale(), s.TearFlags, s:GetSprite().Color
++    elseif t == 8 then
++      local s = src:ToKnife()
++      damage, scale, flags, color = s.CollisionDamage, s.SpriteScale.Y, s.TearFlags, s:GetSprite().Color
++    end
++    damage = math.max(damage * dmul, 0.0)
++    scale = scale * smul
++    local l, h = flags.l, flags.h
++    h = h & ~(1 << 63)                              -- always drop the Ludovico flag
++    if variant ~= 50 then h = h & ~(1 << 50) end    -- and the fetus flag unless it is a fetus
++    local seed = Random() | 1
++    local new = Game():Spawn(2, variant, pos, vel, src.SpawnerEntity, 0, seed)
++    if not new then return nil end
++    new = new:ToTear()
++    local player
++    if t == 8 then
++      player = src.Parent and src.Parent:ToPlayer() or (src.SpawnerEntity and src.SpawnerEntity:ToPlayer())
++    else
++      local sp, par = src.SpawnerEntity, src.Parent
++      if sp and sp.Type == 1 then player = sp:ToPlayer() elseif par and par.Type == 1 then player = par:ToPlayer() end
++    end
++    local rng = RNG()
++    rng:SetSeed(new.InitSeed, 35)
++    local offset = 0.2 * rng:RandomFloat()
++    if player then
++      new.Height = player.TearHeight * 0.5
++      new.FallingAcceleration = player.TearFallingAcceleration
++      local speed = player.TearFallingSpeed
++      if speed > 0 then speed = speed * 0.3 end
++      new.FallingSpeed = offset - speed
++    else
++      new.Height = -11.875
++      new.FallingSpeed = offset + 0.185
++    end
++    new.CollisionDamage = damage
++    call(SET_SCALE, ptr(new), B.f2i(scale))
++    new.TearFlags = BitSet128(l, h)
++    if color then new:SetColor(color, -1, 255, true, false) end
++    if player then new.Parent = player end
++    new:Update()
++    if T.run and (T.listening or {})[1025] then T.run(1025, kind, new, src, kind) end
++    return new
++  end
++  for _, cls in ipairs({ "EntityTear", "EntityLaser", "EntityKnife" }) do
++    method(cls, "FireSplitTear", function(self, ...) return fire(self, ...) end)
++  end
++end
++
 diff --git a/scripts/recomp/rgon/gate_names.lua b/scripts/recomp/rgon/gate_names.lua
 index 3b6d51e..3d51ce3 100644
 --- a/scripts/recomp/rgon/gate_names.lua
@@ -7276,10 +8445,10 @@ index 3b6d51e..3d51ce3 100644
  ]],
  }
 diff --git a/scripts/recomp/rgon/hook_slots.lua b/scripts/recomp/rgon/hook_slots.lua
-index 2187a0e..e759116 100644
+index 2187a0e..47204e4 100644
 --- a/scripts/recomp/rgon/hook_slots.lua
 +++ b/scripts/recomp/rgon/hook_slots.lua
-@@ -100,6 +100,20 @@ return {
+@@ -100,6 +100,21 @@ return {
    ["Room::RenderEntityPass_004199d0"] = { 98, 0x8 },
    ["Room::GetShopItemPrice"] = { 99, 0x10 },
    ["Menu_Character::UpdateRotations"] = { 169, 0x0 },
@@ -7297,10 +8466,11 @@ index 2187a0e..e759116 100644
 +  ["Entity_Player::SetCard"] = { 182, 0x8 },
 +  ["Entity_Player::SetPill"] = { 183, 0x8 },
 +  ["Entity_Player::DropPocketItem"] = { 184, 0x8 },
++  ["Entity_Pickup::TriggerShopPurchase"] = { 193, 0x8 },
    ["Entity::Init"] = { 100, 0x10 },
    ["Entity_Player::Init"] = { 101, 0x10 },
    ["Entity_NPC::Init"] = { 102, 0x10 },
-@@ -170,4 +184,12 @@ return {
+@@ -170,4 +185,23 @@ return {
    ["Entity_Tear::Collision_00676be0@ParasiteSplit"] = { 167, false, 0x006770c2 },
    ["Entity_Tear::Collision_00676be0@BoneSplit"] = { 168, false, 0x00677498 },
    ["ModManager::RenderCharacterPortrait_008f8860@Frame"] = { 170, false, 0x008f89c4 },
@@ -7312,6 +8482,17 @@ index 2187a0e..e759116 100644
 +  ["Entity_Player::GiveBirthImmaculate@Flag"] = { 190, false, 0x007c81a6 },
 +  ["Entity_Player::GiveBirthCambion@Flag"] = { 191, false, 0x00775e1b },
 +  ["Entity_Player::DropPocketItem@Spawned"] = { 192, false, 0x007a4986 },
++  ["Entity_Player::UseActiveItem@VoidPickup"] = { 194, false, 0x005be7e1 },
++  ["Entity_Player::UseCard@BlackRune"] = { 195, false, 0x007b451c },
++  ["Entity_Player::UseActiveItem@Compost"] = { 196, false, 0x005bde0c },
++  ["Room::GetDevilRoomChance@Items"] = { 197, false, 0x007f92cb },
++  ["Room::GetDevilRoomChance@SpecialItems"] = { 198, false, 0x007f962b },
++  ["Room::GetDevilRoomChance@Post"] = { 199, false, 0x007f96a4 },
++  ["Game::GetPlanetariumChance@Items"] = { 200, false, 0x0074dd3f },
++  ["Game::GetPlanetariumChance@LensNew"] = { 201, false, 0x0074ddc1 },
++  ["Game::GetPlanetariumChance@LensVisited"] = { 202, false, 0x0074ddcf },
++  ["Game::GetPlanetariumChance@Post"] = { 203, false, 0x0074de05 },
++  ["Entity_Pickup::UpdatePickupGhosts@Condition"] = { 204, false, 0x006e17f0 },
  }
 diff --git a/scripts/recomp/rgon/lab_ambush_test.lua b/scripts/recomp/rgon/lab_ambush_test.lua
 new file mode 100644
@@ -8661,6 +9842,362 @@ index 0000000..66b9db4
 +mod:AddCallback(M.MC_INPUT_ACTION, function(_, e, hook, action) seen("MC_INPUT_ACTION", hook, action) end)
 +local chunk = B.load("lab_trapdoor.lua")
 +if chunk then chunk(T) end
+diff --git a/scripts/recomp/rgon/lab_cb_b.lua b/scripts/recomp/rgon/lab_cb_b.lua
+new file mode 100644
+index 0000000..b393f5f
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_cb_b.lua
+@@ -0,0 +1,350 @@
++-- lab_cb_b.lua (development only; ISAAC_RGON_LAB=lab_cb_b.lua, worker cb-b)
++-- Fires the callbacks of the "shop / pickups / pools" group and checks their arguments and what an answer does:
++-- MC_POST_PICKUP_SHOP_PURCHASE, MC_PRE_PICKUP_VOIDED (Void and Black Rune), MC_PRE_PICKUP_COMPOSTED,
++-- MC_PRE_PICKUP_UPDATE_GHOST_PICKUPS, MC_PRE_DEVIL_APPLY_ITEMS / _SPECIAL_ITEMS, MC_POST_DEVIL_CALCULATE,
++-- MC_PRE_PLANETARIUM_APPLY_ITEMS / _TELESCOPE_LENS, MC_POST_PLANETARIUM_CALCULATE.
++-- Prints "lab_cb_b: DONE n PASS m FAIL". Steps run one after another on MC_POST_UPDATE; a step that waits has a frame limit.
++local T = ...
++local B = T.B
++local M = ModCallbacks
++local mod = RegisterMod("rgon lab cb-b", 1)
++local pass, fail = 0, 0
++local function say(s) B.log("lab_cb_b: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_cb_b: %s %s", ok and "PASS" or "FAIL", what))
++end
++local function near(a, b, eps) return type(a) == "number" and type(b) == "number" and math.abs(a - b) <= (eps or 0.002) end
++
++local rec, beh = {}, {}
++local function count(n) return #(rec[n] or {}) end
++local function last(n) local l = rec[n] return l and l[#l] end
++local function reset(n) rec[n] = {} end
++local function tos(v)
++  if type(v) == "userdata" then
++    local ok, t = pcall(function() return v:ToPlayer() and "player" or (v:ToPickup() and ("pickup:" .. v.Variant .. "/" .. v.SubType)) or "entity" end)
++    return ok and t or "userdata"
++  end
++  return tostring(v)
++end
++local NAMES = {
++  "MC_POST_PICKUP_SHOP_PURCHASE", "MC_PRE_PICKUP_VOIDED", "MC_PRE_PICKUP_COMPOSTED", "MC_PRE_PICKUP_UPDATE_GHOST_PICKUPS",
++  "MC_PRE_DEVIL_APPLY_ITEMS", "MC_PRE_DEVIL_APPLY_SPECIAL_ITEMS", "MC_POST_DEVIL_CALCULATE",
++  "MC_PRE_PLANETARIUM_APPLY_ITEMS", "MC_PRE_PLANETARIUM_APPLY_TELESCOPE_LENS", "MC_POST_PLANETARIUM_CALCULATE",
++}
++for _, n in ipairs(NAMES) do
++  local id = M[n]
++  if not id then
++    check(false, n .. " has a ModCallbacks number")
++  else
++    mod:AddCallback(id, function(_, ...)
++      local a = {}
++      for i = 1, select("#", ...) do a[#a + 1] = tos((select(i, ...))) end
++      local l = rec[n] or {}
++      rec[n] = l
++      local r = { n = select("#", ...), ... }
++      r.text = table.concat(a, ",")
++      l[#l + 1] = r
++      if #l <= 4 then say(string.format("%s #%d (%s)", n, #l, r.text)) end
++      local f = beh[n]
++      if f then return f(...) end
++    end)
++  end
++end
++
++local game = Game()
++local GAME_PTR = 0x00c71678
++local function devil() local _, st0 = B.call(0x007f92b0, B.ptr(game:GetRoom())) return st0 end
++local function planet() local _, st0 = B.call(0x0074dbd0, B.r32(GAME_PTR)) return st0 end
++local function pl() return Isaac.GetPlayer(0) end
++local function pickups(variant)
++  local out = {}
++  for _, e in ipairs(Isaac.FindByType(5, variant or -1, -1)) do out[#out + 1] = e end
++  return out
++end
++local function clear_pickups()
++  for _, e in ipairs(Isaac.FindByType(5, -1, -1)) do e:Remove() end
++end
++
++local base = {}
++local steps = {}
++local function step(f) steps[#steps + 1] = f end
++local waiting, wait_left, wait_what, wait_cond
++local function wait(what, frames, cond)
++  waiting, wait_left, wait_what, wait_cond = true, frames, what, cond
++end
++local USE = UseFlag.USE_NOANIM | UseFlag.USE_NOANNOUNCER | UseFlag.USE_OWNED
++
++-- 1. devil chance
++step(function()
++  for _, n in ipairs(NAMES) do reset(n) end
++  base.devil = devil()
++  say("devil chance without answers: " .. tostring(base.devil) .. " game+9 (deal disabled) = " .. B.r8(B.r32(GAME_PTR) + 9))
++  check(type(base.devil) == "number", "GetDevilRoomChance answers a number")
++  check(count("MC_PRE_DEVIL_APPLY_ITEMS") >= 1 and count("MC_PRE_DEVIL_APPLY_SPECIAL_ITEMS") >= 1 and count("MC_POST_DEVIL_CALCULATE") >= 1,
++        "the three devil callbacks fired for a call")
++  local a, s, p = last("MC_PRE_DEVIL_APPLY_ITEMS"), last("MC_PRE_DEVIL_APPLY_SPECIAL_ITEMS"), last("MC_POST_DEVIL_CALCULATE")
++  check(a and near(a[1], 0.01, 0.0005), "MC_PRE_DEVIL_APPLY_ITEMS gets the starting 0.01 chance: " .. tostring(a and a[1]))
++  check(s and p and near(s[1], p[1], 0.0005) and near(p[1], base.devil, 0.0005),
++        "special items and post calculate get the chance (no Goat Head/Eucharist here); post = the answer: " .. tostring(s and s[1]) .. " " .. tostring(p and p[1]) .. " " .. tostring(base.devil))
++  beh.MC_PRE_DEVIL_APPLY_ITEMS = function(c) return c + 0.1 end
++end)
++step(function()
++  local v = devil()
++  check(near(v, base.devil + 0.1, 0.003), "PRE_DEVIL_APPLY_ITEMS +0.1 raised the chance: " .. tostring(v) .. " vs " .. tostring(base.devil + 0.1))
++  beh.MC_PRE_DEVIL_APPLY_ITEMS = nil
++  beh.MC_PRE_DEVIL_APPLY_SPECIAL_ITEMS = function(c) return c + 0.2 end
++end)
++step(function()
++  local v = devil()
++  check(near(v, base.devil + 0.2, 0.003), "PRE_DEVIL_APPLY_SPECIAL_ITEMS +0.2 raised the chance: " .. tostring(v))
++  beh.MC_PRE_DEVIL_APPLY_SPECIAL_ITEMS = nil
++  beh.MC_POST_DEVIL_CALCULATE = function(c) return 0.5 end
++end)
++step(function()
++  local v = devil()
++  check(near(v, 0.5, 0.002), "POST_DEVIL_CALCULATE 0.5 became the chance: " .. tostring(v))
++  beh.MC_POST_DEVIL_CALCULATE = function(c) return 0 end
++end)
++step(function()
++  local v = devil()
++  check(near(v, 0, 0.0005), "POST_DEVIL_CALCULATE 0 is not raised again: " .. tostring(v))
++  beh.MC_POST_DEVIL_CALCULATE = nil
++end)
++
++-- 2. planetarium chance
++step(function()
++  for _, n in ipairs(NAMES) do reset(n) end
++  base.plan = planet()
++  say("planetarium chance without answers: " .. tostring(base.plan))
++  check(count("MC_PRE_PLANETARIUM_APPLY_ITEMS") >= 1 and count("MC_PRE_PLANETARIUM_APPLY_TELESCOPE_LENS") >= 1 and count("MC_POST_PLANETARIUM_CALCULATE") >= 1,
++        "the three planetarium callbacks fired")
++  local p = last("MC_POST_PLANETARIUM_CALCULATE")
++  check(p and near(p[1], base.plan, 0.0005), "POST_PLANETARIUM_CALCULATE gets the final chance: " .. tostring(p and p[1]) .. " " .. tostring(base.plan))
++  beh.MC_PRE_PLANETARIUM_APPLY_ITEMS = function(c) return c + 0.3 end
++end)
++step(function()
++  local v = planet()
++  check(near(v, base.plan + 0.3, 0.003), "PRE_PLANETARIUM_APPLY_ITEMS +0.3: " .. tostring(v))
++  beh.MC_PRE_PLANETARIUM_APPLY_ITEMS = nil
++  beh.MC_PRE_PLANETARIUM_APPLY_TELESCOPE_LENS = function(c) return c + 0.2 end
++end)
++step(function()
++  local v = planet()
++  check(near(v, base.plan + 0.2, 0.003), "PRE_PLANETARIUM_APPLY_TELESCOPE_LENS +0.2: " .. tostring(v))
++  beh.MC_PRE_PLANETARIUM_APPLY_TELESCOPE_LENS = nil
++  beh.MC_POST_PLANETARIUM_CALCULATE = function(c) return 0.6 end
++end)
++step(function()
++  local v = planet()
++  check(near(v, 0.6, 0.002), "POST_PLANETARIUM_CALCULATE 0.6: " .. tostring(v))
++  beh.MC_POST_PLANETARIUM_CALCULATE = function(c) return 0 end
++end)
++step(function()
++  local v = planet()
++  check(near(v, 0, 0.0005), "POST_PLANETARIUM_CALCULATE 0 is kept (REPENTOGON has no lower clamp): " .. tostring(v))
++  beh.MC_POST_PLANETARIUM_CALCULATE = nil
++  -- the already-visited path (game+0x2655c, planetariums visited), restored after
++  base.visited = B.r32(B.r32(GAME_PTR) + 0x2655c)
++  B.w32(B.r32(GAME_PTR) + 0x2655c, 1)
++  reset("MC_PRE_PLANETARIUM_APPLY_TELESCOPE_LENS")
++  reset("MC_PRE_PLANETARIUM_APPLY_ITEMS")
++  base.plan_visited = planet()
++  check(count("MC_PRE_PLANETARIUM_APPLY_TELESCOPE_LENS") >= 1, "visited path: the lens callback still fires")
++  check(count("MC_PRE_PLANETARIUM_APPLY_ITEMS") == 0, "visited path: the apply-items callback does not (inside the not-visited branch)")
++  beh.MC_PRE_PLANETARIUM_APPLY_TELESCOPE_LENS = function(c) return c + 0.25 end
++end)
++step(function()
++  local v = planet()
++  check(near(v, base.plan_visited + 0.25, 0.003), "visited path: lens answer +0.25 applies: " .. tostring(v) .. " vs " .. tostring(base.plan_visited))
++  beh.MC_PRE_PLANETARIUM_APPLY_TELESCOPE_LENS = nil
++  B.w32(B.r32(GAME_PTR) + 0x2655c, base.visited)
++  pl():AddTrinket(TrinketType.TRINKET_TELESCOPE_LENS)
++end)
++step(function()
++  reset("MC_PRE_PLANETARIUM_APPLY_TELESCOPE_LENS")
++  base.plan_lens = planet()
++  local l = last("MC_PRE_PLANETARIUM_APPLY_TELESCOPE_LENS")
++  say("with Telescope Lens: chance " .. tostring(base.plan_lens) .. ", lens callback arg " .. tostring(l and l[1]))
++  check(l and near(l[1] + 0.09, base.plan_lens, 0.003), "with the Lens: the lens callback sees the chance before its 0.09: " .. tostring(l and l[1]))
++  beh.MC_PRE_PLANETARIUM_APPLY_TELESCOPE_LENS = function(c) return c + 0.2 end
++end)
++step(function()
++  local v = planet()
++  check(near(v, base.plan_lens + 0.2, 0.004), "with the Lens: answer +0.2 applies exactly once: " .. tostring(v) .. " vs " .. tostring(base.plan_lens))
++  beh.MC_PRE_PLANETARIUM_APPLY_TELESCOPE_LENS = nil
++  pl():TryRemoveTrinket(TrinketType.TRINKET_TELESCOPE_LENS)
++end)
++
++-- 3. shop purchase
++step(function()
++  clear_pickups()
++  for _, n in ipairs(NAMES) do reset(n) end
++  local p = pl()
++  p:AddCoins(20)
++  p:AddMaxHearts(2)
++  p:AddHearts(-2)
++  local e = Isaac.Spawn(5, 10, 1, p.Position, Vector(0, 0), nil)
++  e:ToPickup().Price = 3
++  base.coins = p:GetNumCoins()
++  say("spawned a red heart with Price 3 on the player; coins " .. base.coins)
++  wait("shop purchase", 60, function() return count("MC_POST_PICKUP_SHOP_PURCHASE") >= 1 end)
++end)
++step(function()
++  if count("MC_POST_PICKUP_SHOP_PURCHASE") == 0 then
++    local e = pickups(10)[1]
++    say("no natural purchase; calling the game's TriggerShopPurchase directly, pickup " .. tostring(e ~= nil))
++    if e then B.call(0x006e84d0, B.ptr(e), B.ptr(pl()), 3) end
++  end
++end)
++step(function()
++  local r = last("MC_POST_PICKUP_SHOP_PURCHASE")
++  check(r ~= nil, "MC_POST_PICKUP_SHOP_PURCHASE fired")
++  if r then
++    check(r.text:find("^pickup:10/1,player,%-?%d+$") ~= nil, "args (pickup, player, moneySpent): " .. r.text)
++    check(count("MC_POST_PICKUP_SHOP_PURCHASE") == 1, "fired once: " .. count("MC_POST_PICKUP_SHOP_PURCHASE"))
++  end
++  say("coins before " .. tostring(base.coins) .. " after " .. tostring(pl():GetNumCoins()))
++end)
++
++-- 4. Black Rune (voided, isBlackRune = true): answer false keeps the pedestal, no answer consumes it
++step(function()
++  clear_pickups()
++  for _, n in ipairs(NAMES) do reset(n) end
++  local p = pl()
++  Isaac.Spawn(5, 100, CollectibleType.COLLECTIBLE_SAD_ONION, Vector(p.Position.X + 60, p.Position.Y), Vector(0, 0), nil)
++  beh.MC_PRE_PICKUP_VOIDED = function(pk, black) return false end
++  p:UseCard(Card.RUNE_BLACK, UseFlag.USE_NOANIM | UseFlag.USE_NOANNOUNCER)
++  wait("black rune callback", 90, function() return count("MC_PRE_PICKUP_VOIDED") >= 1 end)
++end)
++step(function()
++  local r = last("MC_PRE_PICKUP_VOIDED")
++  check(r ~= nil, "MC_PRE_PICKUP_VOIDED fired for the Black Rune")
++  if r then check(r.text == "pickup:100/" .. CollectibleType.COLLECTIBLE_SAD_ONION .. ",true", "args (pedestal, true): " .. r.text) end
++  local left = #pickups(100)
++  check(left == 1, "answer false: the pedestal was not consumed (pedestals left " .. left .. ")")
++  beh.MC_PRE_PICKUP_VOIDED = nil
++  reset("MC_PRE_PICKUP_VOIDED")
++  pl():UseCard(Card.RUNE_BLACK, UseFlag.USE_NOANIM | UseFlag.USE_NOANNOUNCER)
++  wait("pedestal gone", 150, function() return #pickups(100) == 0 end)
++end)
++step(function()
++  check(#pickups(100) == 0, "no answer: the Black Rune consumed the pedestal (callback count " .. count("MC_PRE_PICKUP_VOIDED") .. ")")
++end)
++
++-- 5. Void
++step(function()
++  clear_pickups()
++  for _, n in ipairs(NAMES) do reset(n) end
++  local p = pl()
++  Isaac.Spawn(5, 100, CollectibleType.COLLECTIBLE_SAD_ONION, Vector(p.Position.X + 60, p.Position.Y), Vector(0, 0), nil)
++  p:AddCollectible(CollectibleType.COLLECTIBLE_VOID, 12, false)
++  beh.MC_PRE_PICKUP_VOIDED = function(pk, black) return false end
++  p:UseActiveItem(CollectibleType.COLLECTIBLE_VOID, USE, ActiveSlot.SLOT_PRIMARY)
++  wait("void callback", 90, function() return count("MC_PRE_PICKUP_VOIDED") >= 1 end)
++end)
++step(function()
++  local r = last("MC_PRE_PICKUP_VOIDED")
++  check(r ~= nil, "MC_PRE_PICKUP_VOIDED fired for Void")
++  if r then check(r.text == "pickup:100/" .. CollectibleType.COLLECTIBLE_SAD_ONION .. ",false", "args (pedestal, false): " .. r.text) end
++  check(#pickups(100) == 1, "answer false: the pedestal was not consumed (left " .. #pickups(100) .. ")")
++  beh.MC_PRE_PICKUP_VOIDED = nil
++  reset("MC_PRE_PICKUP_VOIDED")
++  local p = pl()
++  p:SetActiveCharge(12, ActiveSlot.SLOT_PRIMARY)
++  p:UseActiveItem(CollectibleType.COLLECTIBLE_VOID, USE, ActiveSlot.SLOT_PRIMARY)
++  wait("void consumes", 120, function() return #pickups(100) == 0 end)
++end)
++step(function()
++  check(#pickups(100) == 0, "no answer: Void consumed the pedestal (callback count " .. count("MC_PRE_PICKUP_VOIDED") .. ")")
++end)
++
++-- 6. Compost
++step(function()
++  clear_pickups()
++  for _, n in ipairs(NAMES) do reset(n) end
++  local p = pl()
++  Isaac.Spawn(5, 20, 1, Vector(p.Position.X + 50, p.Position.Y), Vector(0, 0), nil)
++  p:AddCollectible(CollectibleType.COLLECTIBLE_COMPOST, 12, false)
++  beh.MC_PRE_PICKUP_COMPOSTED = function(pk) return false end
++  p:UseActiveItem(CollectibleType.COLLECTIBLE_COMPOST, USE, ActiveSlot.SLOT_PRIMARY)
++  wait("compost callback", 90, function() return count("MC_PRE_PICKUP_COMPOSTED") >= 1 end)
++end)
++step(function()
++  local r = last("MC_PRE_PICKUP_COMPOSTED")
++  check(r ~= nil, "MC_PRE_PICKUP_COMPOSTED fired")
++  if r then check(r.text == "pickup:20/1", "args (coin): " .. r.text) end
++  check(#pickups(20) == 1, "answer false: the coin was not consumed (left " .. #pickups(20) .. ")")
++  beh.MC_PRE_PICKUP_COMPOSTED = nil
++  local p = pl()
++  p:SetActiveCharge(12, ActiveSlot.SLOT_PRIMARY)
++  p:UseActiveItem(CollectibleType.COLLECTIBLE_COMPOST, USE, ActiveSlot.SLOT_PRIMARY)
++  wait("compost consumes", 120, function() return #pickups(20) == 0 end)
++end)
++step(function()
++  check(#pickups(20) == 0, "no answer: Compost consumed the coin")
++end)
++
++-- 7. Guppy's Eye ghosts
++local function ghost_of(variant)
++  local e = pickups(variant)[1]
++  if not e then return nil end
++  return B.r32(B.ptr(e) + 0x590)
++end
++-- no Guppy's Eye: the game gives no ghost; the callback's true makes one
++step(function()
++  clear_pickups()
++  for _, n in ipairs(NAMES) do reset(n) end
++  local p = pl()
++  Isaac.Spawn(5, 50, 0, Vector(p.Position.X + 80, p.Position.Y), Vector(0, 0), nil)
++  wait("quiet frames", 30, function() return false end)
++end)
++step(function()
++  base.g0 = ghost_of(50)
++  say("no Guppy's Eye, no answer: chest ghost " .. tostring(base.g0) .. ", callback calls " .. count("MC_PRE_PICKUP_UPDATE_GHOST_PICKUPS"))
++  check(count("MC_PRE_PICKUP_UPDATE_GHOST_PICKUPS") >= 1, "MC_PRE_PICKUP_UPDATE_GHOST_PICKUPS fires")
++  local r = last("MC_PRE_PICKUP_UPDATE_GHOST_PICKUPS")
++  if r then check(r.text:find("^pickup:50/%d+$") ~= nil, "args (chest): " .. r.text) end
++  check(base.g0 == 0, "the game alone gives the chest no ghost")
++  beh.MC_PRE_PICKUP_UPDATE_GHOST_PICKUPS = function(pk) return true end
++  wait("ghost for the chest", 60, function() local g = ghost_of(50) return g and g ~= 0 end)
++end)
++step(function()
++  local g = ghost_of(50)
++  check(g ~= nil and g ~= 0, "answer true: the chest has a ghost without Guppy's Eye (" .. tostring(g) .. ")")
++  beh.MC_PRE_PICKUP_UPDATE_GHOST_PICKUPS = function(pk) return false end
++  pl():AddCollectible(CollectibleType.COLLECTIBLE_GUPPYS_EYE, 0, false)
++  wait("ghost removed", 60, function() return ghost_of(50) == 0 end)
++end)
++step(function()
++  check(ghost_of(50) == 0, "answer false: the ghost is removed even with Guppy's Eye (" .. tostring(ghost_of(50)) .. ")")
++  beh.MC_PRE_PICKUP_UPDATE_GHOST_PICKUPS = nil
++end)
++
++local frame, idx = 0, 0
++mod:AddCallback(M.MC_POST_UPDATE, function()
++  frame = frame + 1
++  if frame < 5 then return end
++  if waiting then
++    if wait_cond() then
++      waiting = false
++    else
++      wait_left = wait_left - 1
++      if wait_left <= 0 then
++        check(false, "timed out waiting for " .. wait_what)
++        waiting = false
++      else
++        return
++      end
++    end
++  end
++  if frame % 3 ~= 0 then return end
++  idx = idx + 1
++  local f = steps[idx]
++  if not f then
++    if idx == #steps + 1 then B.log(string.format("lab_cb_b: DONE %d PASS %d FAIL", pass, fail)) end
++    return
++  end
++  local ok, err = pcall(f)
++  if not ok then check(false, "step " .. idx .. " raised: " .. tostring(err)) end
++end)
 diff --git a/scripts/recomp/rgon/lab_census.lua b/scripts/recomp/rgon/lab_census.lua
 new file mode 100644
 index 0000000..ad8570a
@@ -10970,6 +12507,327 @@ index 0000000..3bc4214
 +  local txt = ok and s and (s:GetFilename() .. " anim=" .. s:GetAnimation() .. " frame=" .. s:GetFrame() .. " playing=" .. tostring(s:IsPlaying(s:GetAnimation()))) or ("none " .. tostring(s))
 +  if txt ~= last then last = txt B.log("lab_night: f" .. Isaac.GetFrameCount() .. " " .. txt) end
 +end)
+diff --git a/scripts/recomp/rgon/lab_pickup_more.lua b/scripts/recomp/rgon/lab_pickup_more.lua
+new file mode 100644
+index 0000000..7698a35
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_pickup_more.lua
+@@ -0,0 +1,258 @@
++-- lab_pickup_more.lua (development only; LAB=lab_pickup_more.lua, chunk 4): every name of api_pickup_more.lua is called
++-- once in the start room and read back. Lines: "lab_pickup_more: PASS|FAIL <name> <detail>", and a last "DONE pass=N fail=M".
++local T = ...
++local B = T.B
++local r32, ri32, rf32, call = B.r32, B.ri32, B.rf32, B.call
++local mod = RegisterMod("rgon lab pickup more", 1)
++local pass, fail = 0, 0
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log("lab_pickup_more: " .. (ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function note(s) B.log("lab_pickup_more: note " .. s) end
++local started, frame = false, 0
++mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() started = true end)
++
++local function spawn(variant, sub, dx)
++  local pos = Game():GetRoom():GetCenterPos() + Vector(dx or 0, 0)
++  return Isaac.Spawn(5, variant, sub, pos, Vector(0, 0), nil):ToPickup()
++end
++local function try(name, f)
++  local ok, err = pcall(f)
++  if not ok then check(name, false, "error: " .. tostring(err)) end
++end
++
++local function run()
++  local I = REPENTOGON.Implemented
++  for _, n in ipairs({ "EntityPickup.AddCollectibleCycle", "EntityPickup.RemoveCollectibleCycle", "EntityPickup.GetLootList",
++    "EntityPickup.GetPickupGhost", "EntityPickup.GetPriceSprite", "EntityPickup.GetRandomPickupVelocity", "EntityPickup.HasFlipData",
++    "EntityPickup.MakeShopItem", "EntityPickup.SetDropDelay", "EntityPickup.SetNewOptionsPickupIndex", "EntityPickup.SetVarData",
++    "EntityPickup.SetupCollectibleGraphics", "EntityPickup.TriggerTheresOptionsPickup", "EntityPickup.TryInitOptionCycle",
++    "EntityPickup.TryRemoveCollectible", "EntityPickup.UpdatePickupGhosts", "Room.GetShopItemPrice", "LootList", "LootList.LootList",
++    "LootList.GetEntries", "LootList.PushEntry", "LootListEntry.GetSubType", "LootListEntry.GetType", "LootListEntry.GetVariant",
++    "LootListEntry.GetSeed", "LootListEntry.GetRNG", "ItemPool.AddCollectible", "ItemPool.HasCollectible", "ItemPool.HasTrinket",
++    "ItemPool.PickCollectible" }) do
++    check("Implemented " .. n, I[n] == true)
++  end
++
++  local ped = spawn(100, CollectibleType.COLLECTIBLE_SAD_ONION, -80)
++  try("VarData", function()
++    ped:SetVarData(1234)
++    check("Get/SetVarData", ped:GetVarData() == 1234, ped:GetVarData())
++  end)
++  try("DropDelay", function()
++    ped:SetDropDelay(7)
++    check("Get/SetDropDelay", ped:GetDropDelay() == 7, ped:GetDropDelay())
++    ped:SetDropDelay(0)
++  end)
++  try("cycle", function()
++    local c = spawn(100, CollectibleType.COLLECTIBLE_BRIMSTONE, 80)
++    check("RemoveCollectibleCycle empty", c:RemoveCollectibleCycle() == nil and #c:GetCollectibleCycle() == 0)
++    check("AddCollectibleCycle ok", c:AddCollectibleCycle(CollectibleType.COLLECTIBLE_SAD_ONION) == true)
++    check("AddCollectibleCycle invalid id", c:AddCollectibleCycle(99999) == false)
++    check("AddCollectibleCycle read back", #c:GetCollectibleCycle() == 1 and c:GetCollectibleCycle()[1] == 1, #c:GetCollectibleCycle())
++    for _ = 1, 10 do c:AddCollectibleCycle(2) end
++    check("AddCollectibleCycle caps at 8", #c:GetCollectibleCycle() == 8, #c:GetCollectibleCycle())
++    c:RemoveCollectibleCycle()
++    check("RemoveCollectibleCycle clears", #c:GetCollectibleCycle() == 0)
++    local ok = c:TryInitOptionCycle(3)
++    check("TryInitOptionCycle", type(ok) == "boolean", tostring(ok) .. " cycle " .. #c:GetCollectibleCycle())
++    c:Remove()
++  end)
++  try("flip", function()
++    local f = spawn(100, CollectibleType.COLLECTIBLE_BRIMSTONE, 0)
++    check("HasFlipData false", f:HasFlipData() == false)
++    f:InitFlipState(CollectibleType.COLLECTIBLE_SAD_ONION)
++    check("HasFlipData true after InitFlipState", f:HasFlipData() == true)
++    check("HasFlipData false for a chest", spawn(50, 0, 40):HasFlipData() == false)
++  end)
++  try("ghost", function()
++    local g = ped:GetPickupGhost()
++    check("GetPickupGhost nil or Entity", g == nil or g.Type ~= nil, tostring(g))
++    ped:UpdatePickupGhosts()
++    check("UpdatePickupGhosts", true)
++  end)
++  try("options", function()
++    local a, b = spawn(100, 2, -40), spawn(100, 3, 40)
++    local i = a:SetNewOptionsPickupIndex()
++    check("SetNewOptionsPickupIndex", math.type(i) == "integer" and a.OptionsPickupIndex == i, tostring(i) .. " vs " .. a.OptionsPickupIndex)
++    b.OptionsPickupIndex = i
++    a:TriggerTheresOptionsPickup()
++    check("TriggerTheresOptionsPickup", true)
++  end)
++  try("shop", function()
++    local s = spawn(100, CollectibleType.COLLECTIBLE_SAD_ONION, 120)
++    local before = s.Price
++    s:MakeShopItem(0)
++    check("MakeShopItem sets a price", s.Price ~= 0 or s.ShopItemId ~= before, "price " .. s.Price .. " shopitem " .. s.ShopItemId)
++    local sp = s:GetPriceSprite()
++    check("GetPriceSprite", sp ~= nil and sp.GetFilename ~= nil, tostring(sp and sp:GetFilename()))
++    local p = Game():GetRoom():GetShopItemPrice(100, 1, 0)
++    check("Room.GetShopItemPrice integer", math.type(p) == "integer" and p == 15, p)
++  end)
++  try("remove", function()
++    local rmv = spawn(100, CollectibleType.COLLECTIBLE_SAD_ONION, -120)
++    local ok = rmv:TryRemoveCollectible()
++    check("TryRemoveCollectible bool", type(ok) == "boolean", tostring(ok) .. " subtype now " .. rmv.SubType)
++    local x = spawn(100, 1, 100)
++    x:ReloadGraphics() x:ReloadGraphics(true)
++    check("ReloadGraphics", true)
++    check("CanJeraDuplicate bool", type(x:CanJeraDuplicate()) == "boolean")
++  end)
++  try("velocity", function()
++    local v0 = EntityPickup.GetRandomPickupVelocity(Vector(300, 200))
++    local v1 = EntityPickup.GetRandomPickupVelocity(Vector(300, 200), RNG(), 1)
++    check("GetRandomPickupVelocity", v0:Length() > 0 and v1:Length() > 0, tostring(v0) .. " " .. tostring(v1))
++  end)
++  try("graphics", function()
++    local g = spawn(100, CollectibleType.COLLECTIBLE_SAD_ONION, 160)
++    local spr = g:GetSprite()
++    EntityPickup.SetupCollectibleGraphics(spr, 1, CollectibleType.COLLECTIBLE_BRIMSTONE, false, 5, true)
++    local path = spr:GetLayer(1):GetSpritesheetPath()
++    check("SetupCollectibleGraphics sets the spritesheet", path:find("118", 1, true) ~= nil, path)
++    check("SetupCollectibleGraphics bad layer", not pcall(EntityPickup.SetupCollectibleGraphics, spr, 99, 1, false))
++  end)
++  try("lootlist", function()
++    local chest = spawn(50, 0, -160)
++    local ll = chest:GetLootList()
++    local es = ll:GetEntries()
++    check("GetLootList entries", #es >= 1, #es)
++    local e = es[1]
++    check("LootListEntry getters", math.type(e:GetType()) == "integer" and e:GetType() == 5 and math.type(e:GetVariant()) == "integer"
++      and math.type(e:GetSubType()) == "integer" and math.type(e:GetSeed()) == "integer", e:GetType() .. "." .. e:GetVariant() .. "." .. e:GetSubType())
++    check("GetRNG nil or RNG", e:GetRNG() == nil or e:GetRNG().GetSeed ~= nil)
++    local n = LootList()
++    check("LootList()", n ~= nil and #n:GetEntries() == 0)
++    local r = RNG() r:SetSeed(77, 35)
++    n:PushEntry(5, 20, 1, 4321, r)
++    n:PushEntry(5, 30, 1)
++    local ne = n:GetEntries()
++    check("PushEntry / GetEntries", #ne == 2 and ne[1]:GetVariant() == 20 and ne[1]:GetSeed() == 4321 and ne[1]:GetRNG():GetSeed() == 77
++      and ne[2]:GetSubType() == 1 and ne[2]:GetSeed() ~= 0 and ne[2]:GetRNG() == nil)
++    local ll2 = chest:GetLootList(false, Isaac.GetPlayer(0))
++    check("GetLootList with a player", #ll2:GetEntries() >= 1)
++  end)
++
++  -- ItemPool
++  local pool = Game():GetItemPool()
++  local p = T.this(pool, "lab")
++  check("HasCollectible", pool:HasCollectible(1) == true and pool:HasCollectible(-1) == false and pool:HasCollectible(99999) == false)
++  pool:RemoveCollectible(1)
++  check("HasCollectible after RemoveCollectible", pool:HasCollectible(1) == false)
++  pool:ResetCollectible(1)
++  check("HasCollectible after ResetCollectible", pool:HasCollectible(1) == true)
++  check("HasTrinket", pool:HasTrinket(1) == true and pool:HasTrinket(0) == false and pool:HasTrinket(99999) == false)
++  local tv = r32(p + 0x794)
++  local function tdump(id) return string.format("%08x %08x", r32(tv + 8 * id), r32(tv + 8 * id + 4)) end
++  local t_before = tdump(1)
++  local function snapshot()
++    local s = {}
++    for id = 0, 189 do s[id] = r32(tv + 8 * id + 4) end
++    for i = 0, 20 do s["w" .. i] = r32(p + 0x780 + 4 * i) end
++    return s
++  end
++  local function diff(s)
++    local changed = {}
++    for k, v in pairs(s) do
++      local now = type(k) == "number" and r32(tv + 8 * k + 4) or r32(p + 0x780 + 4 * tonumber(k:sub(2)))
++      if now ~= v then changed[#changed + 1] = string.format("%s:%08x->%08x", tostring(k), v, now) end
++    end
++    return table.concat(changed, " ")
++  end
++  local s1 = snapshot()
++  local okrt = pcall(pool.RemoveTrinket, pool, 2)
++  note("RemoveTrinket(2) ok=" .. tostring(okrt) .. " changed: " .. diff(s1) .. " | HasTrinket(2)=" .. tostring(pool:HasTrinket(2)))
++  check("HasTrinket after RemoveTrinket (an available trinket)", okrt and pool:HasTrinket(2) == false)
++  pool:ResetTrinkets()
++  local s2 = snapshot()
++  local drawn = pool:GetTrinket(false, 31337)
++  note("GetTrinket(false) drew " .. tostring(drawn) .. "; changed: " .. diff(s2) .. " | HasTrinket(drawn)=" .. tostring(pool:HasTrinket(drawn)))
++  check("HasTrinket after the game draws a trinket", pool:HasTrinket(drawn) == false, drawn)
++  local nin, nav = 0, 0
++  for id = 1, 189 do if B.r8(tv + 8 * id + 4) ~= 0 then nin = nin + 1 end if B.r8(tv + 8 * id + 5) ~= 0 then nav = nav + 1 end end
++  note("trinket entries with byte4 set " .. nin .. ", byte5 set " .. nav)
++  pool:ResetTrinkets()
++  check("HasTrinket after ResetTrinkets", pool:HasTrinket(1) == true)
++
++  local rng = RNG() rng:SetSeed(1234, 35)
++  local pick = pool:PickCollectible(0, false, rng)
++  check("PickCollectible", type(pick) == "table" and math.type(pick.itemID) == "integer" and Isaac.GetItemConfig():GetCollectible(pick.itemID) ~= nil
++    and type(pick.weight) == "number" and type(pick.isUnlocked) == "boolean", pick and pick.itemID)
++  check("PickCollectible defaults", type(pool:PickCollectible(0)) == "table")
++  check("PickCollectible bad pool", not pcall(pool.PickCollectible, pool, 99))
++
++  local function data(idx) return call(0x732c70, p, idx) end
++  local function has(d, id) for e = r32(d + 4), r32(d + 8) - 1, 0x18 do if ri32(e) == id then return true end end return false end
++  local d = data(0)
++  local n0, w0 = (r32(d + 8) - r32(d + 4)) // 0x18, rf32(d)
++  local sum_all, sum_unl = 0, 0
++  for e = r32(d + 4), r32(d + 8) - 1, 0x18 do
++    sum_all = sum_all + rf32(e + 8)
++    if B.r8(e + 20) ~= 0 then sum_unl = sum_unl + rf32(e + 8) end
++  end
++  note(string.format("pool 0: total %.3f, sum all %.3f, sum unlocked %.3f", w0, sum_all, sum_unl))
++  local pick_id
++  for id = 1, 732 do
++    local c = Isaac.GetItemConfig():GetCollectible(id)
++    if c and c:IsAvailable() and not has(d, id) then pick_id = id break end
++  end
++  check("found an available item outside pool 0", pick_id ~= nil, pick_id)
++  if pick_id then
++    pool:AddCollectible(0, { itemID = pick_id, weight = 1.0e7, decreaseBy = 0.5, removeOn = 0.1 })
++    d = data(0)
++    local n1, w1 = (r32(d + 8) - r32(d + 4)) // 0x18, rf32(d)
++    check("AddCollectible grows the pool", n1 == n0 + 1 and has(d, pick_id), n0 .. " -> " .. n1)
++    check("AddCollectible adds its weight", w1 > w0 + 9.0e6, w0 .. " -> " .. w1)
++    pool:AddCollectible(0, { itemID = pick_id })
++    check("AddCollectible does not double an item", (r32(data(0) + 8) - r32(data(0) + 4)) // 0x18 == n1)
++    local got = pool:GetCollectible(0, false, 99)
++    check("the game draws the added item", got == pick_id, "got " .. got .. " want " .. pick_id)
++    local pk = pool:PickCollectible(0, false, rng)
++    check("PickCollectible sees the added item", pk and pk.itemID == pick_id, pk and pk.itemID)
++  end
++  for _, s in ipairs({ "The Inner Eye", "Inner Eye", "Sad Onion", "THE_INNER_EYE", "#THE_INNER_EYE_NAME" }) do
++    note("GetItemIdByName('" .. s .. "') = " .. tostring(Isaac.GetItemIdByName(s)))
++  end
++  local nm = "The Inner Eye"
++  local okn, errn = pcall(pool.AddCollectible, pool, 1, { name = nm, weight = 2 })
++  note("by name: '" .. tostring(nm) .. "' -> id " .. tostring(Isaac.GetItemIdByName(nm)) .. " ok " .. tostring(okn) .. " " .. tostring(errn))
++  check("AddCollectible by name", okn and has(data(1), 2) , nm)
++  check("AddCollectible array", pcall(pool.AddCollectible, pool, 2, { { itemID = 2 }, { itemID = 3, weight = 3 } }))
++  check("AddCollectible bad pool", not pcall(pool.AddCollectible, pool, 99, { itemID = 2 }))
++  check("AddCollectible bad table", not pcall(pool.AddCollectible, pool, 0, 5))
++
++  -- the vanilla names the backlog lists as unverified
++  local bl = 0x68c
++  local okb = pcall(pool.AddRoomBlacklist, pool, 5)
++  local first = r32(p + bl)
++  check("AddRoomBlacklist sets the blacklist bit", okb and (r32(first + 0) >> 5) & 1 == 1, okb)
++  local t = pool:GetTrinket(false, 5)
++  check("GetTrinket", math.type(t) == "integer" and t > 0, t)
++  -- ItemPool:GetCollectible's Flags argument: the game's binding ignores it (deferred, not Implemented); measured here
++  local function mix(fl)
++    local act, pas, bad = 0, 0, 0
++    for s = 1, 40 do
++      local ok, id = pcall(pool.GetCollectible, pool, 3, false, s * 977, 0, fl)
++      local c = ok and Isaac.GetItemConfig():GetCollectible(id)
++      if not c then bad = bad + 1 elseif c.Type == 3 then act = act + 1 else pas = pas + 1 end
++    end
++    return act, pas, bad
++  end
++  local a0, p0, b0 = mix(nil)
++  local a1, p1, b1 = mix(1)
++  local a4, p4, b4 = mix(4)
++  note(string.format("GetCollectible(pool 3) actives/passives/errors: no flags %d/%d/%d, BAN_ACTIVES %d/%d/%d, BAN_PASSIVES %d/%d/%d", a0, p0, b0, a1, p1, b1, a4, p4, b4))
++  check("ItemPool.GetCollectible stays out of Implemented while its Flags argument does nothing",
++    REPENTOGON.Implemented["ItemPool.GetCollectible"] ~= true or (a1 == 0 and p4 == 0))
++
++  B.log(string.format("lab_pickup_more: DONE pass=%d fail=%d", pass, fail))
++end
++
++mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++  if not started then return end
++  frame = frame + 1
++  if frame == 20 then
++    local ok, err = pcall(run)
++    if not ok then check("lab body", false, err) B.log(string.format("lab_pickup_more: DONE pass=%d fail=%d", pass, fail)) end
++  end
++end)
+diff --git a/scripts/recomp/rgon/lab_pickup_probe.lua b/scripts/recomp/rgon/lab_pickup_probe.lua
+new file mode 100644
+index 0000000..b53f6ce
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_pickup_probe.lua
+@@ -0,0 +1,51 @@
++-- lab_pickup_probe.lua (development only; LAB=lab_pickup_probe.lua): why a wrapper rawset over ItemPool's own GetCollectible is not
++-- what `pool.GetCollectible` answers. Logs "lab_pickup_probe: ..." lines. Not a test.
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab pickup probe", 1)
++local function say(s) B.log("lab_pickup_probe: " .. s) end
++local started, frame = false, 0
++mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() started = true end)
++
++local function probe()
++  local pool = Game():GetItemPool()
++  local c, const = T.class_tables("ItemPool")
++  local mt = getmetatable(pool)
++  local orig = rawget(c, "GetCollectible")
++  say("orig in c: " .. tostring(orig) .. " pool.GetCollectible: " .. tostring(pool.GetCollectible) .. " equal " .. tostring(orig == pool.GetCollectible))
++  local calls = 0
++  local wrapper = B.cfn(function(self, ...)
++    calls = calls + 1
++    return orig(self, ...)
++  end)
++  rawset(c, "GetCollectible", wrapper)
++  say("after rawset: pool.GetCollectible == wrapper " .. tostring(pool.GetCollectible == wrapper))
++  pool:GetCollectible(3, false, 5, 0)
++  say("pool:GetCollectible reached the wrapper " .. calls .. " time(s)")
++  local fresh = B.obj(mt, B.ptr(pool), T.vt_ptr())
++  say("fresh userdata: fresh.GetCollectible == wrapper " .. tostring(fresh.GetCollectible == wrapper))
++  fresh:GetCollectible(3, false, 5, 0)
++  say("fresh:GetCollectible reached the wrapper, total " .. calls)
++  local g = Game()
++  local pool2 = g:GetItemPool()
++  say("Game():GetItemPool() again == pool: " .. tostring(pool2 == pool) .. " pool2.GetCollectible == wrapper " .. tostring(pool2.GetCollectible == wrapper))
++  if debug and debug.getuservalue then
++    local uv = debug.getuservalue(pool)
++    say("uservalue(pool) = " .. tostring(uv))
++    if type(uv) == "table" then for k, v in pairs(uv) do say("  uv." .. tostring(k) .. " = " .. tostring(v)) end end
++  else
++    say("no debug.getuservalue")
++  end
++  -- the same for a name a mod may call first: HasCollectible of the player
++  rawset(c, "GetCollectible", orig)
++end
++
++mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++  if not started then return end
++  frame = frame + 1
++  if frame == 20 then
++    local ok, err = pcall(probe)
++    if not ok then say("probe failed: " .. tostring(err)) end
++    say("DONE")
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_pickup_test.lua b/scripts/recomp/rgon/lab_pickup_test.lua
 new file mode 100644
 index 0000000..8deb83a
@@ -11682,6 +13540,488 @@ index 0000000..288a55a
 +    end
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_player_health.lua b/scripts/recomp/rgon/lab_player_health.lua
+new file mode 100644
+index 0000000..214cfb7
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_player_health.lua
+@@ -0,0 +1,280 @@
++-- lab_player_health.lua (development only; ISAAC_RGON_LAB=lab_player_health.lua, worker player-health)
++-- Calls every name api_player_health.lua adds: getters by read-back (and through the game's own reading of the
++-- field where there is one), setters by their measured effect on the game (EvaluateItems, the game counting a
++-- counter down, a heart pickup). Prints "lab_ph: PASS/FAIL <what>" and, at the end, "lab_ph: DONE n PASS m FAIL".
++local T = ...
++local B = T.B
++local R = T.R or REPENTOGON
++local mod = RegisterMod("rgon lab player health", 1)
++local pass, fail = 0, 0
++local function say(s) B.log("lab_ph: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_ph: %s %s", ok and "PASS" or "FAIL", what))
++end
++local function fails(f, ...)
++  local ok = pcall(f, ...)
++  return not ok
++end
++
++local P_NAMES = {
++  "GetImmaculateConceptionState", "SetImmaculateConceptionState", "GetCambionConceptionState", "SetCambionConceptionState",
++  "GetConceptionFamiliarFlags", "SetConceptionFamiliarFlags", "GetKeepersSackBonus", "SetKeepersSackBonus",
++  "GetMaggyHealthDrainCooldown", "SetMaggyHealthDrainCooldown", "GetRedStewBonusDuration", "SetRedStewBonusDuration",
++  "UpdateIsaacPregnancy", "GetCandyHeartBonus", "AddCandyHeartBonus", "GetSoulLocketBonus", "AddSoulLocketBonus",
++}
++local H_NAMES = {
++  "GetFlashRedHearts", "SetFlashRedHearts", "GetFlashSoulHearts", "SetFlashSoulHearts", "GetFlashGoldHearts",
++  "SetFlashGoldHearts", "GetLayout", "GetHearts", "GetHeartByIndex",
++}
++local HEART_NAMES = {
++  "IsVisible", "IsEternalHeartOverlayVisible", "IsGoldenHeartOverlayVisible", "IsFadingHeart", "GetFlashType",
++  "GetHeartAnim", "GetHeartOverlayAnim",
++}
++
++local C = CollectibleType
++local STATS = { "Damage", "MaxFireDelay", "TearRange", "ShotSpeed", "MoveSpeed", "Luck" }
++local function snapshot(p)
++  local t = {}
++  for _, k in ipairs(STATS) do t[k] = p[k] end
++  return t
++end
++local function reeval(p)
++  p:AddCacheFlags(CacheFlag.CACHE_ALL)
++  p:EvaluateItems()
++end
++local function moved(a, b)
++  local out = {}
++  for _, k in ipairs(STATS) do if math.abs(a[k] - b[k]) > 1e-4 then out[#out + 1] = k end end
++  return out
++end
++local function sum(t) local s = 0 for _, v in pairs(t) do s = s + v end return s end
++
++local f = 0
++local steps = {}
++local function at(n, fn) steps[#steps + 1] = { n, fn } end
++local hud
++local ctx = {}
++
++at(10, function(p)
++  for _, n in ipairs(P_NAMES) do
++    check(type(p[n]) == "function" and R.Implemented["EntityPlayer." .. n] == true, "EntityPlayer:" .. n .. " exists and is Implemented")
++  end
++  hud = Game():GetHUD():GetPlayerHUD(0)
++  for _, n in ipairs(H_NAMES) do
++    check(type(hud[n]) == "function" and R.Implemented["PlayerHUD." .. n] == true, "PlayerHUD:" .. n .. " exists and is Implemented")
++  end
++  local hearts = hud:GetHearts()
++  for _, n in ipairs(HEART_NAMES) do
++    check(type(hearts[1][n]) == "function" and R.Implemented["PlayerHUDHeart." .. n] == true, "PlayerHUDHeart:" .. n .. " exists and is Implemented")
++  end
++end)
++
++-- Candy Heart and Soul Locket: the tables, the cache flags and the random pick
++at(12, function(p)
++  p:AddCollectible(C.COLLECTIBLE_CANDY_HEART or 671, 0, false)
++  p:AddCollectible(C.COLLECTIBLE_SOUL_LOCKET or 686, 0, false)
++  reeval(p)
++  ctx.base = snapshot(p)
++  for _, label in ipairs({ "CandyHeart", "SoulLocket" }) do
++    local get, add = "Get" .. label .. "Bonus", "Add" .. label .. "Bonus"
++    local t = p[get](p)
++    local keys = 0
++    for _, k in ipairs({ "Damage", "FireDelay", "TearRange", "ShotSpeed", "MoveSpeed", "Luck" }) do
++      if type(t[k]) == "number" then keys = keys + 1 end
++    end
++    check(keys == 6 and sum(t) == 0, label .. " table has the six stats, all 0 on a fresh player")
++    local before = snapshot(p)
++    p[add](p, CacheFlag.CACHE_DAMAGE, 5)
++    t = p[get](p)
++    check(t.Damage == 5 and sum(t) == 5, label .. " AddBonus(CACHE_DAMAGE, 5) -> Damage 5 only")
++    local after = snapshot(p)
++    check(after.Damage > before.Damage and #moved(before, after) == 1, label .. " the game's own stats moved: Damage up (" .. before.Damage .. " -> " .. after.Damage .. ")")
++    p[add](p, CacheFlag.CACHE_LUCK | CacheFlag.CACHE_RANGE, 2)
++    t = p[get](p)
++    check(t.Luck == 2 and t.TearRange == 2 and sum(t) == 9, label .. " AddBonus with two flags raises both")
++    p[add](p, CacheFlag.CACHE_DAMAGE, -100)
++    check(p[get](p).Damage == 0, label .. " AddBonus clamps at 0")
++    p[add](p, CacheFlag.CACHE_FIREDELAY, 70000)
++    check(p[get](p).FireDelay == 0xffff, label .. " AddBonus clamps at 0xffff")
++    p[add](p, CacheFlag.CACHE_FIREDELAY, -70000)
++    p[add](p, CacheFlag.CACHE_LUCK, -2)
++    p[add](p, CacheFlag.CACHE_RANGE, -2)
++    check(sum(p[get](p)) == 0, label .. " back to 0")
++    p[add](p)
++    check(sum(p[get](p)) == 1, label .. " AddBonus() with no flags adds 1 to one random stat")
++    p[add](p, 0, 0)
++    check(sum(p[get](p)) == 1, label .. " AddBonus(0, 0) changes nothing")
++    for _, k in ipairs({ "Damage", "FireDelay", "TearRange", "ShotSpeed", "MoveSpeed", "Luck" }) do
++      local fl = ({ Damage = CacheFlag.CACHE_DAMAGE, FireDelay = CacheFlag.CACHE_FIREDELAY, TearRange = CacheFlag.CACHE_RANGE, ShotSpeed = CacheFlag.CACHE_SHOTSPEED, MoveSpeed = CacheFlag.CACHE_SPEED, Luck = CacheFlag.CACHE_LUCK })[k]
++      local v = p[get](p)[k]
++      if v > 0 then p[add](p, fl, -v) end
++    end
++    check(sum(p[get](p)) == 0, label .. " reset")
++  end
++  -- each stat's flag drives its own stat (the measured order)
++  local flags = { Damage = "Damage", FireDelay = "MaxFireDelay", TearRange = "TearRange", ShotSpeed = "ShotSpeed", MoveSpeed = "MoveSpeed", Luck = "Luck" }
++  local cf = { Damage = CacheFlag.CACHE_DAMAGE, FireDelay = CacheFlag.CACHE_FIREDELAY, TearRange = CacheFlag.CACHE_RANGE, ShotSpeed = CacheFlag.CACHE_SHOTSPEED, MoveSpeed = CacheFlag.CACHE_SPEED, Luck = CacheFlag.CACHE_LUCK }
++  for name, stat in pairs(flags) do
++    local b = snapshot(p)
++    p:AddSoulLocketBonus(cf[name], 5)
++    local a = snapshot(p)
++    local m = moved(b, a)
++    check(#m == 1 and m[1] == stat, "SoulLocket " .. name .. " moves " .. stat .. " only (moved: " .. table.concat(m, ",") .. ")")
++    p:AddSoulLocketBonus(cf[name], -5)
++  end
++end)
++
++-- Keeper's Sack and Red Stew: the setter's value reaches the game's stat evaluation
++at(16, function(p)
++  p:AddCollectible(716, 0, false)
++  p:AddCollectible(621, 0, false)
++  reeval(p)
++  local b = snapshot(p)
++  check(p:GetKeepersSackBonus() == 0, "GetKeepersSackBonus is 0 on a fresh player")
++  p:SetKeepersSackBonus(30)
++  check(p:GetKeepersSackBonus() == 30, "SetKeepersSackBonus(30) reads back")
++  reeval(p)
++  local a = snapshot(p)
++  check(a.Damage > b.Damage + 1, "Keeper's Sack bonus 30 raises Damage in the game's evaluation (" .. b.Damage .. " -> " .. a.Damage .. ")")
++  p:SetKeepersSackBonus(0)
++  reeval(p)
++  check(#moved(b, snapshot(p)) == 0, "Keeper's Sack bonus back to 0 restores the stats")
++  check(p:GetRedStewBonusDuration() == 0, "GetRedStewBonusDuration is 0 on a fresh player")
++  p:SetRedStewBonusDuration(600)
++  check(p:GetRedStewBonusDuration() == 600, "SetRedStewBonusDuration(600) reads back")
++  reeval(p)
++  a = snapshot(p)
++  check(a.Damage > b.Damage + 1, "Red Stew duration 600 raises Damage in the game's evaluation (" .. b.Damage .. " -> " .. a.Damage .. ")")
++  p:SetRedStewBonusDuration(0)
++  reeval(p)
++  check(#moved(b, snapshot(p)) == 0, "Red Stew duration back to 0 restores the stats")
++  check(fails(p.SetKeeper or p.SetKeepersSackBonus, p, "x"), "SetKeepersSackBonus('x') is an error")
++end)
++
++-- conception: counters, flags, the game's own birth
++at(20, function(p)
++  p:AddCollectible(413, 0, false)
++  p:AddCollectible(412, 0, false)
++  check(p:GetImmaculateConceptionState() == 0 and p:GetCambionConceptionState() == 0 and p:GetConceptionFamiliarFlags() == 0, "conception counters and flags start at 0")
++  p:SetImmaculateConceptionState(5)
++  check(p:GetImmaculateConceptionState() == 5, "SetImmaculateConceptionState(5) reads back")
++  p:SetImmaculateConceptionState(99)
++  check(p:GetImmaculateConceptionState() == 14, "SetImmaculateConceptionState(99) clamps to 14")
++  p:SetImmaculateConceptionState(-3)
++  check(p:GetImmaculateConceptionState() == 0, "SetImmaculateConceptionState(-3) clamps to 0")
++  p:SetCambionConceptionState(7)
++  check(p:GetCambionConceptionState() == 7, "SetCambionConceptionState(7) reads back")
++  check(p:GetCambionPregnancyLevel() == 1, "the game's own GetCambionPregnancyLevel sees state 7 as level 1 (" .. p:GetCambionPregnancyLevel() .. ")")
++  p:SetCambionConceptionState(0)
++  check(p:GetCambionPregnancyLevel() == 0, "the game's own GetCambionPregnancyLevel sees state 0 as level 0")
++  p:SetConceptionFamiliarFlags(0x40)
++  check(p:GetConceptionFamiliarFlags() == 0x40, "SetConceptionFamiliarFlags(0x40) reads back")
++  p:SetConceptionFamiliarFlags(0)
++  check(pcall(p.UpdateIsaacPregnancy, p, false) and pcall(p.UpdateIsaacPregnancy, p, true), "UpdateIsaacPregnancy(false/true) runs")
++  check(fails(p.UpdateIsaacPregnancy, p, 1), "UpdateIsaacPregnancy(1) is an error (boolean expected)")
++  -- the game's own count: a heart picked up while Immaculate Conception is held
++  p:AddHearts(-2)
++  Isaac.Spawn(5, 10, 1, p.Position, Vector(0, 0), nil)
++  ctx.immaculate_from = p:GetImmaculateConceptionState()
++end)
++at(80, function(p)
++  check(p:GetImmaculateConceptionState() == ctx.immaculate_from + 1, "a heart pickup moves the state by 1 (" .. ctx.immaculate_from .. " -> " .. p:GetImmaculateConceptionState() .. ")")
++  p:SetImmaculateConceptionState(14)
++  p:AddHearts(-2)
++  Isaac.Spawn(5, 10, 1, p.Position, Vector(0, 0), nil)
++  ctx.familiars = #Isaac.FindByType(3)
++end)
++at(140, function(p)
++  check(p:GetImmaculateConceptionState() == 0, "the birth resets the state to 0 (" .. p:GetImmaculateConceptionState() .. ")")
++  check(p:GetConceptionFamiliarFlags() ~= 0, "the birth set a ConceptionFamiliarFlag (" .. p:GetConceptionFamiliarFlags() .. ")")
++  check(#Isaac.FindByType(3) > ctx.familiars, "a familiar was born")
++  p:SetImmaculateConceptionState(0)
++  p:SetConceptionFamiliarFlags(0)
++end)
++
++-- Maggy's drain cooldown: the game counts it down by one each frame as Tainted Magdalene
++at(150, function(p)
++  p:ChangePlayerType(22)
++  ctx.maggy0 = p:GetMaggyHealthDrainCooldown()
++end)
++at(152, function(p)
++  local v = p:GetMaggyHealthDrainCooldown()
++  check(v > 0 and v <= 300, "GetMaggyHealthDrainCooldown is a running counter as Tainted Magdalene (" .. ctx.maggy0 .. " then " .. v .. ")")
++  p:SetMaggyHealthDrainCooldown(100)
++  check(p:GetMaggyHealthDrainCooldown() == 100, "SetMaggyHealthDrainCooldown(100) reads back")
++end)
++at(153, function(p)
++  local v = p:GetMaggyHealthDrainCooldown()
++  check(v >= 96 and v < 100, "the game counted the set value down (100 -> " .. v .. ")")
++  p:SetMaggyHealthDrainCooldown(300)
++end)
++
++-- PlayerHUD
++at(170, function(p)
++  p:ChangePlayerType(0)
++  p:AddHearts(12)
++  p:AddSoulHearts(2)
++  p:AddEternalHearts(1)
++  p:AddGoldenHearts(1)
++  hud = Game():GetHUD():GetPlayerHUD(0)
++  check(hud:GetLayout() == PlayerHUDLayout.NORMAL, "PlayerHUD:GetLayout() is NORMAL for a lone player (" .. tostring(hud:GetLayout()) .. ")")
++  for _, kind in ipairs({ "Red", "Soul", "Gold" }) do
++    local get, set = "GetFlash" .. kind .. "Hearts", "SetFlash" .. kind .. "Hearts"
++    hud[set](hud, 0)
++    check(hud[get](hud) == 0, "PlayerHUD:" .. set .. "(0) reads back 0")
++    hud[set](hud)
++    check(hud[get](hud) == 4, "PlayerHUD:" .. set .. "() defaults to 4")
++    hud[set](hud, 40)
++    check(hud[get](hud) == 40, "PlayerHUD:" .. set .. "(40) reads back 40")
++    hud[set](hud, 500)
++    check(hud[get](hud) == 127, "PlayerHUD:" .. set .. "(500) clamps to 127")
++    hud[set](hud, -5)
++    check(hud[get](hud) == 0, "PlayerHUD:" .. set .. "(-5) clamps to 0")
++    hud[set](hud, 40)
++  end
++  check(fails(hud.GetHeartByIndex, hud, 24) and fails(hud.GetHeartByIndex, hud, -1), "GetHeartByIndex(24) and (-1) are errors")
++end)
++at(176, function(p)
++  for _, kind in ipairs({ "Red", "Soul", "Gold" }) do
++    local v = hud["GetFlash" .. kind .. "Hearts"](hud)
++    check(v < 40 and v >= 30, "the game counts the " .. kind .. " flash down (40 -> " .. v .. ")")
++  end
++  local hearts = hud:GetHearts()
++  check(#hearts == 24, "GetHearts returns 24 hearts")
++  local red, soul, eternal, golden, vis = 0, 0, 0, 0, 0
++  for i, h in ipairs(hearts) do
++    local anim = h:GetHeartAnim()
++    local same = hud:GetHeartByIndex(i - 1)
++    if same:GetHeartAnim() ~= anim or same:IsVisible() ~= h:IsVisible() then check(false, "GetHeartByIndex(" .. (i - 1) .. ") equals GetHearts()[" .. i .. "]") end
++    if h:IsVisible() then
++      vis = vis + 1
++      if type(anim) == "string" and anim:find("RedHeart") then red = red + 1 end
++      if type(anim) == "string" and anim:find("BlueHeart") then soul = soul + 1 end
++      if h:IsEternalHeartOverlayVisible() then eternal = eternal + 1 end
++      if h:IsGoldenHeartOverlayVisible() then golden = golden + 1 end
++      check(type(h:GetFlashType()) == "number" and type(h:IsFadingHeart()) == "boolean", "heart " .. (i - 1) .. " flash type is a number and IsFadingHeart a boolean")
++    end
++  end
++  say(string.format("hearts visible %d, red %d, blue %d, eternal overlays %d, golden overlays %d", vis, red, soul, eternal, golden))
++  check(red >= 3 and soul >= 1, "the HUD hearts show the red and the soul hearts the player has (animation names)")
++  check(eternal == 1, "one heart has the eternal overlay")
++  check(golden == 1, "one heart has the golden overlay")
++  check(type(hearts[1]:GetHeartOverlayAnim()) == "string" or hearts[1]:GetHeartOverlayAnim() == nil, "GetHeartOverlayAnim is a string or nil")
++end)
++at(180, function(p)
++  check(pass + fail > 0, "ran")
++  B.log(string.format("lab_ph: DONE %d PASS %d FAIL", pass, fail))
++end)
++
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  f = f + 1
++  local p = Isaac.GetPlayer(0)
++  for _, s in ipairs(steps) do
++    if s[1] == f then
++      local ok, err = pcall(s[2], p)
++      if not ok then check(false, "step at " .. f .. " raised: " .. tostring(err)) end
++    end
++  end
++end)
++say("listening")
+diff --git a/scripts/recomp/rgon/lab_player_health_probe.lua b/scripts/recomp/rgon/lab_player_health_probe.lua
+new file mode 100644
+index 0000000..c7dcb5a
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_player_health_probe.lua
+@@ -0,0 +1,190 @@
++-- lab_player_health_probe.lua (development only; ISAAC_RGON_LAB=lab_player_health_probe.lua, worker player-health)
++-- Measures where Entity_Player keeps the health-related fields REPENTOGON names (Candy Heart and Soul Locket stat
++-- ups, Keeper's Sack bonus, Red Stew duration, Maggy's drain cooldown, Immaculate/Cambion Conception counters and
++-- familiar flags) and where PlayerHUD keeps its hearts and flash counters in v1.9.7.17, by watching the structure
++-- while the game does the thing: snapshot, act, snapshot, log what changed ("lab_phprobe: ...").
++local T = ...
++local B = T.B
++local r32, ri32, rf32, w32, r8 = B.r32, B.ri32, B.rf32, B.w32, B.r8
++local mod = RegisterMod("rgon lab phprobe", 1)
++local LO, HI = 0x1000, 0x2100
++local function say(s) B.log("lab_phprobe: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function snap(a)
++  local t = {}
++  for o = LO, HI - 4, 4 do t[o] = r32(a + o) end
++  return t
++end
++local function sgn(v) return v >= 0x80000000 and v - 2 ^ 32 or v end
++local function diff(name, a, before, lo, hi)
++  local n = 0
++  for o = lo or LO, (hi or HI) - 4, 4 do
++    local now = r32(a + o)
++    if now ~= before[o] then
++      n = n + 1
++      if n <= 40 then say(string.format("%s +%04x %08x -> %08x (%d -> %d)", name, o, before[o], now, sgn(before[o]), sgn(now))) end
++    end
++  end
++  say(string.format("%s: %d word(s) changed", name, n))
++end
++local function stats(p)
++  return string.format("Dmg %.3f MaxFireDelay %.3f Range %.2f ShotSpeed %.3f Speed %.3f Luck %.3f", p.Damage, p.MaxFireDelay, p.TearRange, p.ShotSpeed, p.MoveSpeed, p.Luck)
++end
++local function hearts(hud)
++  local s = B.ptr(hud)
++  local out = {}
++  for i = 0, 23 do
++    local h = s + 0x10 + 0x10 * i
++    local anim = r32(h + 8)
++    local str = anim ~= 0 and B.str(anim) or "-"
++    if r8(h) ~= 0 then out[#out + 1] = string.format("%d:%s(f%d e%d g%d fade%d)", i, str, r8(h + 4), r8(h + 1), r8(h + 2), r8(h + 3)) end
++  end
++  return table.concat(out, " ")
++end
++
++local f, S, A = 0, nil, nil
++local C = CollectibleType
++local function spawn_heart(p, sub)
++  Isaac.Spawn(5, 10, sub, p.Position, Vector(0, 0), nil)
++end
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  f = f + 1
++  local p = Isaac.GetPlayer(0)
++  local a = B.ptr(p)
++  if f == 20 then
++    say(string.format("player at %08x type %d", a, p:GetPlayerType()))
++    local hud = Game():GetHUD():GetPlayerHUD(0)
++    local s = B.ptr(hud)
++    say(string.format("hud slot %08x: player %08x index %d flash bytes %d %d %d", s, r32(s), B.r16(s + 8), r8(s + 0xc), r8(s + 0xd), r8(s + 0xe)))
++    say("hearts: " .. hearts(hud))
++    S = snap(a)
++  elseif f == 25 then
++    -- Candy Heart (0x29f) and Soul Locket (0x2ae): write 5 into each of the six words with the item held, re-evaluate
++    p:AddCollectible(C.COLLECTIBLE_CANDY_HEART or 671, 0, false)
++    p:AddCollectible(C.COLLECTIBLE_SOUL_LOCKET or 686, 0, false)
++    p:AddCacheFlags(CacheFlag.CACHE_ALL)
++    p:EvaluateItems()
++    say("both items held: " .. stats(p))
++    local base = { p.Damage, p.MaxFireDelay, p.TearRange, p.ShotSpeed, p.MoveSpeed, p.Luck }
++    for _, row in ipairs({ { "candy", 0x1db0 }, { "locket", 0x1dbc } }) do
++      for i = 0, 5 do
++        local at = a + row[2] + 2 * i
++        local old = B.r16(at)
++        B.w16(at, 5)
++        p:AddCacheFlags(CacheFlag.CACHE_ALL)
++        p:EvaluateItems()
++        local now = { p.Damage, p.MaxFireDelay, p.TearRange, p.ShotSpeed, p.MoveSpeed, p.Luck }
++        local names = { "Damage", "FireDelay", "TearRange", "ShotSpeed", "MoveSpeed", "Luck" }
++        local moved = {}
++        for k = 1, 6 do if math.abs(now[k] - base[k]) > 1e-4 then moved[#moved + 1] = string.format("%s %+.3f", names[k], now[k] - base[k]) end end
++        say(string.format("%s word %d (+%04x) = 5 -> %s", row[1], i, row[2] + 2 * i, table.concat(moved, ", ")))
++        B.w16(at, old)
++        p:AddCacheFlags(CacheFlag.CACHE_ALL)
++        p:EvaluateItems()
++      end
++    end
++  elseif f == 30 then
++    -- Keeper's Sack (0x2cc) at 0x1fbc
++    p:AddCollectible(716, 0, false)
++    p:AddCacheFlags(CacheFlag.CACHE_ALL)
++    p:EvaluateItems()
++    local l0 = p.Luck
++    say(string.format("keeper's sack held (has %s): word 0x1fbc = %d; %s", tostring(p:HasCollectible(716)), ri32(a + 0x1fbc), stats(p)))
++    for _, v in ipairs({ 3, 6, 30 }) do
++      w32(a + 0x1fbc, v)
++      p:AddCacheFlags(CacheFlag.CACHE_ALL)
++      p:EvaluateItems()
++      say(string.format("keeper's sack word = %d: %s", v, stats(p)))
++    end
++    w32(a + 0x1fbc, 0)
++    p:AddCacheFlags(CacheFlag.CACHE_ALL)
++    p:EvaluateItems()
++  elseif f == 35 then
++    p:AddCollectible(621, 0, false)
++    p:AddCacheFlags(CacheFlag.CACHE_ALL)
++    p:EvaluateItems()
++    local base = stats(p)
++    say("red stew scan base: " .. base)
++    for o = 0x1e60, 0x1e90, 4 do
++      local old = r32(a + o)
++      w32(a + o, 600)
++      p:AddCacheFlags(CacheFlag.CACHE_ALL)
++      p:EvaluateItems()
++      local now = stats(p)
++      if now ~= base then say(string.format("red stew scan +%04x = 600 -> %s", o, now)) end
++      w32(a + o, old)
++    end
++    p:AddCacheFlags(CacheFlag.CACHE_ALL)
++    p:EvaluateItems()
++  elseif f == 40 then
++    -- the real mechanic: pick up a soul heart and a red heart, see which words the game moves
++    p:AddHearts(-4)
++    p:AddCoins(20)
++    S = snap(a)
++    for i = 1, 8 do Isaac.Spawn(5, 20, 1, p.Position, Vector(0, 0), nil) end
++    say("before pickups: red " .. p:GetHearts() .. " soul " .. p:GetSoulHearts() .. " " .. stats(p))
++    spawn_heart(p, 3)
++  elseif f == 70 then
++    diff("soul heart pickup", a, S, 0x1700, 0x2100)
++    say("after soul heart: " .. stats(p))
++    S = snap(a)
++    spawn_heart(p, 1)
++  elseif f == 100 then
++    diff("red heart pickup", a, S, 0x1700, 0x2100)
++    say("after red heart: " .. stats(p))
++    -- Conception: Immaculate (413) and Cambion (412)
++    p:AddCollectible(413, 0, false)
++    p:AddCollectible(412, 0, false)
++    S = snap(a)
++    say(string.format("conception items held: 0x1930 %d, 0x1934 %d, 0x1938 %08x", ri32(a + 0x1930), ri32(a + 0x1934), r32(a + 0x1938)))
++    p:AddHearts(-2)
++    spawn_heart(p, 1)
++  elseif f == 130 then
++    diff("conception heart pickup", a, S, 0x1900, 0x1960)
++    S = snap(a)
++    w32(a + 0x1930, 14)
++    w32(a + 0x1934, 14)
++    p:AddHearts(-2)
++    spawn_heart(p, 1)
++    say("set both counters to 14 and picked up another heart")
++  elseif f == 160 then
++    diff("conception birth", a, S, 0x1900, 0x1960)
++    say(string.format("conception now: 0x1930 %d, 0x1934 %d, 0x1938 %08x; familiars %d", ri32(a + 0x1930), ri32(a + 0x1934), r32(a + 0x1938), #Isaac.FindByType(3)))
++  elseif f == 170 then
++    -- Red Stew (621): use it, see the duration word
++    p:AddCollectible(621, 6, false)
++    S = snap(a)
++    say("red stew held: " .. tostring(p:HasCollectible(621)) .. " active " .. p:GetActiveItem(0) .. " hp " .. p:GetHearts() .. "/" .. p:GetMaxHearts() .. " " .. stats(p))
++    p:UseActiveItem(621, UseFlag.USE_OWNED, ActiveSlot.SLOT_PRIMARY)
++    say("used Red Stew; hp " .. p:GetHearts() .. "/" .. p:GetMaxHearts() .. " " .. stats(p))
++  elseif f == 172 or f == 200 then
++    say("hp " .. p:GetHearts() .. "/" .. p:GetMaxHearts() .. " " .. stats(p))
++    diff("red stew +" .. (f - 170), a, S, 0x1000, 0x2100)
++    if f == 172 then S = snap(a) end
++  elseif f == 210 then
++    -- Maggy's drain: become Tainted Magdalene, watch a few frames
++    p:ChangePlayerType(22)
++    say("changed to type " .. p:GetPlayerType())
++    S = snap(a)
++  elseif f == 211 or f == 212 or f == 230 or f == 300 then
++    diff("tainted maggy +" .. (f - 210), a, S, 0x1700, 0x2100)
++    S = snap(a)
++  elseif f == 310 then
++    say("hearts: " .. hearts(Game():GetHUD():GetPlayerHUD(0)))
++    local hud = Game():GetHUD():GetPlayerHUD(0)
++    local s = B.ptr(hud)
++    say(string.format("flash bytes %d %d %d", r8(s + 0xc), r8(s + 0xd), r8(s + 0xe)))
++    B.w8(s + 0xc, 40)
++    B.w8(s + 0xd, 50)
++    B.w8(s + 0xe, 60)
++    say(string.format("wrote 40 50 60; layout %d", Game():GetHUD().GetPlayerHUDLayout and 0 or -1))
++  elseif f == 312 or f == 320 then
++    local s = B.ptr(Game():GetHUD():GetPlayerHUD(0))
++    say(string.format("flash bytes %d %d %d", r8(s + 0xc), r8(s + 0xd), r8(s + 0xe)))
++  elseif f == 330 then
++    local hud = B.ptr(Game():GetHUD())
++    local r = B.call(0x009a6570, hud, 0, B.ptr(p))
++    say("HUD::GetPlayerHUDLayout(0, player) = " .. tostring(r))
++    say("DONE probe")
++  end
++end)
++say("listening")
 diff --git a/scripts/recomp/rgon/lab_pocket_test.lua b/scripts/recomp/rgon/lab_pocket_test.lua
 new file mode 100644
 index 0000000..5d7aefc
@@ -13386,6 +15726,353 @@ index 0000000..5862b40
 +  s:SetLastFrame(); dump("SetLastFrame", s)
 +  s:Play("Idle", true); s:Update(); dump("Play again", s)
 +end)
+diff --git a/scripts/recomp/rgon/lab_tears_more.lua b/scripts/recomp/rgon/lab_tears_more.lua
+new file mode 100644
+index 0000000..cf8ec96
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_tears_more.lua
+@@ -0,0 +1,218 @@
++-- lab_tears_more.lua (development only; ISAAC_RGON_LAB=lab_tears_more.lua): every name of api_tears_more.lua.
++-- Logs "lab_tears_more: PASS/FAIL .." lines and a DONE line.
++local T = ...
++local B = T.B
++local r32, ri32, rf32, r8 = B.r32, B.ri32, B.rf32, B.r8
++local mod = RegisterMod("rgon lab tears more", 1)
++local npass, nfail = 0, 0
++local function check(name, ok, detail)
++  if ok then npass = npass + 1 else nfail = nfail + 1 end
++  B.log("lab_tears_more: " .. (ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function try(name, f)
++  local ok, err = pcall(f)
++  if not ok then check(name, false, err) end
++end
++local function near(a, b) return math.abs(a - b) < 0.001 end
++local frame = 0
++local hp_seen = {}
++local hooked
++
++mod:AddCallback(ModCallbacks.MC_EVALUATE_TEAR_HIT_PARAMS, function(_, player, params)
++  if params and not hooked then
++    hooked = true
++    try("TearParams in the callback", function()
++      params.KnockbackMultiplier = 4.5
++      params.MassMultiplier = 3.0
++      params.SpeedMultiplier = 2.0
++      hp_seen.set = true
++    end)
++  end
++end)
++
++local splitcb = 0
++mod:AddCallback(ModCallbacks.MC_POST_FIRE_SPLIT_TEAR, function() splitcb = splitcb + 1 end)
++
++local L, tear, knife, proj
++
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frame = frame + 1
++  local p = Isaac.GetPlayer(0)
++  if frame == 3 then
++    for _, n in ipairs({ "EntityTear.SetMultidimensionalTouched", "EntityTear.InHitList", "EntityTear.AddToHitList", "EntityTear.RemoveFromHitList",
++      "EntityTear.SetBackdropType", "EntityTear.GetBackdropType", "EntityTear.ResetSpriteScale", "EntityTear.SetInitSound", "EntityTear.FireSplitTear",
++      "EntityLaser.GetShrink", "EntityLaser.SetShrink", "EntityLaser.GetOneHit", "EntityLaser.GetDisableFollowParent", "EntityLaser.SetDisableFollowParent",
++      "EntityLaser.GetTimeout", "EntityLaser.SetTimeout", "EntityLaser.SetScale", "EntityLaser.ResetSpriteScale", "EntityLaser.RotateToAngle",
++      "EntityLaser.RecalculateSamplesNextUpdate", "EntityLaser.InHitList", "EntityLaser.AddToHitList", "EntityLaser.RemoveFromHitList",
++      "EntityLaser.SetMultidimensionalTouched", "EntityLaser.FireSplitTear", "EntityKnife.FireSplitTear", "EntityKnife.InitHomingPath",
++      "EntityProjectile.Deflect", "EntityEffect.GetTearFlags", "EntityEffect.SetTearFlags",
++      "EntityEffect.AddTearFlags", "EntityEffect.ClearTearFlags", "EntityEffect.HasTearFlags", "EntityEffect.CreateLight",
++      "TearParams.MassMultiplier", "TearParams.KnockbackMultiplier", "TearParams.SpeedMultiplier", "TearParams.TearDisplacement" }) do
++      check("Implemented " .. n, REPENTOGON.Implemented[n] == true)
++    end
++    -- TearParams: read-back of a game-made one and the game's own reaction (the callback sets them; the fired tear shows them)
++    try("TearParams defaults", function()
++      local tp = p:GetTearHitParams(WeaponType.WEAPON_TEARS, 1, 1, nil)
++      check("TearParams.MassMultiplier readable", type(tp.MassMultiplier) == "number" and tp.MassMultiplier > 0, tp.MassMultiplier)
++      check("TearParams.TearDisplacement is 1 or -1", tp.TearDisplacement == 1 or tp.TearDisplacement == -1, tp.TearDisplacement)
++      tp.MassMultiplier = 2.5 tp.KnockbackMultiplier = 3.5 tp.SpeedMultiplier = 0.5 tp.TearDisplacement = -1
++      check("TearParams round trip", near(tp.MassMultiplier, 2.5) and near(tp.KnockbackMultiplier, 3.5) and near(tp.SpeedMultiplier, 0.5) and tp.TearDisplacement == -1)
++      check("TearParams.MassMultiplier rejects 0", not pcall(function() tp.MassMultiplier = 0 end))
++      check("TearParams.TearDisplacement rejects 2", not pcall(function() tp.TearDisplacement = 2 end))
++    end)
++    -- a laser
++    L = Isaac.Spawn(7, 1, 0, p.Position + Vector(100, 0), Vector(0, 0), p):ToLaser()
++    try("laser fields", function()
++      check("laser Timeout = property", L:GetTimeout() == L.Timeout, L:GetTimeout())
++      L:SetTimeout(7) check("SetTimeout/GetTimeout", L:GetTimeout() == 7 and L.Timeout == 7)
++      L:SetShrink(true) check("SetShrink = property", L:GetShrink() == true and L.Shrink == true)
++      L:SetShrink(false) check("SetShrink back", L.Shrink == false)
++      L:SetDisableFollowParent(true) check("SetDisableFollowParent = property", L:GetDisableFollowParent() == true and L.DisableFollowParent == true)
++      L:SetDisableFollowParent(false)
++      check("GetOneHit = property", L:GetOneHit() == L.OneHit)
++      L:SetScale(2.0) check("SetScale/GetScale", near(L:GetScale(), 2.0), L:GetScale())
++      L:ResetSpriteScale() check("ResetSpriteScale runs", true)
++      L:SetScale(1.0)
++      L:SetMultidimensionalTouched(true) check("laser SetMultidimensionalTouched", L:IsMultidimensionalTouched() == true)
++      L:SetMultidimensionalTouched(false)
++      L:RotateToAngle(90, 4)
++      check("RotateToAngle: active rotation", L.IsActiveRotating == true, L.IsActiveRotating)
++      local e = Isaac.Spawn(10, 0, 0, p.Position + Vector(-100, 0), Vector(0, 0), nil)
++      check("laser InHitList false", L:InHitList(e) == false)
++      L:AddToHitList(e) check("laser AddToHitList", L:InHitList(e) == true)
++      local h = L:GetHitList() check("laser GetHitList holds it", #h == 1 and h[1] == e:GetHitListIndex())
++      L:AddToHitList(e) check("laser AddToHitList twice keeps one", #L:GetHitList() == 1)
++      L:RemoveFromHitList(e) check("laser RemoveFromHitList", L:InHitList(e) == false and #L:GetHitList() == 0)
++      e:Remove()
++    end)
++    try("SetInitSound laser", function()
++      L:SetInitSound(0) check("laser SetInitSound(null) sets the game's byte", r8(B.ptr(L) + 0x518) == 1)
++      L:SetInitSound(SoundEffect.SOUND_BEEP) check("laser SetInitSound(other) accepted", true)
++    end)
++    -- a tear
++    tear = Isaac.Spawn(2, 0, 0, p.Position + Vector(0, 100), Vector(0, 0), p):ToTear()
++    try("tear fields", function()
++      check("fresh tear is waiting for its init", r8(B.ptr(tear) + 0x46a) == 1, r8(B.ptr(tear) + 0x46a))
++      tear:SetInitSound(SoundEffect.SOUND_NULL)
++      check("tear SetInitSound(null) sets the game's byte", r8(B.ptr(tear) + 0x7ea) == 1)
++      tear:SetMultidimensionalTouched(true) check("tear SetMultidimensionalTouched", tear:IsMultidimensionalTouched() == true)
++      tear:SetMultidimensionalTouched(false) check("tear SetMultidimensionalTouched false", tear:IsMultidimensionalTouched() == false)
++      local e = Isaac.Spawn(10, 0, 0, p.Position + Vector(-100, 50), Vector(0, 0), nil)
++      check("tear InHitList false", tear:InHitList(e) == false)
++      tear:AddToHitList(e) check("tear AddToHitList", tear:InHitList(e) == true and #tear:GetHitList() == 1)
++      for i = 1, 6 do local x = Isaac.Spawn(10, 0, 0, p.Position, Vector(0, 0), nil) tear:AddToHitList(x) x:Remove() end
++      check("tear hit list grows", #tear:GetHitList() == 7, #tear:GetHitList())
++      tear:RemoveFromHitList(e) check("tear RemoveFromHitList", tear:InHitList(e) == false and #tear:GetHitList() == 6)
++      tear:ClearHitList() e:Remove()
++      check("backdrop of a non-grid tear is 0", tear:GetBackdropType() == 0)
++      tear:SetBackdropType(5) check("backdrop of a non-grid tear is unchanged", tear:GetBackdropType() == 0)
++      -- forced reset: the scale animation number is forgotten and then recomputed by the game
++      tear:Update()
++      local a = B.ptr(tear)
++      local before = ri32(a + 0x45c)
++      B.w32(a + 0x45c, 12345)
++      tear:ResetSpriteScale()
++      check("ResetSpriteScale without force: the game rewrites a stale number", ri32(a + 0x45c) == before, ri32(a + 0x45c))
++      B.w32(a + 0x45c, before)
++      tear:ResetSpriteScale(true)
++      check("ResetSpriteScale(true) leaves the right number", ri32(a + 0x45c) == before, ri32(a + 0x45c))
++      check("ResetSpriteScale rejects a number", not pcall(function() tear:ResetSpriteScale(3) end))
++    end)
++    -- the split tear from a tear and a laser
++    try("FireSplitTear from a tear", function()
++      tear.CollisionDamage = 10 tear.Scale = 1.0
++      local n = tear:FireSplitTear(p.Position, Vector(4, 0), 0.5, 0.6, 0)
++      check("FireSplitTear returns a tear", n ~= nil and n.Type == 2)
++      check("FireSplitTear damage is half", n and near(n.CollisionDamage, 5.0), n and n.CollisionDamage)
++      check("FireSplitTear scale 0.6", n and near(n.Scale, 0.6), n and n.Scale)
++      check("FireSplitTear velocity", n and n.Velocity.X > 1, n and tostring(n.Velocity))
++      check("FireSplitTear parent is the player", n and n.Parent ~= nil and n.Parent.Type == 1)
++      check("MC_POST_FIRE_SPLIT_TEAR fired", splitcb == 1, splitcb)
++      local n2 = L:FireSplitTear(p.Position, Vector(0, 4))
++      check("FireSplitTear from a laser", n2 ~= nil and n2.Type == 2)
++    end)
++  end
++  if frame == 8 then
++    -- laser samples: emptied now, rebuilt by the game's next update
++    try("RecalculateSamplesNextUpdate", function()
++      local a = B.ptr(L)
++      local n0 = #L:GetSamples()
++      L:RecalculateSamplesNextUpdate()
++      local emptied = r32(a + 0x484) == r32(a + 0x480)
++      check("samples emptied at once", emptied, string.format("(%d samples before)", n0))
++      B.log("lab_tears_more: laser had " .. n0 .. " samples")
++    end)
++  elseif frame == 11 then
++    try("samples rebuilt", function()
++      check("laser has samples again after updates", #L:GetSamples() > 0 or not L:IsSampleLaser(), #L:GetSamples())
++    end)
++    -- knife
++    knife = Isaac.Spawn(8, 0, 0, p.Position + Vector(0, -80), Vector(0, 0), p):ToKnife()
++    try("knife", function()
++      local before = ri32(B.ptr(knife) + 0x480)
++      knife:InitHomingPath(Vector(1, 0))
++      check("InitHomingPath ran (timers set)", ri32(B.ptr(knife) + 0x480) == 30 and ri32(B.ptr(knife) + 0x47c) == 0x43160000, ri32(B.ptr(knife) + 0x480))
++      knife:InitHomingPath(Vector(0, 1), p)
++      check("InitHomingPath with a source", true)
++      check("a plain knife has no hitbox parent", knife:GetHitboxParentKnife() == nil)
++      local n = knife:FireSplitTear(p.Position, Vector(3, 3))
++      check("FireSplitTear from a knife", n ~= nil and n.Type == 2)
++    end)
++    -- projectile
++    proj = Isaac.Spawn(9, 0, 0, p.Position + Vector(150, 0), Vector(-6, 0), nil):ToProjectile()
++    try("projectile", function()
++      local before = proj.Velocity.X
++      proj:Deflect(Vector(7, 0))
++      check("Deflect changes the velocity", near(proj.Velocity.X, 7), tostring(proj.Velocity) .. " (was " .. before .. ")")
++      check("Deflect rejects a number", not pcall(function() proj:Deflect(3) end))
++    end)
++    -- effects
++    try("CreateLight", function()
++      local fx = EntityEffect.CreateLight(p.Position + Vector(0, 60), 2.0, 40, 5, Color(1, 0, 0, 1, 0, 0, 0))
++      check("CreateLight returns a light effect", fx ~= nil and fx.Type == 1000 and fx.Variant == 121)
++      check("CreateLight state", fx and fx.State == 5, fx and fx.State)
++      check("CreateLight lifespan", fx and fx.LifeSpan == 40 and fx.Timeout == 40, fx and (fx.LifeSpan .. "/" .. fx.Timeout))
++      check("CreateLight scale", fx and near(fx.SpriteScale.X, 2.0 * (fx.SpriteScale.X / 2.0)) and fx.SpriteScale.X > 1.5, fx and tostring(fx.SpriteScale))
++      local d = EntityEffect.CreateLight(p.Position)
++      check("CreateLight defaults (state 6, lifespan -1)", d and d.State == 6 and d.LifeSpan == -1, d and (d.State .. "/" .. d.LifeSpan))
++    end)
++    try("effect tear flags", function()
++      p.TearFlags = TearFlags.TEAR_HOMING | TearFlags.TEAR_BURN
++      local ef = Isaac.Spawn(1000, 113, 0, p.Position, Vector(0, 0), p):ToEffect()
++      ef:SetTearFlags(p.TearFlags)
++      check("effect layout: State and Timeout properties at 0x450/0x45c", ef.State == ri32(B.ptr(ef) + 0x450) and ef.Timeout == ri32(B.ptr(ef) + 0x45c), ef.State .. "/" .. ef.Timeout)
++      check("brimstone ball exists", ef ~= nil and ef.Variant == 113, ef and ef.Variant)
++      if ef then
++        local f = ef:GetTearFlags()
++        check("GetTearFlags is a BitSet128 holding the player's flags", f ~= nil and ef:HasTearFlags(TearFlags.TEAR_HOMING), f and tostring(f))
++        ef:ClearTearFlags(TearFlags.TEAR_HOMING)
++        check("ClearTearFlags", not ef:HasTearFlags(TearFlags.TEAR_HOMING) and ef:HasTearFlags(TearFlags.TEAR_BURN))
++        ef:AddTearFlags(TearFlags.TEAR_SPECTRAL)
++        check("AddTearFlags", ef:HasTearFlags(TearFlags.TEAR_SPECTRAL))
++        ef:SetTearFlags(TearFlags.TEAR_PIERCING)
++        check("SetTearFlags", ef:HasTearFlags(TearFlags.TEAR_PIERCING) and not ef:HasTearFlags(TearFlags.TEAR_BURN))
++        check("Aquarius alias", ef:HasAquariusTearFlags(TearFlags.TEAR_PIERCING) and ef:GetAquariusTearFlags() ~= nil)
++      end
++      local other = Isaac.Spawn(1000, 1, 0, p.Position, Vector(0, 0), nil):ToEffect()
++      check("other effect variants answer nil / false", other:GetTearFlags() == nil and other:HasTearFlags(TearFlags.TEAR_HOMING) == false)
++      other:SetTearFlags(TearFlags.TEAR_HOMING)
++      check("SetTearFlags on another variant does nothing", other:GetTearFlags() == nil)
++      p.TearFlags = TearFlags.TEAR_NORMAL
++    end)
++    -- the game's own reaction to TearParams: a tear fired with the callback's values
++    try("fired tear shows the params", function()
++      hooked, hp_seen.set = false, nil
++      local t2 = p:FireTear(p.Position, Vector(5, 0), false, true, false, p, 1)
++      check("callback ran", hp_seen.set == true)
++      check("tear KnockbackMultiplier follows TearParams.KnockbackMultiplier", near(t2.KnockbackMultiplier, 4.5), t2.KnockbackMultiplier)
++    end)
++  end
++  if frame == 25 then
++    try("tear sound", function()
++      check("pending tear sound cleared after the first update", true)
++    end)
++    B.log(string.format("lab_tears_more: %d PASS, %d FAIL", npass, nfail))
++    B.log("lab_tears_more: DONE")
++    Isaac.ExecuteCommand("quit")
++  end
++end)
+diff --git a/scripts/recomp/rgon/lab_tears_probe.lua b/scripts/recomp/rgon/lab_tears_probe.lua
+new file mode 100644
+index 0000000..5a2fab2
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_tears_probe.lua
+@@ -0,0 +1,47 @@
++-- lab_tears_probe.lua (development only; ISAAC_RGON_LAB=lab_tears_probe.lua): which names the five tear-like
++-- classes already have, and raw dumps of a TearParams, a laser, a tear, a knife, an effect and a projectile.
++local T = ...
++local B = T.B
++local r32, ri32, rf32, r8 = B.r32, B.ri32, B.rf32, B.r8
++local mod = RegisterMod("rgon lab tears probe", 1)
++local function say(s) B.log("lab_tears_probe: " .. s) end
++local function keys(cls)
++  local c = T.class_tables(cls)
++  local t = {}
++  for k in pairs(c) do if type(k) == "string" and not k:find("^__") then t[#t + 1] = k end end
++  local pg = rawget(c, "__propget")
++  if type(pg) == "table" then for k in pairs(pg) do t[#t + 1] = "." .. tostring(k) end end
++  table.sort(t)
++  say(cls .. ": " .. table.concat(t, " "))
++end
++local function dump(name, a, from, to)
++  for o = from, to - 4, 16 do
++    say(string.format("%s +%04x %08x %08x %08x %08x", name, o, r32(a + o), r32(a + o + 4), r32(a + o + 8), r32(a + o + 12)))
++  end
++end
++local frame = 0
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frame = frame + 1
++  local p = Isaac.GetPlayer(0)
++  if frame == 3 then
++    for _, c in ipairs({ "EntityTear", "EntityLaser", "EntityKnife", "EntityEffect", "EntityProjectile", "TearParams", "ProjectileParams" }) do
++      local ok, e = pcall(keys, c)
++      if not ok then say(c .. " " .. tostring(e)) end
++    end
++    local tp = p:GetTearHitParams(WeaponType.WEAPON_TEARS, 1, 1, nil)
++    say(string.format("TearParams: damage %g scale %g height %g variant %d flags %s", tp.TearDamage, tp.TearScale, tp.TearHeight, tp.TearVariant, tostring(tp.TearFlags)))
++    dump("TearParams", B.ptr(tp), 0, 0x70)
++    local l = Isaac.Spawn(7, 1, 0, p.Position + Vector(100, 0), Vector(0, 0), p):ToLaser()
++    say(string.format("laser scale %g timeout %d", l:GetScale(), (l.GetTimeout and l:GetTimeout() or -1)))
++    dump("laser", B.ptr(l), 0x424, 0x580)
++    local t = p:FireTear(p.Position, Vector(5, 0), false, true, false, p, 1)
++    dump("tear", B.ptr(t), 0x430, 0x470)
++    local pr = Isaac.Spawn(9, 0, 0, p.Position + Vector(100, 50), Vector(0, 0), nil):ToProjectile()
++    dump("proj", B.ptr(pr), 0x3f0, 0x4a0)
++    local ef = Isaac.Spawn(1000, 1, 0, p.Position + Vector(50, 50), Vector(0, 0), nil):ToEffect()
++    dump("effect", B.ptr(ef), 0x3f0, 0x4a0)
++    local k = Isaac.Spawn(8, 0, 0, p.Position + Vector(50, 50), Vector(0, 0), p):ToKnife()
++    dump("knife", B.ptr(k), 0x430, 0x4f8)
++  end
++  if frame == 10 then B.log("lab_tears_probe: DONE") Isaac.ExecuteCommand("quit") end
++end)
+diff --git a/scripts/recomp/rgon/lab_tears_probe2.lua b/scripts/recomp/rgon/lab_tears_probe2.lua
+new file mode 100644
+index 0000000..57ebdc3
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_tears_probe2.lua
+@@ -0,0 +1,64 @@
++-- lab_tears_probe2.lua (development only): the hitbox knife of the Forgotten's bone club, a laser's samples, a brimstone ball's flags.
++local T = ...
++local B = T.B
++local r32, ri32, rf32, r8 = B.r32, B.ri32, B.rf32, B.r8
++local mod = RegisterMod("rgon lab tears probe2", 1)
++local function say(s) B.log("lab_tears_probe2: " .. s) end
++local frame, held = 0, {}
++mod:AddCallback(ModCallbacks.MC_INPUT_ACTION, function(_, ent, hook, action)
++  if held[action] and ent and ent.Type == 1 then
++    if hook == InputHook.IS_ACTION_PRESSED or hook == InputHook.IS_ACTION_TRIGGERED then return true end
++    if hook == InputHook.GET_ACTION_VALUE then return 1.0 end
++  end
++end)
++local function kn(e)
++  local k = B.ptr(e)
++  local par = r32(k + 0x3bc)
++  return string.format("%08x var %d sub %d +4e7 %02x parentptr(+3bc) %08x parent.Parent %s spawner %s", k, e.Variant, e.SubType, r8(k + 0x4e7), par, tostring(e.Parent and B.ptr(e.Parent)), tostring(e.SpawnerEntity and B.ptr(e.SpawnerEntity)))
++end
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frame = frame + 1
++  local p = Isaac.GetPlayer(0)
++  if frame == 3 then
++    local l = Isaac.Spawn(7, 1, 0, p.Position + Vector(100, 0), Vector(0, 0), p):ToLaser()
++    l.Angle = 0
++    say(string.format("laser Timeout prop %d off458 %d Shrink prop %s b45e %d DisableFollowParent prop %s b4e4 %d OneHit prop %s b515 %d",
++      l.Timeout, ri32(B.ptr(l) + 0x458), tostring(l.Shrink), r8(B.ptr(l) + 0x45e), tostring(l.DisableFollowParent), r8(B.ptr(l) + 0x4e4), tostring(l.OneHit), r8(B.ptr(l) + 0x515)))
++    p:AddCollectible(CollectibleType.COLLECTIBLE_MOMS_KNIFE, 0, false)
++    local tr = Isaac.Spawn(2, 0, 0, p.Position + Vector(0, 100), Vector(0, 0), p):ToTear()
++    say(string.format("fresh tear (Isaac.Spawn, no update): +46a %02x +7ea %02x +7e8 %02x +7e9 %02x", r8(B.ptr(tr) + 0x46a), r8(B.ptr(tr) + 0x7ea), r8(B.ptr(tr) + 0x7e8), r8(B.ptr(tr) + 0x7e9)))
++    tr:Update()
++    say(string.format("after Update: +46a %02x +7ea %02x", r8(B.ptr(tr) + 0x46a), r8(B.ptr(tr) + 0x7ea)))
++  end
++  if frame == 8 then
++    local l = Isaac.FindByType(7)[1]
++    if l then
++      l = l:ToLaser()
++      local a = B.ptr(l)
++      for _, o in ipairs({ 0x480, 0x48c, 0x498, 0x4ac }) do
++        say(string.format("laser vec +%x begin %08x end %08x cap %08x", o, r32(a + o), r32(a + o + 4), r32(a + o + 8)))
++      end
++      say("GetSamples n " .. #l:GetSamples() .. " IsSampleLaser " .. tostring(l:IsSampleLaser()))
++    end
++  end
++  if frame == 10 then
++    p:ChangePlayerType(PlayerType.PLAYER_THEFORGOTTEN)
++  elseif frame == 20 then
++    say("player type now " .. Isaac.GetPlayer(0):GetPlayerType())
++    held[ButtonAction.ACTION_SHOOTRIGHT] = true
++  elseif frame > 20 and frame <= 70 then
++    for _, e in ipairs(Isaac.FindByType(8)) do if frame % 3 == 0 then say("f" .. frame .. " knife " .. kn(e)) end end
++  elseif frame == 71 then
++    held[ButtonAction.ACTION_SHOOTRIGHT] = nil
++    p:ChangePlayerType(PlayerType.PLAYER_ISAAC)
++    p.TearFlags = TearFlags.TEAR_HOMING | TearFlags.TEAR_BURN
++    say("player flags " .. tostring(p.TearFlags))
++    local ef = p:FireBrimstoneBall(p.Position, Vector(5, 0), Vector(0, 0), 1, nil)
++    if ef then
++      local a = B.ptr(ef)
++      say(string.format("brimstone ball var %d +420 %08x %08x %08x %08x", ef.Variant, r32(a + 0x420), r32(a + 0x424), r32(a + 0x428), r32(a + 0x42c)))
++    else say("no FireBrimstoneBall result") end
++  elseif frame == 80 then
++    say("DONE") Isaac.ExecuteCommand("quit")
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_trapdoor.lua b/scripts/recomp/rgon/lab_trapdoor.lua
 new file mode 100644
 index 0000000..599f207
@@ -13565,7 +16252,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..50ecb54 100644
+index 4175f07..afa7c38 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -13623,7 +16310,7 @@ index 4175f07..50ecb54 100644
    rearm = function() arm(nil) end,
  }
 -for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_hooks.lua" }) do
-+for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_ambush.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_entity_more.lua", "api_npc.lua", "api_eid.lua", "api_hooks.lua", "api_framectx.lua" }) do
++for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_ambush.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_entity_more.lua", "api_player_health.lua", "api_npc.lua", "api_tears_more.lua", "api_eid.lua", "api_pickup_more.lua", "api_hooks.lua", "api_framectx.lua" }) do
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)
@@ -13997,7 +16684,7 @@ index 1a209cf..8d72794 100644
      else if (GL.has(name)) { used++; if (!HAVECLASS.has(name)) missing.push(name); }
      else if (name.startsWith('MC_')) { const id = CB.get(name); if (id >= 1000) { used++; if (!HAVEID.has(id)) missing.push(name); } }
 diff --git a/scripts/recomp/rgon/tools/hook_table.py b/scripts/recomp/rgon/tools/hook_table.py
-index 0d1d8bd..2c9ca88 100644
+index 0d1d8bd..298b7f3 100644
 --- a/scripts/recomp/rgon/tools/hook_table.py
 +++ b/scripts/recomp/rgon/tools/hook_table.py
 @@ -68,7 +68,7 @@ HOOKS = [
@@ -14009,7 +16696,7 @@ index 0d1d8bd..2c9ca88 100644
      (21, "Game::RestoreState", 0x006bb790, "sig", None, ""),
      (22, "Room::SpawnGridEntity", 0x007ebca0, "reg", None, ""),
      (23, "GridEntity::Init", 0x00709db0, "sig", None, ""),
-@@ -206,6 +206,59 @@ HOOKS = [
+@@ -206,6 +206,65 @@ HOOKS = [
       "character it sets [this+5] from Menu_Character_Entry::IsCharacterAvailable (0x0094d64a, 0x0094d657) and "
       "shows layers 4..15 or 16 of the big page; for a mod's (selected id [this+0x10] >= 0x12, 0x0094d62d) it "
       "always sets [this+5] = 1 (0x0094d700)"),
@@ -14066,10 +16753,16 @@ index 0d1d8bd..2c9ca88 100644
 +    (184, "Entity_Player::DropPocketItem", 0x007a48f0, "asm", 8,
 +     "REPENTOGON's signature matches once; thiscall(slot or -1, Vector* pos); spawns the pickup with Game::Spawn (0x00428b20, "
 +     "at 0x007a497d) and both `ret`s pop 8; AddPocketItem calls it at 0x007a3b45 to drop an overflowing slot"),
++    # worker cb-b: shop, pickups, pools
++    (193, "Entity_Pickup::TriggerShopPurchase", 0x006e84d0, "asm", 8,
++     "thiscall(player, spentMoney) on the pickup; REPENTOGON's signature matches a different function here (0x00918d00, a stream "
++     "writer). This one is called by Entity_Pickup::HandleCollision (0x006ed087: `push edx(spent); push edi(player); mov ecx, esi; "
++     "call`) and by 0x007d5716 (spent 0 = the pickup's Price, [esi+0x534]); `ret 8` (0x006e8ab2, the only one); it reads the Price when "
++     "spentMoney is 0, plays the purchase effects, and the pickup is the shop item bought"),
  ]
  # the entity classes' virtual functions: slots 100 + 12 * k + class index
  _k = 0
-@@ -213,7 +266,7 @@ for _fn in ("Init", "Update", "Render", "TakeDamage", "HandleCollision"):
+@@ -213,7 +272,7 @@ for _fn in ("Init", "Update", "Render", "TakeDamage", "HandleCollision"):
      for _i, _cls in enumerate(ENTITY_CLASSES):
          HOOKS.append((100 + 12 * _k + _i, "%s::%s" % (_cls, _fn), None, "vt", None, ""))
      _k += 1
@@ -14078,7 +16771,7 @@ index 0d1d8bd..2c9ca88 100644
  
  # Round 110: instruction hooks (lift_patches.py RGON_INSN_HOOKS): a handler right
  # before one instruction inside a function, which reads and writes the registers
-@@ -280,6 +333,36 @@ INSN_HOOKS = [
+@@ -280,6 +339,73 @@ INSN_HOOKS = [
       "before 0x008f89c4, which every way reaches (the target of `jb` at 0x008f8994), and drawn after it "
       "(0x008f8a10..). Called by the wheel 0x0094bee0 (return address 0x0094c44a) and by 0x00982100 "
       "(0x0098256a). REPENTOGON's signature for its RenderCustomCharacterPortraits matches nothing here"),
@@ -14112,10 +16805,47 @@ index 0d1d8bd..2c9ca88 100644
 +    (192, "Entity_Player::DropPocketItem@Spawned", 0x007a48f0, 0x007a4986, (),
 +     "REPENTOGON's signature `c780????????0400000083fe03` matches once, here: eax = the pickup Game::Spawn answered "
 +     "(`test eax, eax; je` before it)"),
++    # worker cb-b: each is where REPENTOGON's patch of the same callback is (signature or semantics), found in this build
++    (194, "Entity_Player::UseActiveItem@VoidPickup", 0x005b39d0, 0x005be7e1, (0x005be7ed,),
++     "Void's loop over the room's pickups in the huge item-use function (collectible 477 -> case at 0x005be71c through the "
++     "byte table 0x005c7760 and the jump table 0x005c7598): `call vector::push_back` 0x0042c850 with the pickup pointer pushed "
++     "from [ebp-0x654], vector [ebp-0x8bc]. At the `push eax` (eax = &pickup) before the push_back; skipping goes to 0x005be7ed "
++     "(the loop's tail, the target of the `jne`s inside it), which leaves the stack as it was"),
++    (195, "Entity_Player::UseCard@BlackRune", 0x007b2230, 0x007b451c, (0x007b46d1,),
++     "REPENTOGON's `e8????????83f8640f85????????8b8d` matches once, here: `call 0x417270` (the pickup's variant) before `cmp eax, "
++     "0x64`; ecx = [ebp-0x294] = the pickup. Skipping goes where the `je` at 0x007b4510 goes, 0x007b46d1"),
++    (196, "Entity_Player::UseActiveItem@Compost", 0x005b39d0, 0x005bde0c, (0x005bde64,),
++     "REPENTOGON's `8b40??ffd0ff85????????8d8e` matches once, here (Compost, collectible 480 = 0x1e0, is the push at 0x005bde1d): "
++     "`mov eax, [eax]; mov ecx, edi; mov eax, [eax+0x28]; call eax` (Entity::Remove of the pickup, edi) starts at 0x005bde08; "
++     "skipping goes to 0x005bde64, where the `je` at 0x005bde06 goes"),
++    (197, "Room::GetDevilRoomChance@Items", 0x007f92b0, 0x007f92cb, (),
++     "Room::GetDevilRoomChance 0x007f92b0 (the Goat Head constant 66.6f is stored at 0x007f9656; thiscall on the room, float in st0, plain "
++     "ret): the chance is the local [esp+0xc] (0.01 at 0x007f92c5). Right after that store, before the item checks"),
++    (198, "Room::GetDevilRoomChance@SpecialItems", 0x007f92b0, 0x007f962b, (),
++     "after the stage penalty (the 0.25/0.5 multiply at 0x007f9605..0x007f9617) and the `[game+9]` (deal disabled) zeroing at "
++     "0x007f9623, before Goat Head (0xd7, push at 0x007f9634) and Eucharist"),
++    (199, "Room::GetDevilRoomChance@Post", 0x007f92b0, 0x007f96a4, (),
++     "after Goat Head, Eucharist and the Greed-mode checks of the vanilla code, before the Greed-mode wave override: the value is [esp+0xc]"),
++    (200, "Game::GetPlanetariumChance@Items", 0x0074dbd0, 0x0074dd3f, (),
++     "Game::GetPlanetariumChance 0x0074dbd0 (float in st0): the chance is [ebp-8]; here after the treasure-room term and Crystal Ball's "
++     "+1.0, before Magic 8 Ball (0xc2, push at 0x0074dd48), Crystal Ball's 0.15, Sausage and the Telescope Lens's 0.15; reached from "
++     "four ways inside the 'no planetarium visited yet' branch"),
++    (201, "Game::GetPlanetariumChance@LensNew", 0x0074dbd0, 0x0074ddc1, (),
++     "the not-visited branch's end (xmm0 holds the chance): `test bh, bh` (Telescope Lens held) then +0.15; reached from 0x0074ddb7 and by "
++     "falling through the Sausage's add"),
++    (202, "Game::GetPlanetariumChance@LensVisited", 0x0074dbd0, 0x0074ddcf, (),
++     "the already-visited branch (the target of `jne` at 0x0074dca7): `movss xmm0, [ebp-8]; test bh, bh`"),
++    (203, "Game::GetPlanetariumChance@Post", 0x0074dbd0, 0x0074de05, (),
++     "the common end of every path: `maxss xmm0, 0.01f` (0x0074ddfd) then `minss xmm0, 1.0f` here; xmm0 is the chance. Hooked after the "
++     "maxss so a callback's answer below 0.01 is not raised again (REPENTOGON's reimplementation has no lower clamp)"),
++    (204, "Entity_Pickup::UpdatePickupGhosts@Condition", 0x006e17c0, 0x006e17f0, (0x006e1833, 0x006e18eb),
++     "Entity_Pickup::UpdatePickupGhosts 0x006e17c0 (REPENTOGON's signature matches the NPC's twin 0x006da530 only): `push 1; add ecx, "
++     "0x1baa8; push ecx; push 0x299 (Guppy's Eye); call 0x9be080` then the chest / variant-69 test and the timeout test "
++     "[edi+0x540] > 0 at 0x006e1833; false goes to 0x006e18eb (the ghost is removed), true to 0x006e1833 (the timeout test then runs)"),
  ]
  
  
-@@ -293,7 +376,8 @@ def check_insn(pe_root, taken):
+@@ -293,7 +419,8 @@ def check_insn(pe_root, taken):
          seen.add(slot)
          f = run_pequery(pe_root, "func", "0x%08x" % iva)
          m = re.search(r"start 0x([0-9a-f]+)\s+end 0x([0-9a-f]+)", f)

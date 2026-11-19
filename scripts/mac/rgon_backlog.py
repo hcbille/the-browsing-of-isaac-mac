@@ -185,7 +185,10 @@ VARNAME = {'player': 'EntityPlayer', 'npc': 'EntityNPC', 'familiar': 'EntityFami
            'projectile': 'EntityProjectile', 'proj': 'EntityProjectile', 'effect': 'EntityEffect', 'itempool': 'ItemPool',
            'hud': 'HUD', 'seeds': 'Seeds', 'rng': 'RNG', 'p': None}
 MODISH = {'mod', 'Mod', 'self', 'FiendFolio', 'Epiphany', 'FF', 'epiphany', '_G', 'table', 'string', 'math', 'os', 'io', 'debug',
-          'json', 'utf8', 'coroutine', 'package'}
+          'json', 'utf8', 'coroutine', 'package',
+          'TearFlagsLib'}   # a mod's own library table (Fiend Folio's TearFlagsLib.FireSplitTear is its own function)
+# a mod's cached accessor (Mod.Room(), Mod.Game(), Mod.Level()) returns the game's object of that name
+MODACCESS = {'Room': 'Room', 'Game': 'Game', 'Level': 'Level'}
 
 
 def cb_arg_class(mc, idx):
@@ -219,6 +222,8 @@ def eval_chain(pieces, binding_of, classes_global):
         cur, i = CTOR[first], 2
     elif first in classes_global:
         cur = ('static', first)
+    elif first in MODISH and len(pieces) > 2 and pieces[1][0] == 'dot' and pieces[1][1] in MODACCESS and pieces[2][0] == 'call':
+        cur, i = MODACCESS[pieces[1][1]], 3
     else:
         cur = binding_of(first)
         if cur is None:

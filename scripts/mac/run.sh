@@ -30,8 +30,10 @@ R="$(cd "$(dirname "$0")/../.." && pwd)"
 # In a git worktree R has the tracked files (the Layer is staged from here); the untracked shared inputs
 # (output/, .scratch/game-bundle) live in the main checkout M. In the main checkout M = R.
 M="$(git -C "$R" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; M="${M%/.git}"; [ -d "$M/output" ] || M="$R"
-if pgrep -f "MacOS/isaac-mac|output/mac/isaac-mac" >/dev/null; then
-  echo "run.sh: a game is running (pgrep -f isaac-mac); wait for it to quit" >&2; exit 9
+# -x: a process NAMED isaac-mac. Never `pgrep -f` on a path pattern: it also matches the shell command line of any
+# caller that merely mentions the binary's path, so a waiting heavy.sh blocks on its own parent shell forever.
+if pgrep -x isaac-mac >/dev/null; then
+  echo "run.sh: a game is running (pgrep -x isaac-mac); wait for it to quit" >&2; exit 9
 fi
 mkdir -p "$S/logs" "$S/mods" "$S/saves"
 S="$(cd "$S" && pwd)"
