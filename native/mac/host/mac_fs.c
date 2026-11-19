@@ -199,7 +199,8 @@ static int has_disable_it(const char *dir) {
     return off;
 }
 
-static struct { unsigned folders, off, files, seeded, skipped_name, skipped_long; } g_ms;
+static struct { unsigned folders, off, files, seeded, skipped_name, skipped_long, aliased; } g_ms;
+extern int isaac_fs_seed_lazy_as(const char *path, const char *src, uint32_t len);
 unsigned mac_mods_file_count(void) { return g_ms.files; }
 
 /* dir: real folder; rel: path under the mods root ("<mod>/<...>") */
@@ -225,6 +226,27 @@ static void seed_tree(const char *dir, const char *rel) {
         if (strlen(v1) + 9 < 255) a = isaac_fs_seed_lazy(v1, (uint32_t)st.st_size); else ++g_ms.skipped_long;
         if (strlen(v2) + 9 < 255) b = isaac_fs_seed_lazy(v2, (uint32_t)st.st_size); else ++g_ms.skipped_long;
         g_ms.seeded += (unsigned)(a + b);
+        /* content-repentogon: REPENTOGON reads it in place of content (its changelog v1.1.1); this game reads
+         * only content/. With the Layer on, each file of a mod's content-repentogon/ is also listed as the
+         * file of content/ unless content/ has its own (Fiend Folio ships only content-repentogon/, so
+         * without this none of its items, entities or characters exist: Isaac.GetItemIdByName gives -1). */
+        if (!g_mac_layer_off) {
+            const char *slash = strchr(r, '/');
+            if (slash && strncasecmp(slash + 1, "content-repentogon/", 19) == 0) {
+                char own[4096], c1[4096], c2[4096];
+                snprintf(own, sizeof own, "%s/%.*s/content/%s", g_mac_mods_dir, (int)(slash - r), r, slash + 20);
+                struct stat cs;
+                if (stat(own, &cs) != 0) {
+                    snprintf(c1, sizeof c1, "mods/%.*s/content/%s", (int)(slash - r), r, slash + 20);
+                    snprintf(c2, sizeof c2, USER_MODS "%.*s/content/%s", (int)(slash - r), r, slash + 20);
+                    int x = 0, y = 0;
+                    if (strlen(c1) + 9 < 255) x = isaac_fs_seed_lazy_as(c1, v1, (uint32_t)st.st_size);
+                    if (strlen(c2) + 9 < 255) y = isaac_fs_seed_lazy_as(c2, v1, (uint32_t)st.st_size);
+                    g_ms.seeded += (unsigned)(x + y);
+                    ++g_ms.aliased;
+                }
+            }
+        }
     }
     closedir(d);
 }
@@ -274,6 +296,7 @@ int mac_seed_mods(void) {
     printf("[mac] mods: %s: %u folder(s) on, %u off (disable.it)%s; %u file(s), %u file-table entries seeded%s\n",
            g_mac_mods_dir, g_ms.folders, g_ms.off, g_ms.skipped_name ? ", a folder named repentogon ignored" : "",
            g_ms.files, g_ms.seeded, "");
+    if (g_ms.aliased) printf("[mac] mods: %u file(s) of content-repentogon/ listed as content/ (REPENTOGON reads that folder first)\n", g_ms.aliased);
     if (g_ms.skipped_long)
         printf("[mac] mods: %u path(s) are too long for the file table's 255-character keys and were not seeded\n", g_ms.skipped_long);
     return (int)g_ms.folders;

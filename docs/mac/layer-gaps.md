@@ -269,3 +269,193 @@ Everything before it works (`lab_tarn.lua`): `MC_POST_SAVESLOT_LOAD` args, `AreT
 (`lab_tarn`: `M.next = 2`, `M.swapping = true`) and the user saw the Tarnished page in a hand test. Limitation: a
 paused overlay restarts at frame 0 instead of keeping its own frame. `lab_tarn2.lua` (AnimationState dump) is kept
 for a later exact version.
+
+## 9. Census of REPENTOGON's whole API (M8, 2026-11-19)
+
+Tool: `python3 scripts/mac/rgon_census.py --repentogon <REPENTOGON checkout> --implemented <log> --mods <mods dir> --gate <layer-gate.json> --json <out>`.
+It reads REPENTOGON's own documentation tables (every class method, variable, constructor, global and every
+`ModCallbacks` id of the checkout, version 1.1.3), the names the running Layer reaches (`lab_census.lua`: one `lab_census: E`
+line per function or property found on a class table, plus the `lab_names` dump of `REPENTOGON.Implemented`), the names each
+Workshop mod uses (`modscan.lua`) and the gate log. Run the lab with `LAB=lab_census.lua` on a support folder (it needs a mod
+chunk to run, so use a folder with any one mod). The Layer stages REPENTOGON 1.1.2; the checkout is 1.1.3, so about 18 callbacks
+count as missing that the staged copy does not know.
+
+Classes: "implemented" means in `REPENTOGON.Implemented` (really works); "inert" means a stand-in exists and does nothing or
+approximates (counted as a gap); "game" means the game had the name before REPENTOGON (not counted); "missing" is the rest.
+Effort: S pure Lua over what the Layer already has, M a game field must be measured or an existing game function called, L a new
+engine hook plus a lift rebuild. The effort column is a first guess from the REPENTOGON body: reviewing the 15 S names mods use
+showed most of them need a structure (ProceduralItem fields, PocketItem slot, Camera clamp), so S is an upper bound.
+
+| | total | implemented | inert | game | missing | S / M / L | missing and used by a mod that names REPENTOGON |
+|---|---|---|---|---|---|---|---|
+| functions, before | 1727 | 485 | 40 | 27 | 1175 | 65 / 1049 / 61 | 295 |
+| functions, after batch 1 | 1727 | 535 | 40 | 27 | 1125 | 59 / 1005 / 61 | 283 |
+| functions, after batch 2 | 1727 | 570 | 37 | 27 | 1093 | 58 / 974 / 61 | 256 |
+| functions, after batch 3 | 1727 | 586 | 39 | 27 | 1075 | 57 / 957 / 61 | 245 |
+| variables | 66 | 6 | 0 | 2 | 58 | 5 / 53 / 0 | 4 |
+| constructors | 17 | 3 | 0 | 4 | 10 | 0 / 10 / 0 | 1 |
+| callbacks | 380 | 135 | 0 | 0 | 245 | 0 / 0 / 245 | 96 |
+
+Every missing callback is L (a hook per callback). The biggest missing classes by name count: EntityPlayer 173, ImGui 58, Isaac 45,
+Room 40, EntitiesSaveState 39, EntityPickup 29, ChallengeParam 28, EntityNPC 27, EntityConfigEntity 25, Options 25.
+Missing names used by mods that name REPENTOGON, by class: EntityPlayer 48, EntityPickup 15, EntityKnife 11, Room 11, Weapon 11,
+ProceduralItem 10, RoomDescriptor 10, EntityNPC 9, Game 8. The full per-name table (status, effort, mods) is the `--json` output;
+the names a mod uses and the Layer lacks are in `layer-gate.json` ("missing" per mod).
+
+### Batch 1 (`api_census.lua`): 50 names, all checked in the running game
+
+Added: `RNG` GetShiftIdx, PhantomNext, PhantomInt, PhantomFloat, Previous, PhantomPrevious; `EntityConfigPlayer` GetRedHearts,
+GetSoulHearts, GetBlackHearts, GetCoins, GetBombs, GetKeys, CanShoot (config record offsets 0xb0 to 0xd0, name checked first);
+`ItemConfig:GetTaggedItems(tags)` (the game's own tag lookup, 0x730b80) and `GetItemsWithCustomTag` (fixes an earlier registration
+that took custom tags under the wrong name and never registered); `Isaac.GetCutsceneIdByName`; `Game:IsHardMode`, `Level:HasPhotoDoor`,
+`Room` CanPickupGridEntity, CanSpawnObstacleAtPosition, GetBossVictoryJingle; `EntityPlayer` AddLeprosy, AddBoneOrbital,
+CanAddCollectibleToInventory, CanUsePill, DropCollectible, DropCollectibleByHistoryIndex, GetBodyMoveDirection,
+GetCambionPregnancyLevel, GetEnterPosition, GetFocusEntity, GetGlitchBabySubType, HasPoisonImmunity, IsEntityValidTarget,
+IsHeadless, IsInvisible, MorphToCoopGhost, RemoveCollectibleByHistoryIndex, SetActiveVarData, SetControllerIndex, SpawnClot,
+TryPreventDeath, VoidHasCollectible; `EntityPickup` GetAlternatePedestal, SetAlternatePedestal, SetForceBlind; `Entity:GiveMinecart`;
+`EntityFamiliar` CanBlockProjectiles, GetFollowerPriority; `GridEntityRock:TrySpawnLadder`.
+Each call into the game uses a REPENTOGON signature that matches this exe once; the callee's `ret N` was checked against the
+argument words. `lab_census_test.lua` ran 41 checks (all pass): the read-only names are called and compared (RNG against the
+game's own `Next`, Isaac's and Magdalene's starting hearts, tagged items all carry the tag); names that change the game
+(SpawnClot, DropCollectible, TrySpawnLadder, GiveMinecart, ...) are checked by address and arity only and still need a play test.
+Not done: `Isaac.GetLoadedModules` (mods get no `package` table, so `_LOADED` is out of reach); `GetCutsceneIdByName` of a mod
+cutscene follows its XML node.
+
+Measured with all 95 mods (`.scratch/m8-census`): no mod flipped (6 of 12 REPENTOGON-naming mods still shown; Epiphany missing
+114 to 107, Fiend Folio 215 to 210, StageAPI 13 to 12), and the headless `lab_trapdoor` run through floors 1 to 5 shows the same 17
+"failed" lines before and after (the Fiend Folio and Throwable Item Library errors; none new).
+
+### Fiend Folio did not finish loading (fixed, two causes in the Host, not the Layer)
+
+Fiend Folio's `main.lua` stopped at line 825 (`FiendFolio.FF` nil), and every later Fiend Folio error followed from it
+(main.lua:581, :642, :672, Epiphany's `throwable_item_lib.lua:1187`). Found with a lab that wrapped `include`
+(it returned "no file '//mods/fiendfolio-reloaded.../ffscripts/config.lua'" for files that exist, and the game's `include` does not raise):
+
+1. **The Host's file table was full.** It has 65,536 slots (`FS_SLOTS`, `host_shims_fs.c`), and the Mac Build seeds each mod file
+   under both mod roots: the 95 mods are 32,702 files, 65,404 entries, plus folders and the game's own files. The last ~4,000 were dropped without a word, Fiend
+   Folio's `ffscripts` among them. The Mac Build now has 131,072 slots (the Browser Build keeps 65,536); the boot line
+   `[mac] mods: ... 65404 file-table entries seeded` now equals twice the file count.
+2. **`content-repentogon/` was never read.** Fiend Folio ships only that folder (REPENTOGON reads it in place of `content/`; the Browser
+   Build's packer already lists it as `content/`); this game reads only `content/`, so none of its items existed
+   (`Isaac.GetItemIdByName` gave -1, `inaba.lua:143` stopped `main.lua`). With the Layer on, `mac_fs.c` now also lists each
+   `content-repentogon/` file as the `content/` file unless `content/` has its own (log line: `153 file(s) of content-repentogon/ listed as content/`). It is
+   only Fiend Folio among the 95 mods.
+
+Measured: the headless 95-mod `lab_trapdoor` run through floors 1 to 5 has no Fiend Folio `main.lua` error and none of the five
+follow-on "failed" lines (they were 8 lines, 6 of them Fiend Folio's, in `trap-after.log`). The only `ERR:` left is
+`! fired's_angels_and_statues` (`AngelStatueMod` is a nil global in that mod's own `main.lua:18`; it was hidden before because
+that file was among the dropped ones).
+
+### Batch 2 (`api_batch_two.lua`): 35 names, offsets measured in this build
+
+REPENTOGON's `Entity_Player` offsets are not this build's (the struct drifted by +4 to +36 words along its length), so each field was found by
+a diff probe (`lab_b2probe*.lua`: snapshot the player's words, make the game change the value, diff) and checked by the
+game's own reaction, then by a read-back check (`lab_batch2_test.lua`, 85 checks, all pass headless):
+
+| name(s) | REPENTOGON offset | here | how it was confirmed |
+|---|---|---|---|
+| Get/Set Speed, FireDelay, Damage, TearRange, ShotSpeed, Luck `Modifier` | 0x1518.. | 0x1520.. (+8) | writing 5 into each and re-evaluating moved exactly that stat (MoveSpeed 1 to 2, MaxFireDelay 10 to 4.74, Damage 3.5 to 8.5, TearRange 260 to 760, ShotSpeed 1 to 2, Luck 0 to 5); `EvaluateItems` reads them, Init clears them as a block. Replaces the Layer's own approximation in `api_gaps.lua` (now the game's own field, so Experimental Treatment's changes are seen) |
+| Get/SetTearDisplacement | 0x156c | 0x1578 (int8) | flips 1 and -1 on every tear |
+| Get/SetBombPlaceDelay | 0x1604 | 0x1610 | 0 to 28 when a bomb is placed |
+| Get/SetHeadDirectionLockTime, SetHeadDirection | 0x133c / 0x161c | 0x1338 / 0x1628 | the vanilla HeadFrameDelay counts down from the written value and the direction returns at -1; `GetHeadDirection` returns what was set; the head animation name (std::string at 0x1320) is rewritten too, as the game does not derive it |
+| GetUrnSouls | 0x1dbc | 0x1dd0 | 0 to 3 across the game's own `AddUrnSouls(3)` (`AddUrnSouls` already existed) |
+| GetMarkedTarget | 0x1408 | 0x140c | the pointer holds the TARGET effect (1000, 30) Marked spawns; nil before |
+| SetLaserColor | | 0x14c4 | the game's own `LaserColor` property; read back through it |
+| IsItemCostumeVisible, IsNullItemCostumeVisible | | calls 0x75d900, 0x75d980 | the game's own checks (`ret 8`); the check compares against `IsCollectibleCostumeVisible` (both false for Sad Onion in the lab: weak) |
+| EntityPlayer:GetWeapon(0..4) and `Weapon` GetOwner, Get/SetFireDelay, GetMaxFireDelay, Get/SetCharge, GetWeaponType, Get/SetModifiers, GetNumFired, IsAxisAligned | 0x13d8 | slot array at 0x13dc | the primary weapon is slot 1 and its +4 is the player; type 1 for tears (3 with Technology), max fire delay equals the player's MaxFireDelay |
+| EntityKnife Get/SetIsSwinging, Get/SetIsSpinAttack, Is/SetPrismTouched, Is/SetMultidimensionalTouched, SetKnifeVelocity, SetKnifeDistance, GetHitList, InHitList, AddToHitList, RemoveFromHitList | same as REPENTOGON (delta 0) | 0x465, 0x4ea, 0x4e5, 0x4e6, 0x448, 0x444, vector at 0x4d8 | the initialiser clears them as a block; a bone club's 0x465 reads 1 while it swings and 0 after; the hit list is the vector the game's own `GetHitEntities` (0x9612e0) returns. `AddToHitList` past the vector's capacity grows it with the guest allocator (the game's own `free` is the same allocator) and survived 12 entities |
+
+Census (`rgon_census.py` over the lab dump, then the gate): functions implemented 535 to 570, inert 40 to 37 (the three stand-ins that
+are now real), missing used by REPENTOGON-naming mods 283 to 256. Per mod (the gate's "missing"): Epiphany 107 to 97, Fiend Folio 210 to 191,
+StageAPI 12, External Item Descriptions 14, Unique Items API 2 (unchanged); no mod flipped. The headless trapdoor run through floors
+1 to 5 shows no new "failed" line against `trap-after.log` (it has none of Fiend Folio's now, see above).
+
+Approximate or inert, not counted as implemented: the suplex accessors (REPENTOGON's offsets at 0x1f08.. hold a sentinel -100000 and
+floats here; the game's own Suplex! changed none of them, so there is no field to place), `Get/SetHitboxParentKnife` (REPENTOGON keeps
+it in a side field its own hook fills when a melee weapon makes its hitbox; here a mod's own `Set` is remembered and the game's hitboxes
+answer nil; Fiend Folio calls Get in every damage callback and errored without the name).
+
+Not done (names): `Weapon` GetDirection (the direction words read 0 after shooting; not verified while firing), GetMaxCharge and
+GetMainEntity (virtual functions; the slot and a float return were not checked), SetHeadLockTime, IsItemAnimFinished,
+`Isaac.CreateWeapon`/`DestroyWeapon`; `EntityKnife:FireSplitTear` (REPENTOGON patches the code: L). Player fields not found, still missing:
+KeepersSackBonus, Immaculate and Cambion Conception state, Eve's Sumptorium charge, RedStewBonusDuration, PonyCharge, PlanC, bladder/urethra,
+PlayerFormCounter (a Guppy-item test showed no change), HeldEntity, RUAWizardTimer, the poop spell queue.
+
+Needs a hand test (not seen in a screenshot): the two scripted screenshots (`lab_b2shot.lua`: Technology with `SetLaserColor`, then
+Mom's Knife) were taken but at the wrong frame (the intro text and a tiny tracer line only; `lab_b2shot` logged weapon type 3 and the
+knife's fields), and a second headless run after the last edit (`GetHitboxParentKnife`) was stopped when the user's game started.
+Steps: start a run with a mod set containing Fiend Folio, open the console (grave), `giveitem c68` (Technology), then
+`lua Isaac.GetPlayer(0):SetLaserColor(Color(0,1,0.2,1,0,0,0))` and shoot: the laser should be green. Then `giveitem c114` (Mom's Knife) and hit a
+monster with Fiend Folio on: no "GetHitboxParentKnife" line in the log.
+
+### Batch 3 (`api_pocket_item.lua`, `api_batch_three.lua`, `api_minimap.lua`): 19 names, verified 2026-11-19
+
+Added: `EntityPlayer:GetPocketItem` and the `PocketItem` class (GetSlot, GetType; the game's own function 0x00753900, the record is
+two words {id, type}); `Weapon` GetMaxCharge, GetMainEntity (vtable slots 6 and 10; the charge comes back in st0), GetDirection (vector
+at +0x20); `Level` CanPlaceRoom, CanPlaceRoomAtDoor, FindValidRoomPlacementLocations, GetNeighboringRooms and `RoomDescriptor`
+GetNeighboringRooms, GetValidNeighborPlacementLocations (over the game's level-generator helpers; `TryPlaceRoom` is not here: the
+game's PlaceRoom signature matches nothing); the global `Minimap` (next section); `ItemPool:ResetCollectible` (the game's own function
+0x007340b0).
+
+Checks (headless, `.scratch/m8-batch3`): `lab_batch2_test.lua` 81 PASS 0 FAIL; `lab_batch3_test.lua` 69 PASS 0 FAIL (it had 5 FAIL lines in
+the worker's own log from before its last edit; none now); `lab_pocket_test.lua` 31 PASS; `lab_minimap_test.lua` 20 PASS; `lab_pool_test.lua`
+8 PASS. The 95-mod `lab_trapdoor` run through floors 1 to 5 (6 levels reached): the log has no "failed" line and one `ERR:` (the mod's own
+`! fired's_angels_and_statues` `AngelStatueMod`), the same as `.scratch/m8-batch2/trap-batch2.log`; the other differences are random rooms
+and seeds. Epiphany's `throwable_item_lib.lua:727` (`GetPocketItem(...)` returned a bare userdata) did not appear in the batch 2 headless
+log either, so that run cannot show it gone: what shows it is `lab_pocket_test.lua` (`GetPocketItem(PillCardSlot.PRIMARY):GetSlot()` is a
+number, 0 for an empty slot, so `GetSlot() - 1 == -1` returns) and the hand test below.
+
+Census: functions implemented 570 to 586 (incl. 2 more the census dump misses: `RoomDescriptor`'s two names are installed at the first
+player init, after the dump), inert 37 to 39, missing used by REPENTOGON-naming mods 256 to 245. Gate: 9 mods use REPENTOGON names, 6
+shown, as before. Per mod (the gate's "missing"): Epiphany 97 to 93, Fiend Folio 191 to 187, External Item Descriptions 14, StageAPI 12,
+Unique Items API 2; no mod flipped.
+
+### The global `Minimap` (`api_minimap.lua`)
+
+REPENTOGON's `Minimap` is a plain table of functions that all act on the game's one Minimap and ignore `self` (so `Minimap:GetIconsSprite()`
+and `Minimap.GetState()` both work; its setters read argument 1, so only `Minimap.SetState(1)` is valid there; the Layer also accepts the
+colon form). Implemented: GetState, SetState, GetHoldTime, SetHoldTime, GetIconsSprite, GetItemIconsSprite. Not implemented (not
+registered): GetDisplayedSize and Refresh (no game function found), Get/SetShakeDuration and Get/SetShakeOffset (+0x61c, +0x620 never seen
+change).
+
+Where it is, measured, not guessed: REPENTOGON has it at game+0x25444; here the object is at **game+0x25ecc** (the game object's pointer is
+at 0x00c71678). `lab_minimap_scan.lua` lists every sprite (ANM2 objects point at themselves at +0x30 and +0x50) in the game object with the
+file it loaded: `gfx/ui/minimap1.anm2` at +0x25ee4, `minimap2.anm2` at +0x26044, `mapitemicons.anm2` at +0x261a4, `hudpickups.anm2` at
++0x262b8, `minimap_icons.anm2` at +0x263cc. REPENTOGON's `Minimap` struct puts exactly these four at +0x18, +0x178, +0x2d8, +0x3ec, +0x500, so
+all agree on 0x25ee4 - 0x18 = 0x25ecc. (Two more `minimap_icons.anm2` sprites sit elsewhere in the game object, at +0x238e8 and +0x2449c; the
+Minimap's own is the one in the struct.) State (+0x0) and hold time (+0x8) were measured with `lab_minimap_state.lua` and scripted Tab
+presses: state 0 at rest, 1 while Tab is held with the hold time counting up one a frame (5, 10, ... 30), back to 0 after, 2 after a tap; the
+enum is `MinimapState` (NORMAL 0, EXPANDED 1, EXPANDED_OPAQUE 2, from REPENTOGON's `enums_ex.lua`).
+
+`GetIconsSprite` returns the real sprite: its `GetLayer(0):GetSpritesheetPath()` reads `gfx/ui/minimap_icons.png`, and after
+`ReplaceSpritesheet(0, <png>)` + `LoadGraphics()` the minimap draws the new sheet. Seen in a screenshot (`lab_minimap_test.lua` with
+`ISAAC_LAB_MM_SHOT=sheet`, `ISAAC_LAB_MM_MOVE=1`): with the compass and map shown, the minimap's room icons are a shop key, a crown, a boss
+skull and question marks; after replacing the sheet with `gfx/ui/ui_hearts.png` they look unchanged until the next room change, after which
+the same cells draw hearts (the game redraws the icons only then, which is how it is with REPENTOGON too, and Fiend Folio replaces the sheet in
+`MC_POST_NEW_ROOM`). As a control, the same call on the player's own sprite changes it at once (the player drawn as hearts). The shots are in
+`.scratch/m8-batch3/shots/` (`s-before.png`, `move2.png`).
+
+Fiend Folio: `lab_ff_veil.lua` (95 mods) gives the level Curse of the Veil and changes room: Fiend Folio's callback sets
+`gfx/ui/minimap_icons_veil.png` on the minimap sprite and the global flag; after the curse is removed and a room change it puts the original
+sheet back; a third change from a hand-set state also resets it. No "failed" line, no `Minimap` error. `Minimap.GetState()` (Fiend Folio's
+`heat.lua:94`) works.
+
+Hidden by `--luadebug`: with `LUADBG=true` in `run.sh` the game's `require` of a mod's own files fails ("module ... not found"), so most mods stop
+at their `main.lua`; don't use it for mod runs.
+
+### Next batches (proposed)
+
+1. (done, batch 2: see above) EntityPlayer weapon/laser fields, `Weapon`, EntityKnife. What is left of them: Weapon's virtual
+   functions, the unmeasured player fields, hitbox parent knife (a hook).
+2. (done, batch 3, except `TryPlaceRoom`/`TryPlaceRoomAtDoor` and `MC_PRE_LEVEL_PLACE_ROOM`, which need the game's PlaceRoom: its
+   REPENTOGON signature matches nothing, so find it by the callers of the level generator.) RoomDescriptor and Level room placement.
+3. (PocketItem done, batch 3) ProceduralItem (External Item Descriptions, 10 used names: GetItem, GetEffect, GetEffectCount,
+   GetTargetItem, GetDamage, GetFireDelay, GetLuck, GetRange, GetShotSpeed, GetSpeed): the procedural item record is still to measure.
+   Other names the user's mods use, with a unique signature match and a simple call (found by `.scratch/m8-census/mcand.py` over the batch 3
+   census): `Entity:CopyStatusEffects` (needs the colour-params vector and boss cooldown too, so not a quick one), `EntityPickup`
+   GetRandomPickupVelocity (static, ecx/edx), InitFlipState (REPENTOGON's wrapper does more than the game function), `EntityFamiliar`
+   GetRandomWisp, TryAimAtMarkedTarget, `Game.DevolveEnemy`. Field-only names to find with the diff probe: Room GetWaterAmount/SetWaterAmount,
+   GetLightningIntensity, Game IsRerun/IsErased, the Dizzy amount, EntityPlayer GetKeepersSackBonus, Immaculate/Cambion conception state.
+4. The L callbacks the mods use (96), grouped by hook site: grid (rock destroy, grid collision, trapdoor/door update), player
+   (trigger death, revive, drop card/pill), HUD (hearts, history HUD), planetarium/devil, completion marks and shop purchase.
+5. ImGui (58 names, none used by a mod) last.

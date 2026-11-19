@@ -3,6 +3,15 @@
 Full status table, decisions and uncommitted-work list: the "Status overview"
 at the top of `docs/mac/PROGRESS.md`.
 
+## Resume here (2026-11-19, session stopped by the user)
+
+- Done today and committed on mac-native (not all published):
+  - Full-screen adapt (public e6b48e5) and the Epiphany room-change freeze (public db9495c).
+  - Not yet published: census and Layer batches 1-3, plus the Fiend Folio fix c3985fd (file table 131,072 slots; content-repentogon/ read as content/). The user confirmed Fiend Folio works in play.
+- Batch 3 verified (headless labs all PASS, the 95-mod trapdoor run through floors 1 to 5 shows the same one `ERR:` and no "failed" line as batch 2) and the global `Minimap` is in (`api_minimap.lua`, found at game+0x25ecc, GetIconsSprite is the real sprite: a replaced sheet draws after the next room change; Fiend Folio's curseveil branches run clean). Details: `layer-gaps.md` section 9, "Batch 3". Census: functions implemented 570 to 586, missing used by REPENTOGON-naming mods 256 to 245.
+- Still to see by hand (RUNBOOK-style test for the user): Epiphany's `throwable_item_lib.lua:727` gone in play (the headless runs never hit it), and Fiend Folio's veil curse changing the minimap icons in a real run (steps in the report of that session: `giveitem`/curse console, then open a new room).
+- Next in the census order (`layer-gaps.md` section 9, "Next batches"): ProceduralItem (External Item Descriptions), `PlaceRoom` for `TryPlaceRoom`, then the L callbacks the mods use. Every test run cleans up its big folders (RUNBOOK).
+
 ## Done and verified
 
 - M1 headless main, M2 picture (ANGLE Metal via SDL3), M3 input (keyboard,

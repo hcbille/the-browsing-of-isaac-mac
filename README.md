@@ -43,9 +43,13 @@ Working, on an M2 MacBook Air:
 - Your saves, imported from the Windows or Steam folders on first start.
 - Steam Workshop mods: a Launcher syncs your subscriptions, and each mod can be switched
   on or off. The game's mods menu agrees with the Launcher.
-- REPENTOGON-using mods through upstream's compatibility layer: 5 of 11 tested mods,
-  including Epiphany (its Tarnished characters too) and Fiend Folio: RELOADED. The layer
-  decides per mod whether it can run.
+- REPENTOGON-using mods through upstream's compatibility layer, including Epiphany (its
+  Tarnished characters too) and Fiend Folio: RELOADED, whose items, enemies and characters
+  now load in full. The layer decides per mod whether it can run. It has about 590 of
+  REPENTOGON's 1,727 functions and 135 of its 380 callbacks, the ones the tested mods use
+  first. `scripts/mac/rgon_census.py` measures the rest.
+- Large mod collections: the file table holds about 95 mods' worth of files, and a mod's
+  `content-repentogon/` folder is read as REPENTOGON does.
 - A Launcher with a startup window that shows each loading step. A boot with about 95 mods
   takes roughly 10 seconds.
 - Optional full screen into the strip beside the notch (NotchFill, see below).
@@ -56,7 +60,9 @@ Not done yet:
   with a real Steam client.
 - Mod status effects declared without an id (some of Epiphany's and Fiend Folio's) do
   nothing yet. They used to freeze the game on a room change; that's fixed.
-- More REPENTOGON coverage (External Item Descriptions, StageAPI and others).
+- More REPENTOGON coverage: most missing callbacks need new hooks in the game, and
+  External Item Descriptions and StageAPI still miss a few names each. Writable item
+  settings (for example `ChargeType`) are in progress.
 - A from-scratch build check, and a known rare Lua garbage-collector crash.
 
 ## Use
