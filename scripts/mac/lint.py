@@ -79,6 +79,27 @@ def rule_layer_files_loaded(fs):
                          'ipairs({...}) list in rgon.lua (before "api_hooks.lua") and commit both together' % name)
 
 
+def rule_frame_line_prefix(fs):
+    """The host's "[mac][frame]" timing line keeps its old fields and order (2026-11-19, framestats): new fields go at the
+    END, so scripts/mac/framestats.py and older log readers still match."""
+    t = text_of('native/mac/host/mac_gl.c') or ''
+    pre = '[mac][frame] frames %u-%u: avg %.2f ms (%.1f fps) min %.2f max %.2f | game work avg %.2f max %.2f ms | %u over 20 ms'
+    if t and pre not in t:
+        yield ('native/mac/host/mac_gl.c', 0, 'the "[mac][frame] frames" line no longer starts with the old fields: restore '
+                                              'them exactly and append any new field after "%u over 20 ms"')
+
+
+def rule_part_loads_part(fs):
+    """A Layer part never loads another part (2026-11-19: api_framectx.lua was loaded from api_eid.lua, which hides where
+    parts come from). Parts are listed in rgon.lua's ipairs({...}) list only."""
+    for f in fs:
+        if os.path.basename(f).startswith('api_') and f.endswith('.lua'):
+            for n, line in enumerate((text_of(f) or '').splitlines(), 1):
+                if re.search(r'B\.load\(\s*"api_', line):
+                    yield (f, n, 'a part must not B.load another api_*.lua: add the other file to the ipairs({...}) '
+                                  'part list in rgon.lua instead (before "api_hooks.lua" unless it must run after it)')
+
+
 def rule_inert_not_implemented(fs):
     """A stand-in that does nothing is not 'implemented' (2026-11-19: Shape and DebugRenderer, which draw nothing, were put
     in REPENTOGON.Implemented). Mark it with a `-- inert: Name Name` line in its Layer file."""
@@ -246,7 +267,109 @@ def rule_fast_setjmp(fs):
                    '%s must end with "+ FAST_JMP" so every TU uses _setjmp/_longjmp (no signal-mask syscalls)' % name)
 
 
-RULES = [rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes]
+def rule_gate_class_aware(fs):
+    """The gate matches a REPENTOGON name with the class it is used on, never by the bare method name (2026-11-19:
+    EntityFamiliar.GetWeapon counted as present because EntityPlayer.GetWeapon existed)."""
+    checks = [
+        ('scripts/recomp/rgon/rgon.lua', ('G.HAVEP[', 'gate_has(G,', 'gate_receiver(G,'),
+         'gate_weigh must look a use up as Class.Name (G.HAVEP via gate_has, the class from gate_receiver); a bare-name '
+         'set (HAVE[name]) is only the fallback for names gate_names.lua lists no class for'),
+        ('scripts/recomp/web/mods.mjs', ('receiverHint(code, m.index)',),
+         'the call names of scanLua must carry the receiver hint (names.add(m[1] + receiverHint(code, m.index))), '
+         'which the gate turns into a class'),
+        ('native/mac/launcher/Sources/ModScan.swift', ('receiverHint(code, p)',),
+         'ModScan.scanLua must add `name + receiverHint(code, p)` like mods.mjs scanLua (Tests/run.sh compares the two '
+         'byte for byte), and bump scannerVersion when the scan changes'),
+        ('scripts/recomp/rgon/gate_names.lua', ('  pairs = [[', '  rets = [['),
+         'gate_names.lua lacks the class tables: run tools/gate_names.py (ISAAC_GAME_DIR=<game folder>) and commit its output'),
+    ]
+    for f, needles, msg in checks:
+        if f not in fs:
+            continue
+        t = text_of(f) or ''
+        for needle in needles:
+            if needle not in t:
+                yield (f, 0, '%s (missing `%s`)' % (msg, needle))
+
+
+def rule_backlog_narrowing(fs):
+    """The backlog tool must not count a mod's own names as REPENTOGON misses (2026-11-19, entity2: `Mod.Capsule` item tables,
+    `x:GetSprite():Name` chains and variables named `*sprite` showed up as missing Shape.Capsule / ReplaceSpritesheet)."""
+    f = 'scripts/mac/rgon_backlog.py'
+    if f not in fs:
+        return
+    t = text_of(f) or ''
+    for needle, msg in (
+        ("(?:sprite|spr)$", 'a variable whose name ends in sprite/spr is a Sprite: narrow it (h = "Sprite") so its method calls are not counted against another class'),
+        ("call chain ends in", 'a chain whose last call is GetSprite()/To*() has that return class whatever the head: narrow it to the return class'),
+        ("field of the mod's own table", 'a dot access `x.Name` that is not called or constructed, where every REPENTOGON candidate is a function, is a field of the mod\'s own table: suppress it'),
+    ):
+        if needle not in t:
+            yield (f, 0, msg + ' (missing `%s`)' % needle)
+
+
+def rule_entity_methods_in_lab(fs):
+    """Every method api_npc.lua registers is called by lab_entity_classes.lua (2026-11-19: the entity-class chunk was given
+    a lab that names each one; a name with no check is a name nobody proved)."""
+    src = text_of(RGON + '/api_npc.lua')
+    lab = text_of(RGON + '/lab_entity_classes.lua')
+    if src is None or lab is None:
+        return
+    names = set(re.findall(r'method\("(\w+)", "(\w+)"', src)) | set(re.findall(r'static\([^,]+, "(\w+)", "(\w+)"', src))
+    for cls, name in sorted(names):
+        if '"%s.%s"' % (cls, name) not in lab:
+            yield (RGON + '/lab_entity_classes.lua', 0, 'add "%s.%s" to NAMES and a check that calls it (getter by read-back, setter by '
+                   'effect, action by the game\'s reaction), or leave the method out of api_npc.lua' % (cls, name))
+
+
+def rule_read_of_call_result(fs):
+    """A memory reader wrapped around call(): r32/ri32/rf32/r8/r16 READ GUEST MEMORY at the number they get (2026-11-19, entity3:
+    `ri32((call(GetRandomWisp, ..)))` read memory at the collectible id and raised a garbled error). call's first result is eax
+    itself: for an id or a count take it directly (`local v = call(..); if v >= 0x80000000 then v = v - 0x100000000 end`); only when
+    eax really is a pointer to read through, say so with `-- eax is a pointer` on the line."""
+    pat = re.compile(r'\b(?:ri32|r32|rf32|r8|r16)\(\(*\s*(?:B\.)?call\(')
+    for f in fs:
+        if not (f.startswith(RGON + '/') and f.endswith('.lua')):
+            continue
+        t = text_of(f)
+        for n, line in enumerate((t or '').splitlines(), 1):
+            if pat.search(line) and 'eax is a pointer' not in line:
+                yield (f, n, 'a memory reader on call()\'s result reads memory at eax: take the result directly, or mark a real pointer with `-- eax is a pointer`')
+
+
+def rule_conception_pairing(fs):
+    """Cambion and Immaculate Conception hook rows pair as measured (2026-11-19, cba: the two were swapped once by guessing from
+    function order; the collectible ids settle it: 412 = Cambion, 413 = Immaculate)."""
+    want = {'GiveBirthCambion': '0x00775e1b', 'GiveBirthImmaculate': '0x007c81a6'}
+    for f in fs:
+        if not f.endswith(('hook_table.py', 'lift_patches.py', 'hook_slots.lua')):
+            continue
+        t = text_of(f) or ''
+        for i, line in enumerate(t.splitlines(), 1):
+            for name, va in want.items():
+                other = [v for k, v in want.items() if k != name][0]
+                if name + '@' in line and other.replace('0x00', '0x') in line.lower().replace('0x00', '0x'):
+                    yield (f, i, '%s belongs at %s: find the function whose collectible check is 0x19c (Cambion, 412) or 0x19d (Immaculate, 413) '
+                           'instead of assuming from function order' % (name, va))
+
+
+def rule_lua_format_options(fs):
+    """luaL_error/lua_pushfstring take only %d %s %f %p %c %% (2026-11-19: host_rgon.c's "0x%08x" messages came out as
+    "invalid option '%0' to 'lua_pushfstring'" and hid the real error behind EntityFamiliar.GetRandomWisp)."""
+    call = re.compile(r'\b(luaL_error|lua_pushfstring)\s*\(\s*L\s*,\s*"((?:[^"\\]|\\.)*)"')
+    bad = re.compile(r'%(?![dsfpcI%])')
+    for f in fs:
+        if not f.endswith(('.c', '.h')):
+            continue
+        t = text_of(f) or ''
+        for m in call.finditer(t):
+            if bad.search(m.group(2).replace('%%', '')):
+                yield (f, t[:m.start()].count('\n') + 1,
+                       '%s formats with Lua\'s own formatter (only %%d %%s %%f %%p %%c %%%%): format hex or widths with snprintf '
+                       'first (e.g. hex32() in host_rgon.c) and pass the text as %%s' % m.group(1))
+
+
+RULES = [rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part]
 
 
 def main():

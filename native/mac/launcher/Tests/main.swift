@@ -161,23 +161,27 @@ do {
     check(strip("[=[ ]] ]=]z") == "\"" + String(repeating: " ", count: 8) + "\"z", "stripLua: long string")
     check(ModScan.scanLua(units("-- REPENTOGON\nlocal s = \"REPENTOGON\" local t = [[REPENTOGON]]")).says == 0, "scanLua: REPENTOGON in comments and strings is not named")
     let q = ModScan.scanLua(units("if not REPENTOGON then\n return\nend\nIsaac.Foo()\nif REPENTOGON then return end"))
-    check(q.says == 2 && q.quits == 1 && q.yields == 1 && q.names == ["Isaac", "Foo"], "scanLua: quit guard, yield guard, names")
+    check(q.says == 2 && q.quits == 1 && q.yields == 1 && q.names == ["Isaac", "Foo.Isaac"], "scanLua: quit guard, yield guard, names")
 
     // a mods folder of edge cases: what the scan makes of it, against the values the JS gives (see run.sh for the byte comparison)
     var cache: [String: ModScan.CacheEntry] = [:]
     let (rows, st) = ModScan.scanDirectory(fixtures, cache: &cache)
-    check(st.enabled == 15 && rows.count == 12 && st.scanned == 15, "fixtures: 15 enabled mods read, 12 name REPENTOGON")
+    check(st.enabled == 16 && rows.count == 13 && st.scanned == 16, "fixtures: 16 enabled mods read, 13 name REPENTOGON")
     check(rows["comments-only"] == nil && rows["no-repentogon"] == nil && rows["disabled-mod"] == nil && rows["repentogon"] == nil,
           "fixtures: comment-only, plain, disabled and the Layer's own folder are not listed")
     check(rows["quits-top-level"]?.quits == 2 && rows["guards"]?.quits == 4 && rows["bom-crlf"]?.quits == 1, "fixtures: quits counted as the JS counts them")
     check(rows["quits-in-subfile"]?.quits == 0, "fixtures: a quit guard outside the top-level main.lua is not a quit")
     check(rows["comments-then-code"]?.yields == 4, "fixtures: yields")
-    check(rows["defined"]?.names.contains("GetPlayerIndex") == false && rows["defined"]?.names.contains("Thing") == true, "fixtures: names the mod defines itself are dropped")
+    check(rows["defined"]?.names.contains("GetPlayerIndex") == false && rows["defined"]?.names.contains("Thing.REPENTOGON") == true, "fixtures: names the mod defines itself are dropped")
+    check(rows["receivers"]?.names.isSuperset(of: ["AddCollectibleCycle.player", "GetBackdrop!GetRoom", "GetBagOfCraftingContent!GetPlayer",
+          "AddSomething.Isaac", "Dump!rep", "ChainLightning", "GetBaseHP!ToNPC", "Copy.nm", "Cycle"]) == true
+          && rows["receivers"]?.names.contains("AddBaited") == false && rows["receivers"]?.names.contains("AddBaited.other") == false,
+          "fixtures: call names carry the receiver (.id, !callee, none); a name the mod defines is dropped with its hints")
     let text = ModScan.lua(rows)
     check(text.contains("[\"weird name _1_! +x__\"]"), "fixtures: ids lower-cased and sanitised for the file")
     var again = cache
     let (_, st2) = ModScan.scanDirectory(fixtures, cache: &again)
-    check(st2.scanned == 0 && st2.cached == 15, "fixtures: second pass reads nothing")
+    check(st2.scanned == 0 && st2.cached == 16, "fixtures: second pass reads nothing")
 
     // the pre-launch step: file location, cache, enable/disable
     let (d, base) = fresh("modscan")
@@ -187,7 +191,7 @@ do {
     runAll(d)
     let scan1 = read(d.modScanFile) ?? ""
     check(d.modScanFile.path == d.support.appendingPathComponent("modscan.lua").path, "scan file is <support>/modscan.lua")
-    check(scan1.contains("[\"delta_444\"] = { says = 1, quits = 1, yields = 0, files = 1, names = \"Delta Isaac\" },") && !scan1.contains("eps_555")
+    check(scan1.contains("[\"delta_444\"] = { says = 1, quits = 1, yields = 0, files = 1, names = \"Delta.Isaac Isaac\" },") && !scan1.contains("eps_555")
           && !scan1.contains("\"repentogon\""), "pre-launch: modscan.lua lists the mod that names REPENTOGON, not the others or the Layer folder")
     check(logText(d).contains("mod scan: 3 enabled mod(s)") || logText(d).contains("mod scan: 2 enabled mod(s)"), "pre-launch: scan logged")
     let m1 = (try? fm.attributesOfItem(atPath: d.modScanFile.path))?[.modificationDate] as? Date

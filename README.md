@@ -49,8 +49,12 @@ Working, on an M2 MacBook Air:
   contents and output, TM Trainer's procedural items, transformation progress. Custom
   Stage API and Unique Items API see REPENTOGON as well; StageAPI's custom floors (its own
   and Fiend Folio's) work with it. Only REPENTOGON's console autocompletion is missing,
-  since the game's own console has none. The layer decides per mod whether it can run.
-  It has 690 of REPENTOGON's 1,727 functions and 139 of its 380 callbacks, the
+  since the game's own console has none. The layer decides per mod whether it can run,
+  and now checks each name on the class the mod calls it on (a method one class has no
+  longer counts for another). New: the player death, revive, health type, birth, bed,
+  pocket swap and card and pill callbacks, and more entity methods that Fiend Folio and
+  Epiphany use (familiars, enemy shields and splitting, capsule collision).
+  It has 710 of REPENTOGON's 1,727 functions and 155 of its 380 callbacks, the
   ones the tested mods use first. Item settings such as `ChargeType` are writable, as
   with REPENTOGON. `scripts/mac/rgon_census.py` measures the rest.
 - One pinned game version. The recompilation only works with one exact `isaac-ng.exe`
@@ -61,7 +65,8 @@ Working, on an M2 MacBook Air:
   `content-repentogon/` folder is read as REPENTOGON does.
 - A Launcher with a startup window that shows each loading step. A boot with about 95 mods
   takes roughly 10 seconds. With that many mods the game now runs about 20% faster than
-  before, and its log is written in the background.
+  before, and its log is written in the background. The log records frame and game-work
+  times every 10 seconds with the floor and room (`scripts/mac/framestats.py` sums them up).
 - Optional full screen into the strip beside the notch (NotchFill, see below).
 
 Not done yet:
@@ -93,7 +98,7 @@ game.
   [`0cd8f863f`](https://github.com/TeamREPENTOGON/REPENTOGON/commit/0cd8f863fe9947a8414d9018a700269603e629e6)
   (2026-11-09, version 1.1.3, its latest snapshot). That snapshot targets game v1.9.7.12;
   this build runs v1.9.7.17, which is why fields are re-measured.
-- **Progress:** 690 of its 1,727 functions and 139 of its 380 callbacks, the ones
+- **Progress:** 710 of its 1,727 functions and 155 of its 380 callbacks, the ones
   the tested mods use coming first. `scripts/mac/rgon_census.py` compares the layer
   against a REPENTOGON checkout, and `docs/mac/layer-gaps.md` has the details.
 - The layer tells each mod whether REPENTOGON is there, and only says yes when every

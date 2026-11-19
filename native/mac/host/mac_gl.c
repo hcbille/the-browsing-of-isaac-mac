@@ -11,7 +11,7 @@
  *                              (the M1 path). mac_main also takes --headless.
  *   ISAAC_MAC_VSYNC=0          swap interval 0 (default 1)
  *   ISAAC_MAC_UNCAPPED=1       no 60 fps limiter (measures speed)
- *   ISAAC_MAC_STATS_EVERY=N    frame timing line every N presented frames (120)
+ *   ISAAC_MAC_STATS_EVERY=N    frame timing line every N presented frames (600)
  *   ISAAC_MAC_SHOT=F:path[,F:path...]  screenshot at presented frame F; @F is
  *                              F frames after the scripted run started
  *                              (mac_script.c); a relative path is
@@ -238,6 +238,19 @@ static struct {
     double sum, min, max, work_sum, work_max;
     uint32_t slow;
 } g_st;
+#define ST_MAX 8192                           /* samples kept for the interval's 95th percentile (no allocation) */
+static float g_st_dt[ST_MAX], g_st_work[ST_MAX];
+
+static int cmp_f(const void *a, const void *b) {
+    float x = *(const float *)a, y = *(const float *)b;
+    return (x > y) - (x < y);
+}
+static double p95(float *v, uint32_t n) {
+    if (!n) return 0;
+    if (n > ST_MAX) n = ST_MAX;
+    qsort(v, n, sizeof(float), cmp_f);
+    return v[(n * 95 + 99) / 100 - 1];        /* nearest rank */
+}
 static double g_all_sum, g_all_min = 1e9, g_all_max;
 static uint32_t g_all_n;
 static int g_quit_frame = -1;
@@ -262,6 +275,7 @@ static void stats_frame(uint64_t start, uint64_t end, uint32_t frame) {
         double dt = (double)(end - g_last_swap) / 1e6;
         double work = (double)(start - g_last_end) / 1e6;
         if (!g_st.n) g_st.first = frame;
+        if (g_st.n < ST_MAX) { g_st_dt[g_st.n] = (float)dt; g_st_work[g_st.n] = (float)work; }
         ++g_st.n;
         g_st.sum += dt;
         if (g_st.n == 1 || dt < g_st.min) g_st.min = dt;
@@ -275,11 +289,12 @@ static void stats_frame(uint64_t start, uint64_t end, uint32_t frame) {
             if (dt > g_all_max) g_all_max = dt;
         }
         static uint32_t every;
-        if (!every) { const char *e = getenv("ISAAC_MAC_STATS_EVERY"); every = e && atoi(e) > 0 ? (uint32_t)atoi(e) : 120u; }
+        if (!every) { const char *e = getenv("ISAAC_MAC_STATS_EVERY"); every = e && atoi(e) > 0 ? (uint32_t)atoi(e) : 600u; }
         if (g_st.n >= every) {
-            printf("[mac][frame] frames %u-%u: avg %.2f ms (%.1f fps) min %.2f max %.2f | game work avg %.2f max %.2f ms | %u over 20 ms\n",
+            printf("[mac][frame] frames %u-%u: avg %.2f ms (%.1f fps) min %.2f max %.2f | game work avg %.2f max %.2f ms | %u over 20 ms | p95 %.2f ms work p95 %.2f ms\n",
                    g_st.first, frame, g_st.sum / g_st.n, 1000.0 * g_st.n / g_st.sum, g_st.min, g_st.max,
-                   g_st.work_sum / g_st.n, g_st.work_max, g_st.slow);
+                   g_st.work_sum / g_st.n, g_st.work_max, g_st.slow,
+                   p95(g_st_dt, g_st.n), p95(g_st_work, g_st.n));
             memset(&g_st, 0, sizeof g_st);
         }
     }

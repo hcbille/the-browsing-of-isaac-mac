@@ -10,8 +10,8 @@ import Foundation
 /// Contract: docs/mac/launcher.md "Mod scan".
 enum ModScan {
     /// Bump when the scanning rules change: it invalidates every cached row.
-    static let scannerVersion = 1
-    static let namesMax = 8000
+    static let scannerVersion = 2
+    static let namesMax = 20000
     static let layerFolder = "repentogon"
 
     typealias U = [UInt16]
@@ -128,6 +128,40 @@ enum ModScan {
         return true
     }
 
+    /// What the code shows of a call's receiver (`receiverHint` in mods.mjs): ".id" for `id:Name(`, "!callee" for
+    /// `callee(...):Name(`, "" for anything else. `at` is the index of the `.` or `:` before the name.
+    static func receiverHint(_ code: U, _ at: Int) -> String {
+        var k = at - 1
+        while k >= 0 && isSpace(code[k]) { k -= 1 }
+        if k < 0 { return "" }
+        if isWord(code[k]) {
+            var b = k
+            while b >= 0 && isWord(code[b]) { b -= 1 }
+            if !isIdStart(code[b + 1]) { return "" }
+            var j = b
+            while j >= 0 && isSpace(code[j]) { j -= 1 }
+            if j >= 0 && (code[j] == c(".") || code[j] == c(":")) && !(j > 0 && code[j - 1] == code[j]) { return "" }
+            return "." + str(code, b + 1, k + 1)
+        }
+        if code[k] == c(")") {
+            var depth = 0
+            var o = k
+            while o >= 0 {
+                if code[o] == c(")") { depth += 1 }
+                else if code[o] == c("(") { depth -= 1; if depth == 0 { break } }
+                o -= 1
+            }
+            if o < 0 { return "" }
+            var e = o - 1
+            while e >= 0 && isSpace(code[e]) { e -= 1 }
+            if e < 0 || !isWord(code[e]) { return "" }
+            var b = e
+            while b >= 0 && isWord(code[b]) { b -= 1 }
+            return isIdStart(code[b + 1]) ? "!" + str(code, b + 1, e + 1) : ""
+        }
+        return ""
+    }
+
     /// One file's facts. Same rules as the JS: see the comment above `scanLua` in mods.mjs.
     static func scanLua(_ src: U) -> FileFacts {
         let code = stripLua(src)
@@ -148,7 +182,7 @@ enum ModScan {
                     while q < n && isWord(code[q]) { q += 1 }
                     let en = q
                     while q < n && isSpace(code[q]) { q += 1 }
-                    if q < n && code[q] == paren { f.names.insert(str(code, st, en)) }
+                    if q < n && code[q] == paren { f.names.insert(str(code, st, en) + receiverHint(code, p)) }
                 }
             }
             p += 1
@@ -339,7 +373,10 @@ enum ModScan {
             defined.formUnion(r.defined)
         }
         if row.says == 0 { return nil }
-        row.names.subtract(defined)
+        row.names = row.names.filter { t in
+            let base = t.split(whereSeparator: { $0 == "." || $0 == "!" }).first.map(String.init) ?? t
+            return !defined.contains(base)
+        }
         return row
     }
 
@@ -356,8 +393,9 @@ enum ModScan {
             return String(decoding: out, as: UTF16.self)
         }
         func validName(_ s: String) -> Bool {
-            let u = Array(s.utf16)
-            return !u.isEmpty && isIdStart(u[0]) && u.allSatisfy(isWord)
+            // Name, or Name.hint / Name!hint
+            let parts = s.utf16.split(maxSplits: 1, omittingEmptySubsequences: false) { $0 == 46 || $0 == 33 }.map(Array.init)
+            return parts.count >= 1 && parts.allSatisfy { !$0.isEmpty && isIdStart($0[0]) && $0.allSatisfy(isWord) }
         }
         let keyed = mods.map { (key: $0.key.lowercased(), row: $0.value) }
             .sorted { Array($0.key.utf16).lexicographicallyPrecedes(Array($1.key.utf16)) }

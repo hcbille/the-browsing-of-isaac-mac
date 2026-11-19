@@ -59,6 +59,15 @@ checkout (`notes/current.md`, `notes/NEXT.md`, `notes/PROGRESS.md`). Uncommitted
   lines are never dropped. Switches: `ISAAC_LOG_DEDUP=0` (every line), `ISAAC_LOG_UNBUFFERED=1` (the old per-line writes;
   also automatic on a terminal). A lab that greps the log for a line counts at most 3 of a `[warn]`/`failed:` line unless
   `ISAAC_LOG_DEDUP=0`. Bench: `LAB=lab_logbench.lua` (per-path cost per line).
+- **Frame timing** (`stats_frame` in `mac_gl.c`, windowed runs only; a headless run presents no frames). Every
+  `ISAAC_MAC_STATS_EVERY` (default 600, 10 s) presented frames: `[mac][frame] frames A-B: avg .. | game work avg .. max ..
+  ms | N over 20 ms | p95 P ms work p95 Q ms` (p95 is nearest-rank over the interval, from fixed arrays, no allocation; new
+  fields are only appended, lint rule `rule_frame_line_prefix`). Frame time ~ game work time here, so read "work". Where
+  the player was: `api_framectx.lua` logs `[isaac][rgon] level: ...`, `room: ... entities N` on each new room and
+  `ents N room I` every 600 updates (`ISAAC_FRAMECTX=0` switches it off, for an A/B). Join them with
+  `python3 scripts/mac/framestats.py <support>/logs/game.log`: every interval with floor/room/entity count, the slowest
+  10, and a per-floor summary. Not yet recorded: time inside mod Lua callbacks (needs a timer around the callback
+  dispatch in `api_callbacks.lua`/`api_hooks.lua`).
 
 ## 4. Build
 
@@ -287,6 +296,10 @@ means the cloud guard failed. Never run it against the real client without `ISAA
   section 5. Remaining names per mod: section 4. Suggested order: section 7.
 - Measure after each batch: run all 95 mods with `ISAAC_RGON_LAB=lab_names.lua` and read the gate lines
   (`[isaac][rgon] gate: <folder> is shown|not shown ...`) and `layer-gate.json`.
+- The gate is class-aware (layer-gaps.md section 9, "The gate matches names with their class"): after a change to the scan
+  (`mods.mjs` / `ModScan.swift`) run `native/mac/launcher/Tests/run.sh <scratch>`; after a REPENTOGON bump or a new alias run
+  `ISAAC_GAME_DIR=<game folder> python3 -I scripts/recomp/rgon/tools/gate_names.py` (and `--check`); `modscan.lua` for a test
+  support folder: `node native/mac/launcher/Tests/golden_scan.mjs lua <mods dir> <out>`; lab `lab_gate_class_test.lua`.
 - **Honesty rule**: a name counts as implemented only if it really works. An inert stand-in or a hook that
   was never seen firing is a gap, recorded in `layer-gaps.md`, not counted.
 - REPENTOGON's offsets are for v1.9.7.12; every offset must be measured in this exe (labs, the game's own
@@ -294,11 +307,32 @@ means the cloud guard failed. Never run it against the real client without `ISAA
 - Not Layer gaps: `! fired's_angels_and_statues` errors at `main.lua:18` under Vanilla Launch too (the mod's
   own bug).
 
+- **Testing a hook change without touching the shared lift output (worker cba, 2026-11-19).** `cp -cpR output/recomp/lift/gu .scratch/<task>/gu` is an instant
+  APFS clone (nothing is copied until a file changes). Run `apply_wrap_patches` and `apply_insn_hooks` from `lift_patches.py` on the clone, `cp -Rp output/mac
+  <out>`, then `build_native.py --out <out> --lift-dir .scratch/<task>/gu` (about 40 s with a new `host_rgon.c`). The shared binary and lift stay untouched.
+  `toolchain/env.sh` is in the workspace folder, one level above the work repo. For a syntax check of a Layer file build `luac` from `tools/lua-5.3.3`.
+- **Game facts found by the player callbacks lab.** The drop-button code (`control_drop_pocket_items`) runs twice per update. Collectible ids: 412 is
+  Cambion Conception, 413 Immaculate Conception (their code is 0x19c / 0x19d). Pocket slots are `{id, type}` at player +0x17a0 + 8 * i (type 1 card, 0 pill,
+  2 pocket active). Conception familiar flags are at +0x1938, the Immaculate counter at +0x1930, Cambion at +0x1934. An insn hook may only redirect to a
+  label of the same lifted function; `hook_table.py` accepts a lifted entry inside a larger index function (`lo <= fva <= iva`).
+
 ## 8. Committing
 
 Commit on `mac-native` per verified piece, conventional message, ending with the session's Co-Authored-By
 line. `git add` explicit paths (never `-A` at the repo root, never `package-lock.json`). Check the commit for
 binaries: `git show --stat HEAD`.
+
+**Parallel workers use git worktrees** (from 2026-11-19 on). In one shared checkout, every census and lab staged
+the other workers' unfinished edits, lint failed on files a worker did not own, and commits of shared files needed
+temporary indexes. Each worker now gets `git worktree add <workspace>/wt-<name> -b work/<name> mac-native`, next to
+the main checkout so `../REPENTOGON`, `../game` and `../toolchain` resolve the same. A worktree has the tracked
+files only; the untracked shared inputs stay in the main checkout and the scripts find them through git's common
+directory (`scripts/mac/mainrepo.py`): `run.sh` stages the worktree's Layer and lab but runs the main checkout's
+`output/mac/isaac-mac`, lift segments and game bundle; `build_native.py` takes `tools/lua-5.3.3`, the lift output
+and the toolchain from there; `stage_layer.py` takes `enums_ex.lua` from the main checkout's REPENTOGON submodule
+(a worktree's submodule folder is empty). The heavy lock and the play binary stay global. Finished branches are
+merged into `mac-native` with `git merge --no-ff` (the merge message carries the Co-Authored-By line too), then
+linted, censused and trap-tested as a whole. Worktree cost: about 90 MB each.
 
 ## 9. Publishing
 

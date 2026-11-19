@@ -30,7 +30,9 @@ RECOMP = REPO / "scripts" / "recomp"
 HOST = RECOMP / "host"
 LIFT = RECOMP / "lift"
 MAC_HOST = REPO / "native" / "mac" / "host"
-LUA_SRC = REPO / "tools" / "lua-5.3.3" / "src"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from mainrepo import main_checkout, shared  # noqa: E402  (untracked inputs live in the main checkout)
+LUA_SRC = shared(REPO, "tools", "lua-5.3.3") / "src"
 
 ARCH = ["-arch", "arm64"]
 COMMON = ARCH + ["-DISAAC_NATIVE=1", "-DRECOMP_MEM_IDENTITY=0", "-fno-strict-aliasing"]
@@ -56,10 +58,10 @@ LDFLAGS = ARCH + ["-Wl,-stack_size,0x10000000", "-lm"]
 # SDL3 (Homebrew) for the window and the GL context; Khronos GLES headers for
 # the host's GL backend (ANGLE has no headers of its own here).
 SDL_PREFIX = Path(os.environ.get("SDL_PREFIX", "/opt/homebrew"))
-KHRONOS = Path(os.environ.get("KHRONOS_DIR", REPO.parent / "toolchain" / "khronos"))
+KHRONOS = Path(os.environ.get("KHRONOS_DIR", main_checkout(REPO).parent / "toolchain" / "khronos"))
 
 # ANGLE (libEGL / libGLESv2 with the Metal backend; docs/mac/graphics-spike.md).
-ANGLE_DIR = Path(os.environ.get("ANGLE_DIR", REPO.parent / "toolchain" / "angle"))
+ANGLE_DIR = Path(os.environ.get("ANGLE_DIR", main_checkout(REPO).parent / "toolchain" / "angle"))
 
 
 def gen_gl_fake_rename(gen_dir: Path) -> None:
@@ -97,7 +99,7 @@ def compile_one(src: Path, obj: Path, flags: list[str]) -> tuple[Path, int, str]
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--jobs", type=int, default=3)
-    ap.add_argument("--lift-dir", type=Path, default=REPO / "output" / "recomp" / "lift" / "gu")
+    ap.add_argument("--lift-dir", type=Path, default=shared(REPO, "output", "recomp", "lift", "gu"))
     ap.add_argument("--out", type=Path, default=REPO / "output" / "mac")
     args = ap.parse_args()
 

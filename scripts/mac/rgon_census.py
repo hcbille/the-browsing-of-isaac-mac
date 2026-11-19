@@ -78,8 +78,10 @@ def walk(d, ext):
 HEAD = re.compile(r"^###\s+([A-Za-z_][A-Za-z0-9_]*)\b[^{\n]*\{:\s*[^}]*aria-label='([^']+)'", re.M)
 
 
-def parse_docs(rg):
-    """-> list of dicts {cls, name, kind, doc} (new names only; 'Modified ...' sections are counted apart)"""
+def parse_docs(rg, include_modified=False):
+    """-> list of dicts {cls, name, kind, doc} (new names only; 'Modified ...' sections are counted apart, or,
+    with include_modified, listed with kind 'mod': a vanilla name whose behaviour REPENTOGON changes, such as
+    EntityNPC:GetPathfinder, which a mod may use as REPENTOGON's)"""
     root = os.path.join(rg, 'docs', 'docs')
     out, modified = [], 0
     for sub in ('', 'menus', 'renderer'):
@@ -98,6 +100,8 @@ def parse_docs(rg):
                 name, label = m.group(1), m.group(2).strip()
                 if label.startswith('Modified'):
                     modified += 1
+                    if include_modified and not name.startswith('__'):
+                        out.append({'cls': cls, 'name': name, 'kind': 'mod', 'doc': os.path.join(sub, fn)})
                     continue
                 kind = {'Functions': 'fn', 'Variables': 'var', 'Constructors': 'ctor'}.get(label)
                 if kind is None or name.startswith('__'):

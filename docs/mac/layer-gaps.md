@@ -689,6 +689,41 @@ the colour `Player::UsePill` was called with is kept on a stack and added by the
 - Lab `lab_familiar_test.lua`: 40 PASS 0 FAIL (`.scratch/familiar/lab.log`). Probe: `lab_familiar_probe.lua`. Census 663 functions (was 658),
   callbacks 139, 9 mods shown; trap: same as base.
 
+### The gate matches names with their class (worker gateclass, 2026-11-19)
+
+The gate used to match a mod's use by the bare method name: `EntityFamiliar.GetWeapon` counted as present because `EntityPlayer.GetWeapon` existed.
+Now (`gate_weigh` in `rgon.lua`):
+- **Scan** (`mods.mjs` `receiverHint`, ported in `ModScan.swift`, scanner version 2; Tests/run.sh checks both byte for byte): every call name is
+  written with what the code shows of its receiver: `Name.var` for `var:Name(`, `Name!callee` for `callee(...):Name(`, bare `Name` otherwise.
+- **Tables** (`gate_names.lua`, from `tools/gate_names.py`; reads REPENTOGON from `REPENTOGON_DIR`, `third_party/REPENTOGON` or `../REPENTOGON`):
+  `pairs` (`Name=Class,Class`: every class REPENTOGON registers a REPENTOGON-only name on, from its docs and C++ registrations), `vpairs` (names the
+  game also has, REPENTOGON adds on another class; a short hand list `VANILLA_NAME_NEW`, because the docs list some vanilla methods as additions:
+  `EntityPickup:CanReroll` is the game's own), and the inference tables shared with `rgon_backlog.py` (call results, constructors, variable names, parents).
+- **Rule** (same as the backlog tool): the class is a class name (`Isaac.X`), a call result (`Game():GetRoom():X`, `x:ToNPC():X`), or a variable named like
+  its class (`player`, `bossPortraitLayer`, `entitySaveState`); anything else keeps every class that registers the name. A use is missing when the
+  layer lacks `Class.Name` on any candidate (Entity.X covers EntityPlayer). A name the game also has counts only where the receiver is known
+  (`GetWeapon.familiar`). `REPENTOGON.Extras.Gate.mods[mod].missing_on` lists the classes.
+- Class spellings: docs/C++ names that differ from the Layer's are mapped in `CLASS_ALIAS` (`EntitiesSaveState` is `EntitySaveState`).
+- Test: `lab_gate_class_test.lua` (first room; needs the scan). Boot cost of the gate, 95 mods: about 30 to 50 ms (was about 8 ms; the scan file is 3 times larger).
+- Effect on the 12 mods that use REPENTOGON: no change of shown/not shown (a 13th, MusicPicker, is new in the scan and not shown: it lacks
+  two callbacks). Fiend Folio's missing names went from 154 to 163 and Epiphany's from 82 to 91, although the Layer gained about 20 functions
+  in between (census 690 -> 711 implemented): names that exist on another class and were counted as present (the backlog tool lists 171 and 88).
+  Unknown receivers that are really a game class the tables cannot name still make a superset; a mod can be hidden by such a name until the
+  Layer has it on every candidate or the inference learns the variable (extend `VAR_SUFFIX` / `RET_EXTRA` in `gate_names.py`).
+
+### Entity classes (`api_npc.lua`, lab `lab_entity_classes.lua`, 2026-11-19)
+
+Entity:GetCollisionCapsule / AddMagnetized / TryThrow / GetEntityConfigEntity, EntityFamiliar:IsCharmed / GetItemConfig / GetRandomWisp /
+UpdateDirtColor, EntityNPC:Get/SetShieldStrength / GetDarkRedChampionRegenTimer / ApplyTearflagEffects / TrySplit / UpdatePickupGhosts /
+ReplaceSpritesheet, EntityBomb:GetHeight / SetHeight / UpdateDirtColor, EntityConfigEntity:GetShadowSize / GetEntityTags / HasEntityTags,
+Capsule:Collide. Every address and offset is in the header of `api_npc.lua`. Lab: 99 PASS, 0 FAIL. Lessons from the lab:
+- A `TakeDamage` is applied on the next update: the hit points are unchanged right after the call (the shield test reads them two frames later).
+- `Kill()` on a dark red champion leaves its hit points up and the regen counter at 0; a lethal hit (hit points below 0) starts the counter (+2 a frame).
+- The variant-loop bombs of a lab explode about 100 frames after spawn and kill everything near: remove them before later tests.
+- `ri32((call(..)))` reads memory at eax. `GetRandomWisp` raised a garbled error because of it; lint rule `read-of-call-result`.
+Not registered: `Entity:GetNullCapsule` (0x006b6c20 is understood, but no null layer of size > 0 was found to prove it); ThrowMaggot(AtPos), NPC:GetLootList,
+Shape.Capsule (see the header). `EntityNPC:ReplaceSpritesheet` is the plain case: it does not append the champion/stage suffix.
+
 ### Next batches (proposed)
 
 0. (done, B1: quad getters, Copy, Translate, Flip. B2: Capsule value type, Shape, FindInCapsule; left: Capsule:Collide and the game-made capsules. B3: pause/daily/prompt state, Delirium fields, GetDimension; left: the rest of GenericPrompt, selected elements, Delirium's other fields.)
@@ -723,3 +758,25 @@ Set*ChallengeWaves are not done (the game computes those maxima itself). `RoomDe
 tables, address written at descriptor +0x10, type-checked); the game follows (teleporting into a rewritten room gives the new room type).
 `RoomConfigHolder` carries every `RoomConfig` function (`on_both` in api_roomconfig.lua; lint rule `roomconfig-both-tables`).
 Lab 57/0 with 95 mods; Fiend Folio's Toadsie now passes SetWaterClipFlags and GetPathfinder and stops at `Sprite:Copy` (toadsie.lua:142, not in the Layer yet).
+
+**Player death, health type, births, cards and pills (worker cba, 2026-11-19; lab `lab_player_death_cb.lua`, 74 PASS / 0 FAIL).** Hook slots 180 to 192
+(the slot space is now 224: `RGON_HOOKS` in host_rgon.c, `RGON_SLOTS` in lift_patches.py, `MAX_SLOTS` in hook_table.py; `api_hooks.lua` arms the new
+code only when `B.HOOKS >= 224`, so an older binary still runs the Layer). Needs an engine build.
+
+| Callback | Game function / site (v1.9.7.17) | Notes |
+|---|---|---|
+| MC_PRE_TRIGGER_PLAYER_DEATH 1050 | `Entity_Player::TriggerDeath` 0x007a1090, ret 4 (slot 180) | `(player)`; a `false` answer revives (Revive, damage cooldown kept) and the function answers true without dying. The check-only call (arg 0) is skipped. |
+| MC_TRIGGER_PLAYER_DEATH_POST_CHECK_REVIVES 1051 | insn hook at 0x7a1c97 (slot 185), `ebx` = player | Fires only when no vanilla revive (1UP, Dead Cat, ...) applies; `false` revives. |
+| MC_PRE_PLAYER_REVIVE 1481 | `Entity_Player::Revive` (existing hook) | `false` returns 0 without reviving, and POST_PLAYER_REVIVE does not fire. |
+| MC_PLAYER_HEALTH_TYPE_CHANGE 1128 | the `GetHealthType` hook | `(player, new, previous, default)`; the previous type is kept per player (keyed by the entity's init seed at +0x3ec, checked in the lab), re-entry guarded. No heart conversion (see below). |
+| MC_PRE_PLAYER_GIVE_BIRTH_IMMACULATE 1475 | insn 0x7c81a6 (slot 190), `ebx` = familiar flag | Collectible 413 = 0x19d; `(player, flag)`, a `false` answer clears the flag. |
+| MC_PRE_PLAYER_GIVE_BIRTH_CAMBION 1474 | insn 0x775e1b (slot 191), `eax` = flag | Collectible 412 = 0x19c. Same shape. Lint rule `conception-pairing`: the two were swapped once by guessing from function order. |
+| MC_PRE_TRIGGER_BED_SLEEP_EFFECT 1285 | insn 0x9acd4e in `ItemOverlay::Update` (slot 189) | `(player)`; `true` skips the heal (jump to 0x9ace00). Fires once the bed overlay starts. |
+| MC_PRE_PLAYER_POCKET_ITEMS_SWAP 1287 | insn 0x7a4331 in `control_drop_pocket_items` (slot 188) | `(player)`; `true` skips the swap (jump to 0x7a43f6). The game runs this code twice per update, so one button press swaps twice unless answered. |
+| MC_PRE/POST_PLAYER_ADD_CARD 1350/1351, ADD_PILL 1352/1353 | `AddPocketItem` 0x007a3af0, `SetCard` 0x007a3cb0, `SetPill` 0x007a3cf0 (all ret 8; slots 181 to 183) | `(player, id, slot)`, param = id; slot 1 when slot 0 holds a pocket active. `false` cancels, a number replaces the id. |
+| MC_POST_PLAYER_COLLECT_CARD 1357 / COLLECT_PILL 1359 | insns 0x6ec1c1 / 0x6ec1e7 in `Entity_Pickup::HandleCollision` (slots 186, 187), `esi` pickup, `edi` player | `(player, pickup)`, param = subtype. |
+| MC_POST_PLAYER_DROP_CARD 1360 / DROP_PILL 1361 | `DropPocketItem` 0x007a48f0, ret 8 (slot 184) plus insn 0x7a4986 (slot 192) that catches the spawned pickup | `(player, pickup, slot)`, param = subtype. |
+
+Not done: the twin (Jacob/Esau) sync and the Forgotten/Keeper heart fixes after a revive; heart conversion on a health type change and the XML `healthtype`
+default; MC_POST_PLAYER_REMOVE_CARD/PILL (1354/1355); the drops caused by a lost pocket slot; MC_PRE_PLAYER_COLLECT_CARD/PILL (1356/1358).
+REPENTOGON's byte signatures for the two birth sites match nothing in this build; the sites were found from the store `or [player+0x1938], reg`.

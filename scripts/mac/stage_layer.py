@@ -19,7 +19,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 RGON = REPO / "scripts" / "recomp" / "rgon"
-REPENTOGON = REPO / "third_party" / "REPENTOGON"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from mainrepo import shared  # noqa: E402  (a worktree has an empty submodule folder)
+REPENTOGON = shared(REPO, "third_party", "REPENTOGON")
 
 NOTICE = """REPENTOGON-compatible Layer (Mac Build)
 
