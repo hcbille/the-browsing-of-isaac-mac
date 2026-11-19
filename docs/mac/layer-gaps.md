@@ -539,6 +539,24 @@ Still not registered (work, but not checked against REPENTOGON's maths): Scale, 
 image. No screenshot: the Layer has no render path that consumes a quad (`Renderer`/`Image` are accepted, not supported), so a flipped quad
 cannot be drawn yet.
 
+#### `RoomConfig.GetRoomByStageTypeAndVariant` (`api_roomconfig.lua`, 2026-11-19, chunk A1)
+
+Real now (it was a nil-returning `RoomConfigHolder` stand-in), on `RoomConfig` and `RoomConfigHolder`. It calls the game's own lookup
+(`__thiscall`, `ret 0x10`) at `0x0082c720` with `this` = game+0x18910; REPENTOGON's signature for it matches nothing in this exe (the
+function was found as the one just before `RoomConfig::GetRandomRoom` at `0x0082c7d0`, whose signature matches once, and read from its
+disassembly: stage record = stage * 0xc4, room set = +0x64 + mode * 0x2c, loaded flag +0x28 (the function loads the set itself), room array
++0x18, count +0x1c, 0x5c bytes a room, matched on type +8 and variant +0xc, 0 and a log line when not found). The fourth argument is
+REPENTOGON's `Mode` (0 normal, 1 greed, -1 the current game's), not a difficulty; anything outside -1..1 is answered as -1 (REPENTOGON
+passes -2 on, which the game's lookup would index before the stage record). Argument errors as REPENTOGON's (fewer than 3 arguments,
+stage outside 0..36, type outside 1..29). The result is the game's own RoomConfigRoom class: the layer asks the game's `RoomDescriptor.Data`
+getter through a throw-away descriptor-shaped block whose word at +0x10 (the Data pointer: found by scanning a real descriptor) holds the
+room, so it also works at mod load time, before any level has a descriptor with Data (Custom Stage API asks then, `extrarooms.lua:115`).
+`T.roomconfig_room(address)` hands that wrapper to other Layer parts. Not done: REPENTOGON's virtual room sets (`RoomConfig.AddRooms`,
+custom rooms found by this call), so a room a mod adds is not found. Verified: `lab_roomconfig_test.lua` 53 PASS, 0 FAIL (headless,
+`.scratch/a1/lab3.log`): on Basement I, Caves I, Depths I and Flooded Caves I every room's own StageID/Type/Variant/Mode gives the same address
+the game holds for the descriptor, with equal Type, Variant, Subtype, Shape, Name, Weight, Difficulty, Doors and spawn count, the same class,
+and `RoomConfigHolder` the same room; unknown and negative variants are nil; the call also works at load time.
+
 ### Batch B2: hit shapes (`api_shapes.lua`, 2026-11-19)
 
 `Capsule` (constructor and getters) is a Lua value type. `DebugRenderer.Get` and `Shape` (`Capsule`, `Circle`, `GetTimeout`, `SetTimeout`) are accepted, not supported: they record and draw nothing, so they are left out of `REPENTOGON.Implemented` (lint rule `rule_inert_not_implemented`).

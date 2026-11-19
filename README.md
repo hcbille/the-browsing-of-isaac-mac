@@ -69,7 +69,8 @@ Not done yet:
   nothing yet. They used to freeze the game on a room change; that's fixed.
 - More REPENTOGON coverage: most missing callbacks need new hooks in the game. StageAPI
   has most of its REPENTOGON names now (room water, backdrops, the boss-pick callback),
-  but still runs without REPENTOGON until its room-config functions are in.
+  and REPENTOGON's room lookup by stage, type and variant, but still runs without
+  REPENTOGON until its remaining REPENTOGON branches work.
 - A from-scratch build check.
 - A rare Lua garbage-collector crash, seen once and not reproducible since. Debug switches
   for it are built in and off by default (`docs/mac/RUNBOOK.md`).

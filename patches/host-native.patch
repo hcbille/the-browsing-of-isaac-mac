@@ -3871,10 +3871,10 @@ index 16a136a..7dcdb4e 100644
  ------------------------------------------------------------------------------
 diff --git a/scripts/recomp/rgon/api_menus.lua b/scripts/recomp/rgon/api_menus.lua
 new file mode 100644
-index 0000000..d4a0357
+index 0000000..bf6f414
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_menus.lua
-@@ -0,0 +1,332 @@
+@@ -0,0 +1,331 @@
 +-- api_menus.lua -- the main menu's Lua surface (round 123, milestone M8): MenuManager, CharacterMenu,
 +-- SaveMenu, and the small globals Epiphany reaches at load or in a run (ItemOverlay, RoomTransition,
 +-- BossPoolManager, RoomConfigHolder). Epiphany's own character menu is built on them
@@ -4144,15 +4144,14 @@ index 0000000..d4a0357
 +                       "Game.SetColorModifier", "Room.UpdateColorModifier" }) do R.Implemented[n] = nil end
 +end
 +
-+-- BossPoolManager.GetPool(stage) and RoomConfigHolder.GetRoomByStageTypeAndVariant: the game's boss pools and
-+-- room tables. A pool is answered empty and a room as none, which Epiphany's room generation handles (it
-+-- falls back to the game's own pick).
++-- BossPoolManager.GetPool(stage): the game's boss pools, answered empty, which Epiphany's room generation handles
++-- (it falls back to the game's own pick). RoomConfigHolder is an empty table here; api_roomconfig.lua puts the
++-- real GetRoomByStageTypeAndVariant in it (and in RoomConfig).
 +do
 +  local BP = {}
 +  function BP.GetPool(stage) once("bosspool", "BossPoolManager.GetPool: the game's boss pools are not read; an empty pool") return {} end
 +  if rawget(_G, "BossPoolManager") == nil or rawget(_G, "BossPoolManager") == false then rawset(_G, "BossPoolManager", BP) end
 +  local RH = {}
-+  function RH.GetRoomByStageTypeAndVariant() once("roomconfig", "RoomConfigHolder.GetRoomByStageTypeAndVariant: the room tables are not read; nil") return nil end
 +  if rawget(_G, "RoomConfigHolder") == nil or rawget(_G, "RoomConfigHolder") == false then rawset(_G, "RoomConfigHolder", RH) end
 +end
 +
@@ -4406,6 +4405,98 @@ index 0000000..a7e598c
 +  else
 +    B.log("api_pocket_item: no EntityPlayer class; GetPocketItem is left as the game has it")
 +  end
++end
+diff --git a/scripts/recomp/rgon/api_roomconfig.lua b/scripts/recomp/rgon/api_roomconfig.lua
+new file mode 100644
+index 0000000..80be566
+--- /dev/null
++++ b/scripts/recomp/rgon/api_roomconfig.lua
+@@ -0,0 +1,86 @@
++-- api_roomconfig.lua -- RoomConfig.GetRoomByStageTypeAndVariant (chunk A1, Custom Stage API's first need).
++-- Written against REPENTOGON's behaviour (LuaRoomConfig.cpp); every number below was measured in THIS executable
++-- (v1.9.7.17) in a running game (lab_rcprobe.lua, then lab_roomconfig_test.lua).
++--
++--   Game pointer     the word at 0x00c71678 (the layer's GAME_PTR everywhere).
++--   RoomConfig       the game's room tables live inside the Game object at +0x18910 (REPENTOGON's offset for
++--                    v1.9.7.12 is the same). Checked by calling the lookup below with it as `this`: the room that
++--                    comes back is the room the game itself loaded for the current descriptor (same address).
++--   Lookup           __thiscall RoomConfig_Room* RoomConfig::GetRoomByStageTypeAndVariant(stage, type, variant, mode),
++--                    `ret 0x10`, at 0x0082c720. REPENTOGON's signature for it does NOT match this executable (the
++--                    prologue differs after `mov edx,[ebp+8]`); found as the function just before GetRandomRoom
++--                    (0x0082c7d0, whose signature matches once) and read from its disassembly: stage * 0xc4 is the
++--                    stage record, mode (-1 = the current game's: greed (2 or 3 at game+0x269c8) is 1, else 0) * 0x2c
++--                    is its room set at +0x64, a set's loaded flag is at +0x28 (the function loads the set itself
++--                    through 0x0082aa40), its room array at +0x18 and count at +0x1c (0x5c bytes a room); it walks
++--                    the rooms for the type (+8) and variant (+0xc) and returns the room or 0 (and logs a line).
++--   RoomConfigRoom   the userdata a mod gets is the game's own class (the one RoomDescriptor.Data hands out). It is
++--                    made by asking the game's own `Data` getter: a throw-away RoomDescriptor-shaped block of memory
++--                    whose word at +0x10 (where the real descriptor keeps its Data pointer: found by scanning a real
++--                    descriptor for the pointer `desc.Data` returned, lab_rcprobe) holds the room. That works while
++--                    no level exists yet (a mod that asks at load time), where no real descriptor has Data.
++--   mode             0 normal, 1 greed (REPENTOGON's "Mode"); -1 (the default) the current game's. REPENTOGON passes
++--                    anything outside -2..1 as -1; -2 would index before the stage record in the game's lookup, so it
++--                    is answered as -1 here.
++
++local T = ...
++local B, R = T.B, T.R
++local r32, w32, call, log = B.r32, B.w32, B.call, B.log
++local type, error, rawget, rawset, getmetatable = type, error, rawget, rawset, getmetatable
++local mathtype = math.type
++
++local GAME_PTR = 0x00c71678
++local ROOMCONFIG = 0x18910         -- inside the Game object
++local GET_ROOM = 0x0082c720        -- RoomConfig::GetRoomByStageTypeAndVariant, ret 0x10
++local DESC_DATA = 0x10             -- RoomDescriptor's Data pointer
++local DESC_SIZE = 0xb8
++local NUM_STB = 37
++
++local function int_arg(v, n, what)
++  if mathtype(v) == "float" and v == math.floor(v) then v = math.tointeger(v) end
++  if mathtype(v) ~= "integer" then error("bad argument #" .. n .. " to '" .. what .. "' (number expected, got " .. type(v) .. ")", 3) end
++  return v
++end
++
++-- the game's RoomConfigRoom class, learned once from the game's own Data getter
++local room_class, desc_class, fake
++local function make_room(address)
++  if address == 0 then return nil end
++  if not room_class then
++    desc_class = getmetatable(Game():GetLevel():GetRoomByIdx(84))
++    if type(desc_class) ~= "table" then error("rgon: no RoomDescriptor class to take RoomConfigRoom from", 3) end
++    fake = B.alloc(DESC_SIZE)
++    if fake == 0 then error("rgon: no memory for the RoomConfigRoom lookup", 3) end
++  end
++  w32(fake + DESC_DATA, address)
++  local d = B.obj(desc_class, fake, T.vt_ptr())
++  local room = d.Data
++  w32(fake + DESC_DATA, 0)
++  if room == nil then error("rgon: the game's Data getter gave nothing for a room", 3) end
++  if not room_class then room_class = getmetatable(room) end
++  return room
++end
++T.roomconfig_room = make_room
++
++local function lookup(...)
++  local n = select("#", ...)
++  local what = "GetRoomByStageTypeAndVariant"
++  if n < 3 then error("Expected three parameters, got " .. n, 2) end
++  local stage, rtype, variant, mode = ...
++  stage, rtype, variant = int_arg(stage, 1, what), int_arg(rtype, 2, what), int_arg(variant, 3, what)
++  if stage < 0 or stage >= NUM_STB then error("StageID must be between 0 and 36 (both inclusive), got " .. stage, 2) end
++  if rtype < 1 or rtype > 29 then error("Type must be between 1 and 29 (both inclusive), got " .. rtype, 2) end
++  if mode == nil then mode = -1 else mode = int_arg(mode, 4, what) end
++  if mode < -1 or mode > 1 then mode = -1 end
++  local game = r32(GAME_PTR)
++  if game == 0 then error("rgon: " .. what .. " used with no game", 2) end
++  local room = call(GET_ROOM, game + ROOMCONFIG, stage, rtype, variant & 0xffffffff, mode & 0xffffffff)
++  return make_room(room)
++end
++
++for _, name in ipairs({ "RoomConfig", "RoomConfigHolder" }) do
++  local tbl = rawget(_G, name)
++  if type(tbl) ~= "table" then tbl = {} rawset(_G, name, tbl) end
++  if rawget(tbl, "GetRoomByStageTypeAndVariant") ~= nil then log(name .. ".GetRoomByStageTypeAndVariant already exists; left alone")
++  else T.static(tbl, name, "GetRoomByStageTypeAndVariant", lookup) end
 +end
 diff --git a/scripts/recomp/rgon/api_shapes.lua b/scripts/recomp/rgon/api_shapes.lua
 new file mode 100644
@@ -7405,6 +7496,159 @@ index 0000000..c54f610
 +  check("SourceQuad Copy keeps the UV flag", s:Copy():IsUVSpace() == s:IsUVSpace())
 +  B.log(string.format("lab_quad_test: DONE %d PASS %d FAIL", pass, fail))
 +end)
+diff --git a/scripts/recomp/rgon/lab_roomconfig_test.lua b/scripts/recomp/rgon/lab_roomconfig_test.lua
+new file mode 100644
+index 0000000..6e5765e
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_roomconfig_test.lua
+@@ -0,0 +1,147 @@
++-- lab_roomconfig_test.lua (development only; ISAAC_RGON_LAB=lab_roomconfig_test.lua, chunk A1)
++-- Checks RoomConfig.GetRoomByStageTypeAndVariant / RoomConfigHolder.GetRoomByStageTypeAndVariant of api_roomconfig.lua in
++-- a running game: for every room of the level, the lookup by the room's own StageID, Type and Variant gives the same
++-- config (same address) the game loaded for the descriptor, on four floors (`stage` console command: Basement I, Caves I,
++-- Depths I, Flooded Caves I); an unknown variant is nil; argument errors; the mode argument. Prints
++-- "lab_roomconfig_test: PASS/FAIL ..." and a final count.
++local T = ...
++local B = T.B
++local ptr, r16, r32, ri32 = B.ptr, B.r16, B.r32, B.ri32
++local mod = RegisterMod("rgon lab roomconfig test", 1)
++local pass, fail = 0, 0
++local function say(s) B.log("lab_roomconfig_test: " .. s) end
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 say("PASS " .. name .. (detail and (" (" .. tostring(detail) .. ")") or ""))
++  else fail = fail + 1 say("FAIL " .. name .. (detail and (" (" .. tostring(detail) .. ")") or "")) end
++end
++-- asked at load time, before any level exists (Custom Stage API asks then)
++local early_ok, early = pcall(function() return RoomConfig.GetRoomByStageTypeAndVariant(StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1, 0) end)
++local function get(f, ...) local ok, v = pcall(f, ...) return ok, v end
++
++local function names_checks()
++  check("RoomConfig.GetRoomByStageTypeAndVariant is a function", type(RoomConfig) == "table" and type(RoomConfig.GetRoomByStageTypeAndVariant) == "function")
++  check("RoomConfigHolder.GetRoomByStageTypeAndVariant is a function", type(RoomConfigHolder) == "table" and type(RoomConfigHolder.GetRoomByStageTypeAndVariant) == "function")
++  check("REPENTOGON.Implemented lists RoomConfig.GetRoomByStageTypeAndVariant", REPENTOGON == nil or REPENTOGON.Implemented == nil or REPENTOGON.Implemented["RoomConfig.GetRoomByStageTypeAndVariant"] == true)
++end
++
++local function error_checks()
++  local f = RoomConfig.GetRoomByStageTypeAndVariant
++  check("asked at load time (no level yet): a room, the same one as now", early_ok and early ~= nil and ptr(early) == ptr(RoomConfig.GetRoomByStageTypeAndVariant(StbType.BASEMENT, 1, 1, 0)) and early.Variant == 1, tostring(early_ok) .. " " .. tostring(early))
++  check("two arguments is an error", not pcall(f, 0, 1))
++  check("stage 37 is an error", not pcall(f, 37, 1, 1, 0))
++  check("stage -1 is an error", not pcall(f, -1, 1, 1, 0))
++  check("type 0 is an error", not pcall(f, 0, 0, 1, 0))
++  check("type 30 is an error", not pcall(f, 0, 30, 1, 0))
++  check("a string stage is an error", not pcall(f, "x", 1, 1, 0))
++  check("a nil type is an error", not pcall(f, 0, nil, 1, 0))
++  check("an unknown variant is nil", f(StbType.BASEMENT, RoomType.ROOM_DEFAULT, 999999, 0) == nil)
++  check("a negative variant is nil", f(StbType.BASEMENT, RoomType.ROOM_DEFAULT, -5, 0) == nil)
++  check("an unknown variant is nil also for RoomConfigHolder", RoomConfigHolder.GetRoomByStageTypeAndVariant(StbType.BASEMENT, RoomType.ROOM_DEFAULT, 999999) == nil)
++  -- the mode argument
++  local a = f(StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1)
++  local b = f(StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1, -1)
++  local c = f(StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1, 0)
++  local d = f(StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1, 7)
++  local e = f(StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1, -2)
++  check("Basement type 1 variant 1 exists", a ~= nil and ptr(a) ~= 0)
++  check("mode omitted, -1, 0 (a normal-mode game), 7 and -2 give the same room",
++    a and b and c and d and e and ptr(a) == ptr(b) and ptr(b) == ptr(c) and ptr(c) == ptr(d) and ptr(d) == ptr(e),
++    a and string.format("%x %x %x %x %x", ptr(a), ptr(b), ptr(c), ptr(d), ptr(e)))
++  if a then
++    check("the room says Type 1 Variant 1 StageID Basement Mode 0", a.Type == 1 and a.Variant == 1 and a.StageID == StbType.BASEMENT and ri32(ptr(a) + 4) == 0, a.Type .. " " .. a.Variant .. " " .. a.StageID)
++    check("the room has a name, a shape and a difficulty", type(a.Name) == "string" and a.Shape == 1 and type(a.Difficulty) == "number", tostring(a.Name) .. " " .. tostring(a.Shape) .. " " .. tostring(a.Difficulty))
++    check("Weight, Subtype, Doors, Width, Height read", type(a.Weight) == "number" and a.Subtype == 0 and type(a.Doors) == "number" and a.Width > 0 and a.Height > 0, string.format("%s %s %s %s %s", a.Weight, a.Subtype, a.Doors, a.Width, a.Height))
++    local okS, sp = get(function() return a.Spawns end)
++    check("Spawns reads", okS and sp ~= nil, tostring(sp))
++    check("two lookups give the same address", ptr(RoomConfig.GetRoomByStageTypeAndVariant(StbType.BASEMENT, 1, 1, 0)) == ptr(a))
++    check("RoomConfigHolder gives the same address as RoomConfig", ptr(RoomConfigHolder.GetRoomByStageTypeAndVariant(StbType.BASEMENT, 1, 1, 0)) == ptr(a))
++  end
++  -- greed set (mode 1): the room, when there is one, is one of the greed set
++  local g = f(StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1, 1)
++  check("mode 1 gives nil or a room of mode 1", g == nil or ri32(ptr(g) + 4) == 1, g and ri32(ptr(g) + 4))
++  local gs = f(StbType.GREED_SHOP or 24, RoomType.ROOM_SHOP, 1, 1)
++  say("info: greed lookup (stage " .. tostring(StbType.GREED_SHOP or 24) .. " type shop variant 1 mode 1) -> " .. tostring(gs and string.format("%x mode %d", ptr(gs), ri32(ptr(gs) + 4)) or "nil"))
++  -- the special rooms set
++  local sr = f(StbType.SPECIAL_ROOMS, RoomType.ROOM_SHOP, 1, 0)
++  check("special rooms: a shop variant 1 is found", sr ~= nil and sr.Type == RoomType.ROOM_SHOP and sr.Variant == 1, sr and (sr.Type .. " " .. sr.Variant))
++end
++
++local seen_stage = {}
++local function floor_checks(tag)
++  local level = Game():GetLevel()
++  local n, same, fieldsame, holder_same, gotclass, classok = 0, 0, 0, 0, 0, 0
++  local bad = {}
++  local cls_ref
++  for i = 0, level:GetRoomCount() - 1 do
++    local d = level:GetRooms():Get(i)
++    local data = d and d.Data
++    if data then
++      n = n + 1
++      cls_ref = cls_ref or getmetatable(data)
++      local dp = ptr(data)
++      local mode = ri32(dp + 4)
++      local r = RoomConfig.GetRoomByStageTypeAndVariant(data.StageID, data.Type, data.Variant, mode)
++      local r2 = RoomConfigHolder.GetRoomByStageTypeAndVariant(data.StageID, data.Type, data.Variant)
++      if r and ptr(r) == dp then same = same + 1 else bad[#bad + 1] = string.format("idx %d stage %d type %d var %d mode %d: got %s want %x", d.GridIndex, data.StageID, data.Type, data.Variant, mode, r and string.format("%x", ptr(r)) or "nil", dp) end
++      if r and r.Type == data.Type and r.Variant == data.Variant and r.Subtype == data.Subtype and r.Shape == data.Shape and r.Name == data.Name
++        and r.Weight == data.Weight and r.Difficulty == data.Difficulty and r.StageID == data.StageID and r.Doors == data.Doors
++        and r16(ptr(r) + 0x44) == r16(dp + 0x44) then fieldsame = fieldsame + 1 end
++      if r2 and r and ptr(r2) == ptr(r) then holder_same = holder_same + 1 end
++      if r and getmetatable(r) == cls_ref then classok = classok + 1 end
++      seen_stage[data.StageID] = true
++    end
++  end
++  check(tag .. ": the level has rooms", n > 0, n .. " rooms; " .. level:GetName())
++  check(tag .. ": lookup by StageID/Type/Variant/Mode gives the game's own config for every room", n > 0 and same == n, same .. " of " .. n .. (#bad > 0 and ("; first miss: " .. bad[1]) or ""))
++  check(tag .. ": Type, Variant, Subtype, Shape, Name, Weight, Difficulty, Doors, spawn count equal for every room", n > 0 and fieldsame == n, fieldsame .. " of " .. n)
++  check(tag .. ": RoomConfigHolder gives the same room for every room", n > 0 and holder_same == n, holder_same .. " of " .. n)
++  check(tag .. ": every result has the class of RoomDescriptor.Data", n > 0 and classok == n, classok .. " of " .. n)
++  -- the current room, with the default mode
++  local cd = level:GetCurrentRoomDesc()
++  if cd and cd.Data then
++    local r = RoomConfig.GetRoomByStageTypeAndVariant(cd.Data.StageID, cd.Data.Type, cd.Data.Variant)
++    check(tag .. ": the current room, mode omitted", r ~= nil and ptr(r) == ptr(cd.Data), string.format("%x vs %x", r and ptr(r) or 0, ptr(cd.Data)))
++    -- the same room again with the current room's own variant but a wrong type is nil or another room
++    local wrong = RoomConfig.GetRoomByStageTypeAndVariant(cd.Data.StageID, RoomType.ROOM_DEFAULT, 888888, 0)
++    check(tag .. ": a wrong variant is nil", wrong == nil)
++  end
++  say(string.format("info: %s: stage %d type %d '%s', %d rooms, StageIDs seen so far:%s", tag, level:GetStage(), level:GetStageType(), level:GetName(), n,
++    (function() local s = "" for k in pairs(seen_stage) do s = s .. " " .. k end return s end)()))
++end
++
++-- phases: the first floor, then `stage` changes; each waits for the new level and 25 frames
++local floors = { "3", "5", "3b" }
++local step, wait, fi = 0, 0, 0
++local newlevel = false
++mod:AddCallback(ModCallbacks.MC_POST_NEW_LEVEL, function() newlevel = true end)
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  wait = wait + 1
++  if step == 0 and wait == 20 then
++    names_checks()
++    error_checks()
++    floor_checks("Basement I")
++    step, wait, fi = 1, 0, 1
++    newlevel = false
++    say("stage " .. floors[1])
++    Isaac.ExecuteCommand("stage " .. floors[1])
++  elseif step == 1 then
++    if newlevel and wait >= 40 then
++      floor_checks("stage " .. floors[fi])
++      if fi < #floors then
++        fi, wait, newlevel = fi + 1, 0, false
++        say("stage " .. floors[fi])
++        Isaac.ExecuteCommand("stage " .. floors[fi])
++      else
++        step = 2
++        local kinds = 0
++        for _ in pairs(seen_stage) do kinds = kinds + 1 end
++        check("rooms of at least three different StageIDs were looked up", kinds >= 3, kinds)
++        say(string.format("DONE %d PASS, %d FAIL", pass, fail))
++      end
++    elseif wait > 600 then
++      check("floor " .. floors[fi] .. " arrived", false, "no new level in 600 frames")
++      step = 2
++      say(string.format("DONE %d PASS, %d FAIL", pass, fail))
++    end
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_scan.lua b/scripts/recomp/rgon/lab_scan.lua
 new file mode 100644
 index 0000000..a7f121f
@@ -8266,7 +8510,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..b67a3ae 100644
+index 4175f07..a4f8b3a 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -8329,7 +8573,7 @@ index 4175f07..b67a3ae 100644
    rearm = function() arm(nil) end,
  }
 -for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_hooks.lua" }) do
-+for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_shapes.lua", "api_eid.lua", "api_hooks.lua" }) do
++for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_shapes.lua", "api_eid.lua", "api_hooks.lua" }) do
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)
