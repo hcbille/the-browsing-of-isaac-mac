@@ -176,6 +176,17 @@ reading `0x0000000f00000052`: a GC object's `next` pointer was `0x0000000f000000
 32-bit guest values over a native 64-bit Lua header. The same lab on the play save did not crash. Treat it as guest
 memory corruption into the native Lua heap, not memory pressure.
 
+**Room-change hang with Epiphany (fixed 2026-11-19)**: the game froze at 99% CPU inside one frame at a room change,
+printing `EL: invalid sublist` (the game's per-frame EntityList sublist arena filling up; only a symptom). Cause: the game
+gives a mod's `<null>` with no `id=""` the id 0, so `Isaac.GetNullItemIdByName("essence of samson")` was -1,
+`GetNullItem(-1)` nil, and Epiphany's `MC_POST_PLAYER_TRIGGER_EFFECT_REMOVED` callback registered with that nil ran for
+every removed effect: it `UseActiveItem`s Dull Razor, which adds an effect, which the room change's ClearEffects (it
+repeats until a pass removes nothing) removes again, forever. Now an id-less mod null gets a reserved blank id
+(`api_lua.lua`, `reserve_nulls`), so the callback matches nothing real; `AddNullItemEffect` ignores such ids. The null's
+stats, cooldown and persistence are still not loaded (the id-less mod nulls of Epiphany/Fiend Folio do nothing).
+Repro/check: `HEADLESS=1 FRESH=1 FRAMES=1500 LAB=lab_el.lua SCRIPT='until=Room 1.2(Start Room):enter'` with the 95 mods:
+before, 449k removals and the alarm; after, `1 effect removals fired`. Evidence: `.scratch/hang-el/`.
+
 **Epiphany's own unlocks**: Tarnished characters, the Tarnished menu page and Epiphany's items are kept in
 Epiphany's mod save, not in game or XML achievements; `Epiphany:UnlockAll()` (its console command `unlock-all`)
 sets them. `lab_unlock_all` calls it once the save manager has loaded (`Epiphany UnlockAll ok; TARNISHED_MENU = 2`).

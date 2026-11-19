@@ -54,8 +54,8 @@ Not done yet:
 
 - Steam achievements: the bridge works against a stub, but stays off until it's checked
   with a real Steam client.
-- A freeze seen once in play: a room change with many mods loops on the game's
-  "EL: invalid sublist". Under investigation.
+- Mod status effects declared without an id (some of Epiphany's and Fiend Folio's) do
+  nothing yet. They used to freeze the game on a room change; that's fixed.
 - More REPENTOGON coverage (External Item Descriptions, StageAPI and others).
 - A from-scratch build check, and a known rare Lua garbage-collector crash.
 

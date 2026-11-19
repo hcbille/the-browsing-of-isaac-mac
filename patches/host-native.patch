@@ -1476,10 +1476,10 @@ index 18c0be6..e981d5c 100644
        seed()
 diff --git a/scripts/recomp/rgon/api_gaps.lua b/scripts/recomp/rgon/api_gaps.lua
 new file mode 100644
-index 0000000..fa23819
+index 0000000..f156a43
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_gaps.lua
-@@ -0,0 +1,538 @@
+@@ -0,0 +1,540 @@
 +-- api_gaps.lua -- gaps the Mac Build's gate log named for the Target Mods (milestone M8),
 +-- Epiphany first. Each piece says what in the log it answers.
 +--
@@ -2009,6 +2009,8 @@ index 0000000..fa23819
 +  local function effect(name, fname)
 +    T.method(P, name, function(self, id, costume)
 +      if math.type(id) ~= "integer" then error("bad argument #1 to '" .. name .. "' (integer expected, got " .. type(id) .. ")", 2) end
++      -- a mod's <null> that has no id in its items.xml has only a reserved blank id here (api_lua.lua): no effect
++      if fname == "AddNullEffect" and (id < 0 or T.reserved_null(id)) then return end
 +      self:GetEffects()[fname](self:GetEffects(), id, costume and true or false)
 +    end)
 +  end
@@ -2117,6 +2119,66 @@ index 92f9c5b..57b0edd 100644
 +-- hooks that are armed but were not seen firing are not implemented names (define marked them)
 +for id in pairs(R.NotSeenFiring or {}) do R.Implemented[id] = nil end
  T.rearm()
+ 
+ ------------------------------------------------------------------------------
+diff --git a/scripts/recomp/rgon/api_lua.lua b/scripts/recomp/rgon/api_lua.lua
+index 16a136a..7dcdb4e 100644
+--- a/scripts/recomp/rgon/api_lua.lua
++++ b/scripts/recomp/rgon/api_lua.lua
+@@ -195,6 +195,45 @@ end
+ ------------------------------------------------------------------------------
+ -- Isaac.GetNullItemIdByName(name) -> the id of a null item (costumes and
+ -- effects with no pedestal), or -1. The item configuration lists them.
++-- The game gives a mod's <null> that has no id="" the id 0 (each such entry overwrites the last, so only the
++-- last one of all mods is left, at 0): REPENTOGON numbers them, this build cannot. A mod (Epiphany: "essence of
++-- samson") asks for such a null's id and gets -1; `ItemConfig:GetNullItem(-1)` is nil, and a callback registered
++-- with that nil as its parameter (MC_POST_PLAYER_TRIGGER_EFFECT_REMOVED, ..._ADD_EFFECT) runs for EVERY effect:
++-- Epiphany's then hurt the player with Dull Razor, which adds an effect, which the room change removes again, over and
++-- over inside one frame (the hang of 2026-11-19, .scratch/hang-el). So such a name answers a reserved id instead: an
++-- unused blank slot at the top of the game's null list (no vanilla name, nothing the game ever adds), taken from the
++-- end downwards in load order. Callbacks given its config item then match nothing real. The null's stats, cooldown and
++-- persistence are not there (R.Unsupported), and `EntityPlayer:AddNullItemEffect` ignores a reserved id (api_gaps.lua).
++local reserved_by_name, reserved_ids
++local function reserve_nulls()
++  reserved_by_name, reserved_ids = {}, {}
++  local nodes_of = T.nodes_of
++  if not nodes_of then return end
++  local config = Isaac.GetItemConfig()
++  local top = config:GetNullItems().Size - 1
++  for _, node in ipairs(nodes_of("items.xml", { "null" })) do
++    local name = node.attr.name
++    if node.source and name and name ~= "" and mathtype(math.tointeger(tonumber(node.attr.id))) ~= "integer" and not reserved_by_name[name] then
++      while top > 0 do
++        local item = config:GetNullItem(top)
++        if item and item.Name == "" then break end
++        top = top - 1
++      end
++      if top <= 0 then break end
++      reserved_by_name[name] = top
++      reserved_ids[top] = name
++      top = top - 1
++    end
++  end
++  if next(reserved_by_name) then
++    R.Unsupported = R.Unsupported or {}
++    R.Unsupported["a mod's <null> without an id"] = "its stats, cooldown and persistence are not loaded; Isaac.GetNullItemIdByName gives a reserved blank id and AddNullItemEffect ignores it"
++  end
++end
++function T.reserved_null(id)
++  if not reserved_ids then reserve_nulls() end
++  return reserved_ids[id]
++end
+ static(Isaac, "Isaac", "GetNullItemIdByName", function(name)
+   if type(name) ~= "string" then error("bad argument #1 to 'GetNullItemIdByName' (string expected, got " .. type(name) .. ")", 2) end
+   local config = Isaac.GetItemConfig()
+@@ -202,7 +241,8 @@ static(Isaac, "Isaac", "GetNullItemIdByName", function(name)
+     local item = config:GetNullItem(id)
+     if item and item.Name == name then return item.ID end
+   end
+-  return -1
++  if not reserved_by_name then reserve_nulls() end
++  return reserved_by_name[name] or -1
+ end)
  
  ------------------------------------------------------------------------------
 diff --git a/scripts/recomp/rgon/api_menus.lua b/scripts/recomp/rgon/api_menus.lua
@@ -2560,6 +2622,58 @@ index 0000000..66b9db4
 +mod:AddCallback(M.MC_INPUT_ACTION, function(_, e, hook, action) seen("MC_INPUT_ACTION", hook, action) end)
 +local chunk = B.load("lab_trapdoor.lua")
 +if chunk then chunk(T) end
+diff --git a/scripts/recomp/rgon/lab_el.lua b/scripts/recomp/rgon/lab_el.lua
+new file mode 100644
+index 0000000..0a9e655
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_el.lua
+@@ -0,0 +1,46 @@
++-- lab_el.lua (development only; ISAAC_RGON_LAB=lab_el.lua): the room-change hang. Epiphany's Essence of Samson registers
++-- MC_POST_PLAYER_TRIGGER_EFFECT_REMOVED with `ItemConfig:GetNullItem(Isaac.GetNullItemIdByName("essence of samson"))`
++-- as its parameter; with the Layer that id is -1 (the game gives a mod's <null> without id the id 0), the parameter is nil,
++-- the callback runs for EVERY removed effect and each run hurts the player and adds an effect again. This lab prints the
++-- ids, gives the player a plain effect, changes room (the room change clears the effects) and logs how many removals fired.
++-- Logs "lab_el: ..." lines; the run is meant to end at the alarm if the loop is there (ISAAC_LAB_EL_ROOM=0 to skip the change).
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab el", 1)
++local function say(s) B.log("lab_el: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local cfg = Isaac.GetItemConfig()
++local removed = 0
++mod:AddCallback(ModCallbacks.MC_POST_PLAYER_TRIGGER_EFFECT_REMOVED, function(_, player, item, count)
++  removed = removed + 1
++  if removed <= 12 or removed % 500 == 0 then
++    say(string.format("effect removed #%d: item type=%s id=%s count=%s", removed, tostring(item.Type), tostring(item.ID), tostring(count)))
++  end
++end)
++local wait, reg = 0, false
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  if not Isaac.IsInGame() then return end
++  wait = wait + 1
++  local p = Isaac.GetPlayer(0)
++  local ef = p:GetEffects()
++  if not reg then
++    reg = true
++    local A = Isaac.GetNullItemIdByName("essence of samson")
++    local D = Isaac.GetNullItemIdByName("essence of samson damage")
++    say(string.format("null ids: samson=%s damage=%s (-1 = not found); GetNullItem(samson)=%s; null items Size=%s",
++      tostring(A), tostring(D), tostring(cfg:GetNullItem(A)), tostring(cfg:GetNullItems().Size)))
++    local z = cfg:GetNullItem(0)
++    say(string.format("null item 0: Name='%s' (the last id-less <null> of any mod lands here)", tostring(z and z.Name)))
++  end
++  if wait == 60 then
++    ef:AddCollectibleEffect(CollectibleType.COLLECTIBLE_SAD_ONION, false, 1)
++    say("added a Sad Onion effect; has=" .. tostring(ef:HasCollectibleEffect(CollectibleType.COLLECTIBLE_SAD_ONION)))
++  elseif wait == 90 and B.env("ISAAC_LAB_EL_ROOM") ~= "0" then
++    local lvl = Game():GetLevel()
++    say("room change from " .. lvl:GetCurrentRoomIndex())
++    Game():StartRoomTransition(lvl:GetCurrentRoomIndex(), Direction.NO_DIRECTION, RoomTransitionAnim.TELEPORT)
++  elseif wait == 91 then
++    say("StartRoomTransition returned")
++  elseif wait == 240 then
++    say(string.format("after the room change: %d effect removals fired", removed))
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_night.lua b/scripts/recomp/rgon/lab_night.lua
 new file mode 100644
 index 0000000..3bc4214
