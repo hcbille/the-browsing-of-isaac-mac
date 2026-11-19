@@ -168,6 +168,13 @@ appears, plus mouse, pad, `fullscreen`, `window:WxH` tokens.
   miss without the trailing `_<digits>`. Without that, Fiend Folio draws "REPENTOGON Required, MISSING!" in
   the first room. Check: `REPENTOGON is visible to the mod 'fiendfolio-reloaded_3778123093'` in the log.
   It adds about 24k files. A hand-installed mod isn't in `modscan.lua` until the Launcher scans again.
+- **`[warn] no music for ID n ().` is harmless** (checked 2026-11-19): the mod Music Mod Callback (2491006386) ships a
+  `resources/music.xml` with only 13 tracks (title, credits, jingles, voiceovers), which replaces the vanilla table, so the
+  stage entries (ids 1..119) are blank on purpose; it plays its own copies (ids 120 and up, from its `content/music.xml`)
+  from Lua. The game's room-music code still asks for the vanilla id, and `Music::Play`/`Crossfade` log the warning and do
+  nothing when the entry's track path is empty. Windows behaves the same. Music is really playing when `Queued Path
+  music/...` lines appear and the `[mac][audio] mixed` lines show rms around 0.05 or more. `lab_music_probe.lua` dumps the
+  table (MusicManager +0x31c/+0x320, 0x60-byte entries, track path at +0x34, its size at +0x44).
 - **Startup speed**: with Fiend Folio the boot took 181 s, because every DeleteFileA/RemoveDirectoryA
   rebuilt the whole file-table hash (61k entries). Now a delete removes only its own entry, and folder
   listings use a parent→children index, so the boot takes about 10 s. If boot is slow again, run

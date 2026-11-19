@@ -3121,6 +3121,46 @@ index 0000000..4205701
 +end
 +-- not here: ProceduralItemManager.CreateProceduralItem (the game's function has no match in this exe yet), the Set*
 +-- functions of the saved-entity records, the Bag of Crafting setters and CalculateBagOfCraftingOutput
+diff --git a/scripts/recomp/rgon/api_extra.lua b/scripts/recomp/rgon/api_extra.lua
+index e060b4d..b3de696 100644
+--- a/scripts/recomp/rgon/api_extra.lua
++++ b/scripts/recomp/rgon/api_extra.lua
+@@ -62,7 +62,13 @@ end
+ --   +0x238 the first boss of the intro: StartBossIntro stores its first argument there (0x0082f217), and
+ --          the render draws the versus screen when it is not 0 and the mode is 2 (0x00832870..0x00832880).
+ -- So IsRenderingBossIntro is "mode 2 and a boss", as the render itself decides.
+--- Not here: StartBossIntro and GetPlayerExtraPortraitSprite (nothing that uses the layer calls them yet).
++-- StartBossIntro(boss1, boss2 = 0): the game's own function at 0x0082f1c0 (__thiscall on the RoomTransition, two
++-- stack words, `ret 8` at 0x0083093e; the first word is stored at +0x238, the second is the second boss of the
++-- two-boss screen). It ends by setting the mode to 2 (0x008308e8), which is what the render draws. Inside it the
++-- room index at +0x14 is looked up as a descriptor (0x00830784, 0x008309d0) and an unset one makes it fail, so as
++-- REPENTOGON does, that word is first set to a valid room: the room the player is in (REPENTOGON uses the
++-- starting room; the current room always has a descriptor with Data).
++-- Not here: GetPlayerExtraPortraitSprite (nothing that uses the layer calls it yet).
+ if rawget(_G, "RoomTransition") == nil then
+   local GAME_PTR, RT = 0x00c71678, 0x1b83c
+   local function rt()
+@@ -82,8 +88,19 @@ if rawget(_G, "RoomTransition") == nil then
+     if r32(a + 0x30) ~= a or r32(a + 0x50) ~= a then error("rgon: no sprite where RoomTransition.GetVersusScreenSprite expects one", 2) end
+     return wrap("Sprite", a)
+   end
++  local START_BOSS_INTRO = 0x0082f1c0   -- ret 8
++  function RTT.StartBossIntro(boss1, boss2)
++    if mathtype(boss1) == "float" and boss1 == math.floor(boss1) then boss1 = math.tointeger(boss1) end
++    if mathtype(boss1) ~= "integer" then error("bad argument #1 to 'StartBossIntro' (number expected, got " .. type(boss1) .. ")", 2) end
++    if boss2 == nil then boss2 = 0 end
++    if mathtype(boss2) == "float" and boss2 == math.floor(boss2) then boss2 = math.tointeger(boss2) end
++    if mathtype(boss2) ~= "integer" then error("bad argument #2 to 'StartBossIntro' (number expected, got " .. type(boss2) .. ")", 2) end
++    local a = rt()
++    B.w32(a + 0x14, Game():GetLevel():GetCurrentRoomIndex() & 0xffffffff)
++    call(START_BOSS_INTRO, a, boss1 & 0xffffffff, boss2 & 0xffffffff)
++  end
+   rawset(_G, "RoomTransition", RTT)
+-  for _, n in ipairs({ "GetTransitionMode", "IsRenderingBossIntro", "GetVersusScreenSprite" }) do R.Implemented["RoomTransition." .. n] = true end
++  for _, n in ipairs({ "GetTransitionMode", "IsRenderingBossIntro", "GetVersusScreenSprite", "StartBossIntro" }) do R.Implemented["RoomTransition." .. n] = true end
+ end
+ 
+ ------------------------------------------------------------------------------
 diff --git a/scripts/recomp/rgon/api_gaps.lua b/scripts/recomp/rgon/api_gaps.lua
 new file mode 100644
 index 0000000..1e8ff7d
@@ -3632,10 +3672,58 @@ index 0000000..1e8ff7d
 +  R.Unsupported["EntityPlayer:Add*Effect cooldown"] = "the cooldown and additive arguments are not applied"
 +end
 diff --git a/scripts/recomp/rgon/api_hooks.lua b/scripts/recomp/rgon/api_hooks.lua
-index 92f9c5b..0b24632 100644
+index 92f9c5b..c348049 100644
 --- a/scripts/recomp/rgon/api_hooks.lua
 +++ b/scripts/recomp/rgon/api_hooks.lua
-@@ -883,8 +883,16 @@ do
+@@ -179,12 +179,23 @@ local CLASSES = {
+ -- The game's own PRE_x_COLLISION callbacks can skip the collision; POST must
+ -- then not run. What the last one answered is noted at the end of this file.
+ local pre_collision_answered = false
++-- a table answer { Collide = b } without SkipCollisionEffects: the game's own collision code runs,
++-- then its result is replaced (nil: no override)
++local pre_collision_override = nil
+ local PRE_COLLISION = {}
+ for _, name in ipairs({ "MC_PRE_PLAYER_COLLISION", "MC_PRE_TEAR_COLLISION", "MC_PRE_FAMILIAR_COLLISION", "MC_PRE_BOMB_COLLISION",
+                         "MC_PRE_PICKUP_COLLISION", "MC_PRE_KNIFE_COLLISION", "MC_PRE_PROJECTILE_COLLISION", "MC_PRE_NPC_COLLISION" }) do
+   if M[name] then PRE_COLLISION[M[name]] = true end
+ end
+ 
++local PRE_OF = {
++  Entity_Player = "PLAYER", Entity_Tear = "TEAR", Entity_Familiar = "FAMILIAR", Entity_Bomb = "BOMB",
++  Entity_Pickup = "PICKUP", Entity_Knife = "KNIFE", Entity_Projectile = "PROJECTILE", Entity_NPC = "NPC",
++}
++for _, c in ipairs(CLASSES) do
++  if PRE_OF[c[1]] then c.pre = M["MC_PRE_" .. PRE_OF[c[1]] .. "_COLLISION"] end
++end
++
+ for _, c in ipairs(CLASSES) do
+   local zhl, cls, up, rd, col, pat = c[1], c[2], c[3], c[4], c[5], c[6]
+   local upat = c.update_param or pat
+@@ -213,14 +224,19 @@ for _, c in ipairs(CLASSES) do
+     end)
+   end
+   if col then
+-    on(zhl .. "::HandleCollision", { col }, function(self, esp)
++    on(zhl .. "::HandleCollision", { col, c.pre }, function(self, esp)
+       pre_collision_answered = false
++      pre_collision_override = nil
+       if not wants(col, r32(self + pat)) then return end
+       return { r32(esp + 4), bool_at(esp + 8) }
+     end, function(self, esp, eax, a)
+-      if not a or pre_collision_answered then return end
+-      local collider = entity(a[1])
+-      if collider then run(col, r32(self + pat), wrap(cls, self), collider, a[2]) end
++      local override = pre_collision_override
++      pre_collision_override = nil
++      if a and not pre_collision_answered then
++        local collider = entity(a[1])
++        if collider then run(col, r32(self + pat), wrap(cls, self), collider, a[2]) end
++      end
++      if override ~= nil and not pre_collision_answered then return override and 1 or 0 end
+     end)
+   end
+ end
+@@ -883,8 +899,16 @@ do
  end
  
  -- MC_PRE_RENDER (1135): (), before Manager::Render() 0x009555c0 (slot 84), once per frame drawn
@@ -3653,7 +3741,39 @@ index 92f9c5b..0b24632 100644
  end
  
  -- MC_POST_PLAYER_ADD_EFFECT (1273): (player, item, addCostume, count), param = item
-@@ -1532,6 +1540,34 @@ if M.MC_GET_SHOP_ITEM_PRICE then
+@@ -1319,12 +1343,26 @@ end
+ --   Entity_Player::UsePill(effect, color, flags) 0x007c4180, ret 0xc (slot 33, reg)
+ if M.MC_PRE_USE_PILL then
+   local id = M.MC_PRE_USE_PILL
+-  on("Entity_Player::UsePill", { id }, function(self, esp)
+-    local p = as("EntityPlayer", self, "Entity_Player::UsePill")
+-    if not p then return end
++  -- MC_USE_PILL (10): (pillEffect, player, useFlags, pillColor), param = pill effect. The game fires it from inside
++  -- UsePill with no colour, so the colour UsePill was called with is kept (a stack: a pill can use another) and
++  -- added as the callback's fourth argument, as REPENTOGON does.
++  local colors = {}
++  local ids = { id }
++  if M.MC_USE_PILL and T.engine_callback then
++    ids[2] = M.MC_USE_PILL
++    T.engine_callback[M.MC_USE_PILL] = function(run, cb, param, ...)
++      local color = colors[#colors]
++      if color == nil then return run(cb, param, ...) end
++      local a, b, c = ...                         -- (pillEffect, player, useFlags)
++      return run(cb, param, a, b, c, color)
++    end
++  end
++  on("Entity_Player::UsePill", ids, function(self, esp)
+     local effect = ri32(esp + 4)
+-    if run(id, effect, effect, ri32(esp + 8), p, r32(esp + 12)) == true then return true, 0 end
+-  end, nil)
++    local p = as("EntityPlayer", self, "Entity_Player::UsePill")
++    if p and run(id, effect, effect, ri32(esp + 8), p, r32(esp + 12)) == true then return true, 0 end
++    colors[#colors + 1] = ri32(esp + 8)
++  end, function() colors[#colors] = nil end)
+ end
+ 
+ ------------------------------------------------------------------------------
+@@ -1532,6 +1570,34 @@ if M.MC_GET_SHOP_ITEM_PRICE then
    end)
  end
  
@@ -3688,7 +3808,7 @@ index 92f9c5b..0b24632 100644
  -- MC_EVALUATE_MULTI_SHOT_PARAMS (1289): (player, params, weaponType), param = player type -> a MultiShotParams:
  --   that one for the functions after it and for the game. The deprecated MC_POST_PLAYER_GET_MULTI_SHOT_PARAMS
  --   (1251, (player) -> a MultiShotParams) runs first, as REPENTOGON's main_ex.lua does.
-@@ -1719,7 +1755,97 @@ else
+@@ -1719,7 +1785,97 @@ else
    log("api_hooks: this engine has no instruction hooks; MC_EVALUATE_STAT, MC_PRE/POST_PLAYER_USE_BOMB and MC_POST_FIRE_SPLIT_TEAR do not fire")
  end
  
@@ -3786,6 +3906,37 @@ index 92f9c5b..0b24632 100644
  T.rearm()
  
  ------------------------------------------------------------------------------
+@@ -1729,8 +1885,30 @@ T.rearm()
+ -- collision code, and the POST handlers above must then stay quiet. The
+ -- engine's runner is watched for those eight callbacks (api_callbacks.lua).
+ if T.engine_callback then
++  -- The game reads any answer that is not nil as a boolean (a table counts as true: skip the
++  -- collision). REPENTOGON's answers are followed: a boolean skips the game's collision code and is
++  -- the result (true: no collision); a table { Collide = b, SkipCollisionEffects = b }: Collide = c
++  -- makes the result not-c, SkipCollisionEffects = true skips the game's code, and without it the
++  -- game's code runs and a Collide answer replaces its result afterwards (the POST handler above).
+   local function note(game_run, id, ...)
+     local res = game_run(id, ...)
++    if type(res) == "table" then
++      local skip, override = false, nil
++      for k, v in pairs(res) do
++        if type(v) == "boolean" then
++          if k == "SkipCollisionEffects" then skip = v
++          elseif k == "Collide" then override = not v end
++        end
++      end
++      if skip then
++        if override == nil then res = false else res = override end
++      else
++        pre_collision_override = override
++        res = nil
++      end
++    elseif type(res) ~= "boolean" then
++      res = nil
++    end
+     if res ~= nil then pre_collision_answered = true end
+     return res
+   end
 diff --git a/scripts/recomp/rgon/api_item_fields.lua b/scripts/recomp/rgon/api_item_fields.lua
 new file mode 100644
 index 0000000..bfe5ed2
@@ -3904,10 +4055,10 @@ index 16a136a..7dcdb4e 100644
  ------------------------------------------------------------------------------
 diff --git a/scripts/recomp/rgon/api_menus.lua b/scripts/recomp/rgon/api_menus.lua
 new file mode 100644
-index 0000000..cd49334
+index 0000000..a69a769
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_menus.lua
-@@ -0,0 +1,332 @@
+@@ -0,0 +1,331 @@
 +-- api_menus.lua -- the main menu's Lua surface (round 123, milestone M8): MenuManager, CharacterMenu,
 +-- SaveMenu, and the small globals Epiphany reaches at load or in a run (ItemOverlay, RoomTransition,
 +-- BossPoolManager, RoomConfigHolder). Epiphany's own character menu is built on them
@@ -4143,7 +4294,6 @@ index 0000000..cd49334
 +do
 +  local RT = {}
 +  function RT.GetTransitionMode() return 0 end
-+  function RT.StartBossIntro(boss) unsupported("RoomTransition.StartBossIntro", "no boss intro is started") end
 +  function RT.GetVersusScreenSprite() once("versus", "RoomTransition.GetVersusScreenSprite: not found in this build; an empty sprite") return Sprite() end
 +  if rawget(_G, "RoomTransition") == nil or rawget(_G, "RoomTransition") == false then rawset(_G, "RoomTransition", RT) end
 +end
@@ -4442,10 +4592,10 @@ index 0000000..a7e598c
 +end
 diff --git a/scripts/recomp/rgon/api_roomconfig.lua b/scripts/recomp/rgon/api_roomconfig.lua
 new file mode 100644
-index 0000000..80be566
+index 0000000..10f18e9
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_roomconfig.lua
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,146 @@
 +-- api_roomconfig.lua -- RoomConfig.GetRoomByStageTypeAndVariant (chunk A1, Custom Stage API's first need).
 +-- Written against REPENTOGON's behaviour (LuaRoomConfig.cpp); every number below was measured in THIS executable
 +-- (v1.9.7.17) in a running game (lab_rcprobe.lua, then lab_roomconfig_test.lua).
@@ -4467,6 +4617,14 @@ index 0000000..80be566
 +--                    whose word at +0x10 (where the real descriptor keeps its Data pointer: found by scanning a real
 +--                    descriptor for the pointer `desc.Data` returned, lab_rcprobe) holds the room. That works while
 +--                    no level exists yet (a mod that asks at load time), where no real descriptor has Data.
++--   GetRandomRoom   __thiscall RoomConfig_Room* RoomConfig::GetRandomRoom(seed, reduceWeight(byte), stage, type, shape,
++--                    minVariant, maxVariant, minDifficulty, maxDifficulty, unsigned* requiredDoors, subtype, mode), `ret 0x30`
++--                    (twelve arguments; read from the epilogue at 0x0082cdc6), at 0x0082c7d0. It takes the stage record and mode
++--                    set as the lookup does, keeps the rooms that match type (+8), shape (+0x48, 13 = any), variant (+0xc, in
++--                    minVariant..maxVariant, unsigned compare so -1 = no maximum), difficulty (+0x2c), subtype (+0x38 when it is
++--                    asked for) and doors ((*requiredDoors & room doors at +0x38) must be the mask), and picks by weight (+0x34)
++--                    with the seed; seed 0 is a fatal error in the game (int3 at 0x0082c896), so it is a Lua error here.
++--                    requiredDoors is a POINTER to a mask: a four-byte block is made for it.
 +--   mode             0 normal, 1 greed (REPENTOGON's "Mode"); -1 (the default) the current game's. REPENTOGON passes
 +--                    anything outside -2..1 as -1; -2 would index before the stage record in the game's lookup, so it
 +--                    is answered as -1 here.
@@ -4531,6 +4689,58 @@ index 0000000..80be566
 +  if type(tbl) ~= "table" then tbl = {} rawset(_G, name, tbl) end
 +  if rawget(tbl, "GetRoomByStageTypeAndVariant") ~= nil then log(name .. ".GetRoomByStageTypeAndVariant already exists; left alone")
 +  else T.static(tbl, name, "GetRoomByStageTypeAndVariant", lookup) end
++end
++
++-- RoomConfig.GetRandomRoom(seed, reduceWeight, stage, type, shape = 13, minVariant = 0, maxVariant = -1, minDifficulty = 0,
++--   maxDifficulty = 10, requiredDoors = 0, subtype = -1, mode = -1): the game's own picker (see the header).
++do
++  local GET_RANDOM = 0x0082c7d0   -- ret 0x30
++  local doors_cell
++  local function opt(v, n, default, what)
++    if v == nil then return default end
++    return int_arg(v, n, what)
++  end
++  local function random_room(...)
++    local what = "GetRandomRoom"
++    local seed, reduce, stage, rtype, shape, minv, maxv, mind, maxd, doors, subtype, mode = ...
++    if select("#", ...) < 4 then error("Expected at least four parameters, got " .. select("#", ...), 2) end
++    seed = int_arg(seed, 1, what)
++    if type(reduce) ~= "boolean" then error("bad argument #2 to '" .. what .. "' (boolean expected, got " .. type(reduce) .. ")", 2) end
++    stage, rtype = int_arg(stage, 3, what), int_arg(rtype, 4, what)
++    if stage < 0 or (stage >= 18 and stage <= 25) or stage == 26 or stage >= NUM_STB then error("Invalid stage " .. stage, 2) end
++    if rtype < 1 or rtype > 29 then error("Invalid type " .. rtype, 2) end
++    shape = opt(shape, 5, 13, what)
++    if shape < 1 or shape > 13 then error("Invalid shape " .. shape, 2) end
++    minv = opt(minv, 6, 0, what)
++    if minv < 0 then minv = 0 end
++    maxv = opt(maxv, 7, -1, what)
++    if maxv < minv and maxv >= 0 then error("maxVariant is lower than minVariant (min = " .. minv .. ", max = " .. maxv .. ")", 2) end
++    if maxv < 0 then maxv = -1 end
++    mind = opt(mind, 8, 0, what)
++    if mind < 0 then mind = 0 end
++    maxd = opt(maxd, 9, 10, what)
++    if maxd < mind then error("maxDifficulty is lower than minDifficulty (min = " .. mind .. ", max = " .. maxd .. ")", 2) end
++    doors = opt(doors, 10, 0, what)
++    if doors < 0 then error("Invalid door mask " .. doors, 2) end
++    subtype = opt(subtype, 11, -1, what)
++    if subtype < -1 then error("Invalid subtype " .. subtype, 2) end
++    mode = opt(mode, 12, -1, what)
++    if mode < -1 or mode > 1 then error("Invalid mode " .. mode, 2) end
++    if seed == 0 then error("rgon: RoomConfig.GetRandomRoom with seed 0 (the game stops on it)", 2) end
++    local game = r32(GAME_PTR)
++    if game == 0 then error("rgon: " .. what .. " used with no game", 2) end
++    if not doors_cell then
++      doors_cell = B.alloc(4)
++      if doors_cell == 0 then error("rgon: no memory for GetRandomRoom", 2) end
++    end
++    w32(doors_cell, doors & 0xffffffff)
++    local room = call(GET_RANDOM, game + ROOMCONFIG, seed & 0xffffffff, reduce and 1 or 0, stage, rtype, shape,
++      minv & 0xffffffff, maxv & 0xffffffff, mind & 0xffffffff, maxd & 0xffffffff, doors_cell, subtype & 0xffffffff, mode & 0xffffffff)
++    return make_room(room)
++  end
++  local tbl = rawget(_G, "RoomConfig")
++  if rawget(tbl, "GetRandomRoom") ~= nil then log("RoomConfig.GetRandomRoom already exists; left alone")
++  else T.static(tbl, "RoomConfig", "GetRandomRoom", random_room) end
 +end
 diff --git a/scripts/recomp/rgon/api_shapes.lua b/scripts/recomp/rgon/api_shapes.lua
 new file mode 100644
@@ -6331,6 +6541,98 @@ index 0000000..b312b2c
 +  local f = steps[frame]
 +  if f then f() end
 +end)
+diff --git a/scripts/recomp/rgon/lab_bossintro_test.lua b/scripts/recomp/rgon/lab_bossintro_test.lua
+new file mode 100644
+index 0000000..8542f8e
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_bossintro_test.lua
+@@ -0,0 +1,86 @@
++-- lab_bossintro_test.lua (development only; chunk "rooms")
++-- Checks RoomTransition.StartBossIntro (api_extra.lua): the direct call (mode becomes 2, IsRenderingBossIntro, the
++-- MC_POST_BOSS_INTRO_SHOW callback gets the two ids, GetVersusScreenSprite is a sprite that plays), then the path
++-- StageAPI takes (StageAPI.PlayBossAnimation with UseRepentogonBossIntro; Fiend Folio sets that on its bosses).
++-- Phase marks are logged as "lab_bossintro_test: PHASE <name> at render frame N" so a screenshot run can be timed.
++-- Prints PASS/FAIL lines and DONE.
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab bossintro test", 1)
++local pass, fail = 0, 0
++local function say(s) B.log("lab_bossintro_test: " .. s) end
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 say("PASS " .. name .. (detail and (" (" .. tostring(detail) .. ")") or ""))
++  else fail = fail + 1 say("FAIL " .. name .. (detail and (" (" .. tostring(detail) .. ")") or "")) end
++end
++
++local shown = {}
++mod:AddCallback(ModCallbacks.MC_POST_BOSS_INTRO_SHOW, function(_, a, b) shown[#shown + 1] = { a, b } end)
++
++local started = false
++mod:AddCallback(ModCallbacks.MC_POST_GAME_STARTED, function() started = true end)
++local frame, phase, pstart = 0, 0, 0
++local function enter(p, name) phase, pstart = p, frame say("PHASE " .. name .. " at render frame " .. frame) end
++
++local DIRECT_AT = 100
++mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++  if not started then return end
++  frame = frame + 1
++  if phase == 0 and frame == 40 then
++    check("RoomTransition.StartBossIntro is a function", type(RoomTransition.StartBossIntro) == "function")
++    check("REPENTOGON.Implemented lists it", REPENTOGON == nil or REPENTOGON.Implemented == nil or REPENTOGON.Implemented["RoomTransition.StartBossIntro"] == true)
++    check("a string argument is an error", not pcall(RoomTransition.StartBossIntro, "x"))
++    check("no argument is an error", not pcall(RoomTransition.StartBossIntro))
++    check("mode is 0 before", RoomTransition.GetTransitionMode() == 0, RoomTransition.GetTransitionMode())
++  end
++  if phase == 0 and frame == DIRECT_AT then
++    local ok, err = pcall(RoomTransition.StartBossIntro, BossType.MONSTRO)
++    check("StartBossIntro(MONSTRO) does not raise", ok, err)
++    check("transition mode is 2 after", RoomTransition.GetTransitionMode() == 2, RoomTransition.GetTransitionMode())
++    check("IsRenderingBossIntro is true", RoomTransition.IsRenderingBossIntro() == true)
++    check("MC_POST_BOSS_INTRO_SHOW fired with (MONSTRO, 0)", #shown == 1 and shown[1][1] == BossType.MONSTRO and (shown[1][2] or 0) == 0, #shown)
++    local sp = RoomTransition.GetVersusScreenSprite()
++    say("info: versus sprite animation " .. tostring(sp:GetAnimation()) .. " file " .. tostring(sp:GetFilename()))
++    enter(1, "direct_intro_playing")
++  elseif phase == 1 then
++    if not RoomTransition.IsRenderingBossIntro() then
++      check("the intro ends by itself", true, "after " .. (frame - pstart) .. " render frames")
++      enter(2, "direct_done")
++    elseif frame - pstart > 1500 then
++      check("the intro ends by itself", false, "still rendering after 1500 frames")
++      say(string.format("DONE %d PASS, %d FAIL", pass, fail))
++      phase = 99
++    end
++  elseif phase == 2 and frame - pstart == 60 then
++    local SA = rawget(_G, "StageAPI")
++    check("StageAPI is loaded", SA ~= nil and type(SA.PlayBossAnimation) == "function")
++    if SA then
++      local boss = SA.GetBossData and (SA.GetBossData("Mo") or SA.GetBossData("Ma")) or nil
++      if not boss then
++        for id, data in pairs(SA.Bosses or {}) do boss = data break end
++      end
++      check("a StageAPI boss is registered", boss ~= nil, boss and boss.Name)
++      if boss then
++        boss.UseRepentogonBossIntro = true
++        local ok, err = pcall(SA.PlayBossAnimation, boss, false)
++        check("StageAPI.PlayBossAnimation (REPENTOGON path) does not raise", ok, err)
++        check("a boss intro is rendering", RoomTransition.IsRenderingBossIntro() == true)
++        check("MC_POST_BOSS_INTRO_SHOW fired a second time", #shown == 2, #shown)
++        local sp = RoomTransition.GetVersusScreenSprite()
++        check("StageAPI's callback chose Scene or DoubleTrouble", sp:GetAnimation() == "Scene" or sp:GetAnimation() == "DoubleTrouble", sp:GetAnimation())
++        enter(3, "stageapi_intro_playing")
++      end
++    end
++    if phase == 2 then say(string.format("DONE %d PASS, %d FAIL", pass, fail)) phase = 99 end
++  elseif phase == 3 then
++    if not RoomTransition.IsRenderingBossIntro() then
++      check("StageAPI's intro ends", true, "after " .. (frame - pstart) .. " render frames")
++      say(string.format("DONE %d PASS, %d FAIL", pass, fail))
++      phase = 99
++    elseif frame - pstart > 1500 then
++      check("StageAPI's intro ends", false, "still rendering after 1500 frames")
++      say(string.format("DONE %d PASS, %d FAIL", pass, fail))
++      phase = 99
++    end
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_cb.lua b/scripts/recomp/rgon/lab_cb.lua
 new file mode 100644
 index 0000000..66b9db4
@@ -7610,6 +7912,96 @@ index 0000000..f189d84
 +    if mode == "state" or mode == "both" then Minimap.SetState(2) end
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_music_probe.lua b/scripts/recomp/rgon/lab_music_probe.lua
+new file mode 100644
+index 0000000..d2d2461
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_music_probe.lua
+@@ -0,0 +1,84 @@
++-- lab_music_probe.lua (development only; ISAAC_RGON_LAB=lab_music_probe.lua): dumps the game's music table
++-- (MusicManager object +0x31c begin / +0x320 end, 0x60-byte entries: id +0, name +4, intro path +0x1c, track path +0x34,
++-- size of the track path +0x44) at mod load, at the title, in the first rooms. The game warns "no music for ID n" when an
++-- entry's track path (+0x34) is empty.
++local T = ...
++local B = T.B
++local r32, ptr, stdstr = B.r32, B.ptr, B.stdstr
++local mod = RegisterMod("rgon lab music probe", 1)
++local function say(s) B.log("lab_music_probe: " .. s) end
++local function dump(tag)
++  local ok, err = pcall(function()
++    local mm = ptr(MusicManager())
++    local b, e = r32(mm + 0x31c), r32(mm + 0x320)
++    say(string.format("%s: mm=0x%x table 0x%x..0x%x entries=%d cur=%s", tag, mm, b, e, (e - b) // 0x60, tostring(MusicManager():GetCurrentMusicID())))
++    for i = 1, 5 do
++      local a = b + i * 0x60
++      say(string.format("%s: [%d] id=%d name='%s' intro='%s' track='%s' tracklen=%d", tag, i, r32(a), stdstr(a + 4), stdstr(a + 0x1c), stdstr(a + 0x34), r32(a + 0x44)))
++    end
++    local blank = 0
++    for i = 1, 119 do if r32(b + i * 0x60 + 0x44) == 0 then blank = blank + 1 end end
++    say(string.format("%s: blank track entries among 1..119: %d", tag, blank))
++  end)
++  if not ok then say(tag .. ": ERR " .. tostring(err)) end
++end
++dump("modload")
++local menu, rooms = false, 0
++mod:AddCallback(ModCallbacks.MC_MAIN_MENU_RENDER, function()
++  if menu then return end
++  menu = true
++  dump("title")
++end)
++mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function()
++  rooms = rooms + 1
++  if rooms <= 2 then dump("room" .. rooms) end
++end)
++mod:AddCallback(ModCallbacks.MC_PRE_MUSIC_PLAY, function(_, id, vol)
++  say("PRE_MUSIC_PLAY id=" .. tostring(id) .. " vol=" .. tostring(vol))
++end)
++
++-- room hopping (ISAAC_LAB_HOPS = how many, default 0): after the start room, every 240 updates go to the next room of the
++-- floor (Game():ChangeRoom) and log what the game and the music mod do: the order of PRE_MUSIC_PLAY (the game's own
++-- Play/Crossfade calls and the mod's) against POST_NEW_ROOM, the current/queued music id every 60 updates.
++local hops = tonumber(B.env("ISAAC_LAB_HOPS") or "") or 0
++local upd, hopped, idx_list = 0, 0, nil
++mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function()
++  say(string.format("NEW_ROOM upd=%d idx=%d cur=%s queued=%s", upd, Game():GetLevel():GetCurrentRoomIndex(),
++    tostring(MusicManager():GetCurrentMusicID()), tostring(MusicManager():GetQueuedMusicID())))
++end)
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  upd = upd + 1
++  if upd > 0 and upd % 60 == 0 then
++    say(string.format("tick upd=%d cur=%s queued=%s", upd, tostring(MusicManager():GetCurrentMusicID()), tostring(MusicManager():GetQueuedMusicID())))
++  end
++  if hops > 0 and hopped < hops and upd >= 700 and upd % 240 == 0 then
++    local level = Game():GetLevel()
++    if not idx_list then
++      idx_list = {}
++      local rooms = level:GetRooms()
++      for i = 0, rooms.Size - 1 do
++        local d = rooms:Get(i)
++        if d and d.Data and d.SafeGridIndex ~= level:GetStartingRoomIndex() and d.Data.Type == RoomType.ROOM_DEFAULT then
++          idx_list[#idx_list + 1] = d.SafeGridIndex
++        end
++      end
++    end
++    hopped = hopped + 1
++    local to = idx_list[hopped] or level:GetStartingRoomIndex()
++    say(string.format("HOP %d to room %d (upd %d)", hopped, to, upd))
++    Game():ChangeRoom(to)
++  end
++end)
++
++-- ISAAC_LAB_KILL=N: at update N call MusicManager():Crossfade(<vanilla id>, 0.02) like the game's own room-music code does
++-- (the id is the stage's vanilla track, whose entry the music mod's resources/music.xml removed): shows whether the
++-- music mod's track survives the game's own call (compare the "[mac][audio]" voices/rms lines before and after).
++local kill = tonumber(B.env("ISAAC_LAB_KILL") or "") or 0
++local kid = tonumber(B.env("ISAAC_LAB_KILL_ID") or "") or 14
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  if kill > 0 and upd == kill then
++    say(string.format("KILL: Crossfade(%d) upd=%d cur=%s", kid, upd, tostring(MusicManager():GetCurrentMusicID())))
++    MusicManager():Crossfade(kid, 0.02)
++    say(string.format("KILL: after cur=%s queued=%s", tostring(MusicManager():GetCurrentMusicID()), tostring(MusicManager():GetQueuedMusicID())))
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_night.lua b/scripts/recomp/rgon/lab_night.lua
 new file mode 100644
 index 0000000..3bc4214
@@ -7626,6 +8018,138 @@ index 0000000..3bc4214
 +  local ok, s = pcall(NightmareScene.GetBackgroundSprite)
 +  local txt = ok and s and (s:GetFilename() .. " anim=" .. s:GetAnimation() .. " frame=" .. s:GetFrame() .. " playing=" .. tostring(s:IsPlaying(s:GetAnimation()))) or ("none " .. tostring(s))
 +  if txt ~= last then last = txt B.log("lab_night: f" .. Isaac.GetFrameCount() .. " " .. txt) end
++end)
+diff --git a/scripts/recomp/rgon/lab_pickup_test.lua b/scripts/recomp/rgon/lab_pickup_test.lua
+new file mode 100644
+index 0000000..8deb83a
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_pickup_test.lua
+@@ -0,0 +1,126 @@
++-- lab_pickup_test.lua (development only; LAB=lab_pickup_test.lua): hearts must be picked up with every mod loaded
++-- (Custom Health API answers PRE_PICKUP_COLLISION with an empty table), and a test callback answers a coin's
++-- PRE_PICKUP_COLLISION with each REPENTOGON answer form. Logs "lab_pickup_test: PASS/FAIL ..", then DONE.
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab pickup test", 1)
++local function check(name, ok, detail)
++  B.log("lab_pickup_test: " .. (ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++
++local mode = nil          -- what the test callback answers for a coin: a function returning the answer
++local fired = 0
++mod:AddPriorityCallback(ModCallbacks.MC_PRE_PICKUP_COLLISION, -1000, function(_, pickup, collider)
++  if mode and pickup.Variant == PickupVariant.PICKUP_COIN and collider.Type == 1 then
++    fired = fired + 1
++    return mode()
++  end
++end)
++
++local steps, frame = {}, 0
++local function at(f, fn) steps[f] = function() local ok, err = pcall(fn) if not ok then check("step " .. f, false, err) end end end
++local function player() return Isaac.GetPlayer(0) end
++local function spawn(variant, sub)
++  local p = player()
++  return Isaac.Spawn(5, variant, sub, p.Position, Vector(0, 0), nil)
++end
++local function count(variant, sub)
++  local n = 0
++  for _, e in ipairs(Isaac.FindByType(5, variant, sub)) do if e:Exists() and not e:IsDead() then n = n + 1 end end
++  return n
++end
++
++-- hearts: Isaac with 2 containers and 1.5 red hearts
++local before
++at(5, function()
++  local p = player()
++  p:AddMaxHearts(-p:GetMaxHearts()) p:AddSoulHearts(-p:GetSoulHearts())
++  p:AddMaxHearts(4, true) p:AddHearts(-99) p:AddHearts(3)
++  check("start: 3 half hearts of red", p:GetHearts() == 3, p:GetHearts())
++  before = p:GetHearts()
++  spawn(PickupVariant.PICKUP_HEART, HeartSubType.HEART_FULL)
++end)
++at(40, function()
++  local p = player()
++  check("red heart: picked up (health changes)", p:GetHearts() > before, before .. " -> " .. p:GetHearts())
++  check("red heart: pickup removed", count(PickupVariant.PICKUP_HEART, HeartSubType.HEART_FULL) == 0)
++  before = p:GetSoulHearts()
++  spawn(PickupVariant.PICKUP_HEART, HeartSubType.HEART_SOUL)
++end)
++at(75, function()
++  local p = player()
++  check("soul heart: picked up (soul hearts change)", p:GetSoulHearts() > before, before .. " -> " .. p:GetSoulHearts())
++  check("soul heart: pickup removed", count(PickupVariant.PICKUP_HEART, HeartSubType.HEART_SOUL) == 0)
++  before = p:GetSoulHearts()
++  spawn(PickupVariant.PICKUP_HEART, HeartSubType.HEART_BLACK)
++end)
++at(110, function()
++  local p = player()
++  check("black heart: picked up (soul hearts change)", p:GetSoulHearts() > before, before .. " -> " .. p:GetSoulHearts())
++  check("black heart: is black", p:GetBlackHearts() ~= 0, p:GetBlackHearts())
++  check("black heart: pickup removed", count(PickupVariant.PICKUP_HEART, HeartSubType.HEART_BLACK) == 0)
++end)
++
++-- the answer forms on a coin: { picked = the coin was collected, fired = the callback ran }
++local cases = {
++  { "empty table {}", function() return {} end, true },
++  { "{ Collide = true }", function() return { Collide = true } end, true },
++  { "{ Collide = false } (the game's code runs, then no collision)", function() return { Collide = false } end, true },
++  { "{ SkipCollisionEffects = true }", function() return { SkipCollisionEffects = true } end, false },
++  { "{ Collide = false, SkipCollisionEffects = true }", function() return { Collide = false, SkipCollisionEffects = true } end, false },
++  { "true", function() return true end, false },
++  { "false", function() return false end, false },
++  { "nil", function() return nil end, true },
++}
++local base = 150
++for i, c in ipairs(cases) do
++  local f = base + (i - 1) * 50
++  local coins
++  at(f, function()
++    mode = c[2] fired = 0
++    coins = player():GetNumCoins()
++    spawn(PickupVariant.PICKUP_COIN, CoinSubType.COIN_PENNY)
++  end)
++  at(f + 35, function()
++    local gained = player():GetNumCoins() - coins
++    check("coin answered " .. c[1] .. ": callback fired", fired > 0, fired)
++    check("coin answered " .. c[1] .. ": " .. (c[3] and "picked up" or "not picked up"), (gained > 0) == c[3], "gained " .. gained)
++    for _, e in ipairs(Isaac.FindByType(5, PickupVariant.PICKUP_COIN, -1)) do e:Remove() end
++    mode = nil
++  end)
++end
++-- a skipped collision leaves no POST_PICKUP_COLLISION; a plain one has it
++local posts = 0
++mod:AddCallback(ModCallbacks.MC_POST_PICKUP_COLLISION, function(_, pickup) if pickup.Variant == PickupVariant.PICKUP_COIN then posts = posts + 1 end end)
++local last = base + #cases * 50
++at(last, function() mode = function() return { SkipCollisionEffects = true } end posts = 0 spawn(PickupVariant.PICKUP_COIN, CoinSubType.COIN_PENNY) end)
++at(last + 30, function()
++  check("SkipCollisionEffects: no POST_PICKUP_COLLISION", posts == 0, posts)
++  for _, e in ipairs(Isaac.FindByType(5, PickupVariant.PICKUP_COIN, -1)) do e:Remove() end
++  mode = function() return { Collide = true } end
++  spawn(PickupVariant.PICKUP_COIN, CoinSubType.COIN_PENNY)
++end)
++at(last + 60, function()
++  check("{ Collide = true }: POST_PICKUP_COLLISION runs", posts > 0, posts)
++  mode = nil
++end)
++
++-- MC_USE_PILL: the pill colour is the fourth argument
++local used
++mod:AddCallback(ModCallbacks.MC_USE_PILL, function(_, effect, p, flags, color) used = { effect, flags, color } end, PillEffect.PILLEFFECT_BALLS_OF_STEEL)
++at(last + 70, function()
++  used = nil
++  player():UsePill(PillEffect.PILLEFFECT_BALLS_OF_STEEL, PillColor.PILL_BLUE_BLUE, UseFlag.USE_NOANIM)
++  check("MC_USE_PILL: fired", used ~= nil)
++  check("MC_USE_PILL: the pill colour is the fourth argument", used and used[3] == PillColor.PILL_BLUE_BLUE, used and used[3])
++  used = nil
++  player():UsePill(PillEffect.PILLEFFECT_BALLS_OF_STEEL, PillColor.PILL_BLACK_YELLOW, UseFlag.USE_NOANIM)
++  check("MC_USE_PILL: a second colour", used and used[3] == PillColor.PILL_BLACK_YELLOW, used and used[3])
++  B.log("lab_pickup_test: DONE")
++end)
++
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frame = frame + 1
++  local f = steps[frame]
++  if f then f() end
 +end)
 diff --git a/scripts/recomp/rgon/lab_pocket_test.lua b/scripts/recomp/rgon/lab_pocket_test.lua
 new file mode 100644
@@ -7997,6 +8521,124 @@ index 0000000..6e5765e
 +      step = 2
 +      say(string.format("DONE %d PASS, %d FAIL", pass, fail))
 +    end
++  end
++end)
+diff --git a/scripts/recomp/rgon/lab_roomrandom_test.lua b/scripts/recomp/rgon/lab_roomrandom_test.lua
+new file mode 100644
+index 0000000..2e0863c
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_roomrandom_test.lua
+@@ -0,0 +1,112 @@
++-- lab_roomrandom_test.lua (development only; chunk "rooms")
++-- Checks RoomConfig.GetRandomRoom (api_roomconfig.lua) in a running game: the result's Type/Shape/StageID/Variant/Difficulty
++-- match the filters over many seeds, the same seed gives the same room, different seeds give several rooms, reduceWeight,
++-- the argument errors, and the calls Fiend Folio / Custom Stage API make. Prints "lab_roomrandom_test: PASS/FAIL ..." and DONE.
++local T = ...
++local B = T.B
++local ptr = B.ptr
++local mod = RegisterMod("rgon lab roomrandom test", 1)
++local pass, fail = 0, 0
++local function say(s) B.log("lab_roomrandom_test: " .. s) end
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 say("PASS " .. name .. (detail and (" (" .. tostring(detail) .. ")") or ""))
++  else fail = fail + 1 say("FAIL " .. name .. (detail and (" (" .. tostring(detail) .. ")") or "")) end
++end
++local G = RoomConfig.GetRandomRoom
++
++local function run()
++  check("RoomConfig.GetRandomRoom is a function", type(G) == "function")
++  check("REPENTOGON.Implemented lists it", REPENTOGON == nil or REPENTOGON.Implemented == nil or REPENTOGON.Implemented["RoomConfig.GetRandomRoom"] == true)
++
++  -- filters: type / shape / stage over 40 seeds on several stages
++  local cases = {
++    { StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1 }, { StbType.BASEMENT, RoomType.ROOM_DEFAULT, nil },
++    { StbType.CAVES, RoomType.ROOM_DEFAULT, 1 }, { StbType.DEPTHS, RoomType.ROOM_DEFAULT, 4 },
++    { StbType.SPECIAL_ROOMS, RoomType.ROOM_TREASURE, 1 }, { StbType.SPECIAL_ROOMS, RoomType.ROOM_SHOP, 1 },
++    { StbType.SPECIAL_ROOMS, RoomType.ROOM_BOSS, 1 }, { StbType.WOMB, RoomType.ROOM_DEFAULT, 8 },
++  }
++  for _, c in ipairs(cases) do
++    local bad, nils, distinct, seen = 0, 0, 0, {}
++    for s = 1, 40 do
++      local r = G(s * 7919, false, c[1], c[2], c[3])
++      if r == nil then nils = nils + 1
++      else
++        if r.Type ~= c[2] or r.StageID ~= c[1] or (c[3] and r.Shape ~= c[3]) then bad = bad + 1 end
++        if not seen[r.Variant] then seen[r.Variant] = true distinct = distinct + 1 end
++      end
++    end
++    check(string.format("stage %d type %d shape %s: every result matches, none nil", c[1], c[2], tostring(c[3])), bad == 0 and nils == 0,
++      string.format("bad %d nil %d distinct %d", bad, nils, distinct))
++    check(string.format("stage %d type %d shape %s: different seeds give more than one room", c[1], c[2], tostring(c[3])), distinct > 1, distinct)
++  end
++
++  -- determinism (reduceWeight false: no state changes)
++  local a = G(123456, false, StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1)
++  local b = G(123456, false, StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1)
++  check("the same seed gives the same room", a ~= nil and b ~= nil and ptr(a) == ptr(b) and a.Variant == b.Variant, a and a.Variant)
++
++  -- variant / difficulty / subtype filters
++  local okv, okd = true, true
++  for s = 1, 40 do
++    local r = G(s * 31, false, StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1, 10, 30)
++    if r == nil or r.Variant < 10 or r.Variant > 30 then okv = false end
++    local r2 = G(s * 31, false, StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1, 0, -1, 2, 3)
++    if r2 == nil or r2.Difficulty < 2 or r2.Difficulty > 3 then okd = false end
++  end
++  check("minVariant/maxVariant keep variants in 10..30", okv)
++  check("minDifficulty/maxDifficulty keep difficulty in 2..3", okd)
++  local one = G(5, false, StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1, 17, 17)
++  check("min = max variant gives that variant", one ~= nil and one.Variant == 17, one and one.Variant)
++  check("an impossible filter gives nil", G(5, false, StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1, 999990, 999999) == nil)
++  local sub = G(77, false, StbType.SPECIAL_ROOMS, RoomType.ROOM_SHOP, 1, 0, -1, 0, 10, 0, 0)
++  check("subtype 0 filter: subtype 0 room or nil", sub == nil or sub.Subtype == 0, sub and sub.Subtype)
++  -- doors: requiring the left door (1) gives rooms with that door
++  local dok, dn = true, 0
++  for s = 1, 30 do
++    local r = G(s * 13, false, StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1, 0, -1, 0, 10, 1)
++    if r then dn = dn + 1 if r.Doors & 1 == 0 then dok = false end end
++  end
++  check("requiredDoors = 1: every result has that door", dok and dn > 0, dn)
++  -- mode
++  local gr = G(9, false, StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1, 0, -1, 0, 10, 0, -1, 0)
++  check("mode 0 gives a normal-set room", gr ~= nil and B.ri32(ptr(gr) + 4) == 0)
++
++  -- reduceWeight true: callable, still returns a matching room (the game lowers that room's weight)
++  local x = G(777, false, StbType.CAVES, RoomType.ROOM_DEFAULT, 1, 100, 140)
++  local w0 = x and x.Weight
++  local y = G(777, true, StbType.CAVES, RoomType.ROOM_DEFAULT, 1, 100, 140)
++  check("reduceWeight true picks the same room as false for the same seed", x ~= nil and y ~= nil and ptr(x) == ptr(y), x and y and (x.Variant .. " " .. y.Variant))
++  check("reduceWeight true lowers that room's weight", y ~= nil and w0 ~= nil and y.Weight < w0, w0 and y and (w0 .. " -> " .. y.Weight))
++  local z = G(777, false, StbType.CAVES, RoomType.ROOM_DEFAULT, 1, 100, 140)
++  check("reduceWeight false leaves weights alone (the reduced room keeps 0.1, the new pick is unreduced)", z ~= nil and y ~= nil and y.Weight < w0 and (ptr(z) == ptr(y) or z.Weight == w0), z and (z.Variant .. " " .. z.Weight))
++
++  -- errors
++  check("three arguments is an error", not pcall(G, 1, false, 1))
++  check("a number for reduceWeight is an error", not pcall(G, 1, 0, 1, 1))
++  check("stage 18 is an error", not pcall(G, 1, false, 18, 1))
++  check("stage 26 (void) is an error", not pcall(G, 1, false, 26, 1))
++  check("stage 37 is an error", not pcall(G, 1, false, 37, 1))
++  check("type 0 is an error", not pcall(G, 1, false, 1, 0))
++  check("shape 14 is an error", not pcall(G, 1, false, 1, 1, 14))
++  check("maxVariant below minVariant is an error", not pcall(G, 1, false, 1, 1, 1, 10, 5))
++  check("maxDifficulty below minDifficulty is an error", not pcall(G, 1, false, 1, 1, 1, 0, -1, 5, 2))
++  check("a negative door mask is an error", not pcall(G, 1, false, 1, 1, 1, 0, -1, 0, 10, -1))
++  check("mode 2 is an error", not pcall(G, 1, false, 1, 1, 1, 0, -1, 0, 10, 0, -1, 2))
++  check("seed 0 is an error, not a crash", not pcall(G, 0, false, 1, 1))
++  check("RoomConfigHolder carries no GetRandomRoom (REPENTOGON's table does not either)", true)
++
++  -- the Fiend Folio shape of call: current stage, RoomType.ROOM_DEFAULT
++  local lvl = Game():GetLevel()
++  local ff = G(Game():GetSeeds():GetStageSeed(lvl:GetStage()), false, StbType.BASEMENT, RoomType.ROOM_DEFAULT, RoomShape.ROOMSHAPE_1x1, 0, -1, 0, 10, 0)
++  check("a Fiend-Folio-like call gives a room", ff ~= nil and ff.Shape == RoomShape.ROOMSHAPE_1x1)
++  say(string.format("DONE %d PASS, %d FAIL", pass, fail))
++end
++
++local frames = 0
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frames = frames + 1
++  if frames == 20 then
++    local ok, err = pcall(run)
++    if not ok then fail = fail + 1 say("FAIL lab raised: " .. tostring(err)) say(string.format("DONE %d PASS, %d FAIL", pass, fail)) end
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/lab_scan.lua b/scripts/recomp/rgon/lab_scan.lua

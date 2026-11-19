@@ -174,7 +174,42 @@ def rule_const_table_fallback(fs):
                              'rawget(cls, "__const")` so methods added with method() also reach const objects')
 
 
-RULES = [rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes]
+def rule_lua_vararg_middle(fs):
+    """A `...` that is not the last argument gives one value only, and `x and false or y` never gives false
+    (2026-11-19: the PRE_x_COLLISION answers lost their meaning, and MC_USE_PILL's arguments after the first)."""
+    for f in fs:
+        if not f.endswith('.lua'):
+            continue
+        t = text_of(f)
+        if t is None:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            code = line.split('--')[0]
+            if re.search(r'\w\([^()]*\.\.\.\s*,', code):
+                yield (f, n, 'a `...` followed by another argument is cut to its first value: take the values you need '
+                             '(`local a, b, c = ...`) or use table.pack/table.unpack, then pass them in order')
+            if re.search(r'\band\s+(false|nil)\s+or\b', code):
+                yield (f, n, '`cond and false or x` always gives x: write an if/else that assigns each branch')
+
+
+def rule_room_transition_stand_in(fs):
+    """RoomTransition is the game's own object, made once in api_extra.lua (2026-11-19: a stand-in
+    `RT.StartBossIntro` here said "no boss intro is started" while api_extra's real one existed; StageAPI hit a nil
+    field when the stand-in was the one in place)."""
+    for f in fs:
+        if not f.endswith('.lua') or f.endswith('api_extra.lua'):
+            continue
+        t = text_of(f)
+        if t is None:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            code = line.split('--')[0]
+            if re.search(r'function\s+(RT|RTT|RoomTransition)[.:]StartBossIntro\b', code):
+                yield (f, n, 'RoomTransition.StartBossIntro is the real call of the game in api_extra.lua: extend that '
+                             'table, and do not make a second, inert one')
+
+
+RULES = [rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes]
 
 
 def main():

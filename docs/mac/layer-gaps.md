@@ -557,6 +557,29 @@ custom rooms found by this call), so a room a mod adds is not found. Verified: `
 the game holds for the descriptor, with equal Type, Variant, Subtype, Shape, Name, Weight, Difficulty, Doors and spawn count, the same class,
 and `RoomConfigHolder` the same room; unknown and negative variants are nil; the call also works at load time.
 
+#### `RoomConfig.GetRandomRoom` and `RoomTransition.StartBossIntro` (`api_roomconfig.lua`, `api_extra.lua`, 2026-11-19, chunk "rooms")
+
+Both are the game's own functions, reached by the Layer. `RoomConfig.GetRandomRoom(seed, reduceWeight, stage, type, shape = 13, minVariant = 0,
+maxVariant = -1, minDifficulty = 0, maxDifficulty = 10, requiredDoors = 0, subtype = -1, mode = -1)` calls `RoomConfig::GetRandomRoom` at
+`0x0082c7d0` (`__thiscall`, `this` = game+0x18910, twelve stack words, `ret 0x30` at `0x0082cdc6`; REPENTOGON's signature matches here).
+`requiredDoors` is a pointer to a mask in the game (a four-byte block is made), `reduceWeight` a byte. Argument checks as REPENTOGON's (stage
+0..36 except 18..26, type 1..29, shape 1..13, max variant not below min, max difficulty not below min, mask and subtype not negative,
+mode -1..1) plus one of ours: seed 0 is a Lua error because the game stops on it (`int3` at `0x0082c896`). The result is the game's own
+RoomConfigRoom (`T.roomconfig_room`); nil when nothing matches. Boss rooms of the floors live in stage 0 (`StbType.SPECIAL_ROOMS`), not in
+the stage's own record. Lab `lab_roomrandom_test.lua`: 43 PASS, 0 FAIL (`.scratch/rooms/lab4.log`): type/shape/stage/variant/difficulty/doors
+filters hold over 40 seeds on eight stage/type cases, the same seed gives the same room, `reduceWeight` true picks the same room as false and
+sets its weight to 0.1 (false changes nothing). Not done: REPENTOGON's custom (AddRooms) sets.
+
+`RoomTransition.StartBossIntro(boss1, boss2 = 0)` calls the game's function at `0x0082f1c0` (`__thiscall` on game+0x1b83c, two stack words,
+`ret 8` at `0x0083093e`; it stores boss1 at +0x238 and sets the mode, +0, to 2 at the end). The word at +0x14 (the room the transition
+targets, looked up as a descriptor inside) is first set to the current room index, as REPENTOGON sets the starting room, so a stale value
+cannot crash it. The existing `MC_POST_BOSS_INTRO_SHOW` hook (slot 24) fires from the direct call. Lab `lab_bossintro_test.lua`: 17 PASS,
+0 FAIL (`.scratch/rooms/boss4.log`): mode 2, `IsRenderingBossIntro`, the callback gets `(MONSTRO, 0)`, the intro ends by itself after 199
+render frames, and the path StageAPI takes (`StageAPI.PlayBossAnimation` on a Fiend Folio boss with `UseRepentogonBossIntro`) runs
+StageAPI's own callback on `GetVersusScreenSprite` (`Scene`, `ReplaceSpritesheet`, `LoadGraphics`). Windowed screenshots of both intros
+(`.scratch/rooms/sa_460.png`: "Isaac VS Mo..." with Mo's own portrait) look right. A stale stand-in `RT.StartBossIntro` in `api_menus.lua`
+was removed and `lint.py` forbids a second one.
+
 #### `BlendMode.Flag1..Flag4` (`api_gaps.lua`, 2026-11-19, chunk A3a)
 
 With the allow flag, Custom Stage API's `MC_POST_NEW_ROOM` failed at `roomgfx.lua:253` (`no member named 'Flag1'`, 4 times in a floors 1 to 5 run).
@@ -639,6 +662,17 @@ Both callbacks fire for real now, and Unique Items API is Shown (gate: hidden fo
   Epiphany's save manager now gets its `MC_MENU_INPUT_ACTION` (it marks the menu active), which reached `SaveMenu.GetDeletePopupSprite` (nil, a Lua
   error): it returns an empty sprite now.
 - Binary: `.scratch/b4/mac-out/isaac-mac`; `output/mac/isaac-mac` (play) does not have hooks 175-178 until it is rebuilt from the lifted output.
+
+### PRE_x_COLLISION table answers and MC_USE_PILL's colour (`api_hooks.lua`, 2026-11-19)
+
+The game reads any answer from its PRE_x_COLLISION callbacks that is not nil as a boolean, so a table (Custom Health API
+answers `{}` for a vanilla heart) counted as "no collision": red, soul and black hearts could not be picked up. The
+engine-runner wrapper at the end of `api_hooks.lua` now follows REPENTOGON for all eight classes: a boolean skips the game's
+collision code and is the result; `{ Collide = c, SkipCollisionEffects = s }`: `Collide` makes the result `not c`, `s = true`
+skips the game's code, and without `s` the game's code runs and a `Collide` answer replaces its result afterwards (the
+`HandleCollision` after handler; POST runs first). Anything else is nil. MC_USE_PILL gets the pill colour as its 4th argument:
+the colour `Player::UsePill` was called with is kept on a stack and added by the engine-runner wrapper. Lab:
+`lab_pickup_test.lua` (hearts with the 95 mods, every answer form on a coin, the pill colour; 29 PASS, was 11 FAIL).
 
 ### Next batches (proposed)
 
