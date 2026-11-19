@@ -3115,6 +3115,62 @@ index 92f9c5b..57b0edd 100644
  T.rearm()
  
  ------------------------------------------------------------------------------
+diff --git a/scripts/recomp/rgon/api_item_fields.lua b/scripts/recomp/rgon/api_item_fields.lua
+new file mode 100644
+index 0000000..bfe5ed2
+--- /dev/null
++++ b/scripts/recomp/rgon/api_item_fields.lua
+@@ -0,0 +1,50 @@
++-- api_item_fields.lua -- writable ItemConfigItem fields (M8, 2026-11-19). Fiend Folio writes
++--   Isaac.GetItemConfig():GetCollectible(id).ChargeType = ItemConfig.CHARGE_SPECIAL
++-- (also .Name, .Description, .GfxFileName, .CacheFlags) and the game answers "no member named 'ChargeType'".
++--
++-- What the game has. ItemConfig:GetCollectible / GetTrinket / GetNullItem / GetCollectibles / ... hand out a
++-- `const Item` userdata. luabridge keeps two class tables for the class: the plain one ("Item") has a __propset
++-- table with a setter for each of the 29 fields (AchievementID, AddBlackHearts, AddBombs, AddCoins,
++-- AddCostumeOnPickup, AddHearts, AddKeys, AddMaxHearts, AddSoulHearts, CacheFlags, ChargeType, ClearEffectsOnRemove,
++-- CraftingQuality, Description, DevilPrice, GfxFileName, Hidden, ID, InitCharge, MaxCharges, MaxCooldown, Name,
++-- PassiveCache, PersistentEffect, Quality, ShopPrice, Special, Tags, Type), and the const one has __propget only,
++-- so a write through it ends in luabridge's "no member named". (Costume has a getter and no setter.) Items that
++-- REPENTOGON hands to its callbacks and to GetTaggedItems come with the plain metatable, which is why a write works
++-- there. lab_icfg_probe.lua prints all of this.
++--
++-- What this does. The const metatable gets a __propset of its own whose entries take the const userdata, make a
++-- plain-class userdata for the same address and call the game's own setter with it. So the record is written by
++-- the game's own code at the game's own offsets (nothing here knows an offset), strings included (the game's
++-- setter owns the std::string handling). lab_icfg_test.lua measures where each write lands (a diff of the record
++-- before and after) and reads each value back through the vanilla getter.
++
++local T = ...
++local B, R = T.B, T.R
++local type, pairs, rawget, rawset, getmetatable, pcall = type, pairs, rawget, rawset, getmetatable, pcall
++local ptr, obj = B.ptr, B.obj
++
++local config = Isaac.GetItemConfig()
++local sample = config and config:GetCollectible(1)
++local cmt = sample and getmetatable(sample)
++local class = type(cmt) == "table" and rawget(cmt, "__class")
++local setters = type(class) == "table" and rawget(class, "__propset")
++if type(setters) ~= "table" then
++  B.log("api_item_fields: no setter table on the game's Item class; ItemConfigItem fields stay read-only")
++elseif rawget(cmt, "__propset") ~= nil then
++  B.log("api_item_fields: the const Item class already has setters; left alone")
++else
++  local vt = T.vt_ptr()
++  local mine, count = {}, 0
++  for name, set in pairs(setters) do
++    if type(name) == "string" then
++      rawset(mine, name, B.cfn(function(self, value)
++        local p = ptr(self)
++        if p == 0 then error("rgon: ItemConfigItem." .. name .. " written without its item", 2) end
++        return set(obj(class, p, vt), value)
++      end))
++      count = count + 1
++    end
++  end
++  rawset(cmt, "__propset", mine)
++  B.log("api_item_fields: ItemConfigItem has " .. count .. " writable field(s) through the game's own setters")
++end
 diff --git a/scripts/recomp/rgon/api_lua.lua b/scripts/recomp/rgon/api_lua.lua
 index 16a136a..7dcdb4e 100644
 --- a/scripts/recomp/rgon/api_lua.lua
@@ -5029,6 +5085,233 @@ index 0000000..7205632
 +    step = 4
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_icfg_probe.lua b/scripts/recomp/rgon/lab_icfg_probe.lua
+new file mode 100644
+index 0000000..0a10e9d
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_icfg_probe.lua
+@@ -0,0 +1,58 @@
++-- lab_icfg_probe.lua (development only; ISAAC_RGON_LAB=lab_icfg_probe.lua): what the game's own binding gives
++-- ItemConfigItem (class __propget / __propset names, getters, raw record words, a plain write), and which other
++-- classes have fields REPENTOGON makes writable (does the game's class table have a setter for them?).
++local T = ...
++local B = T.B
++local r32, ri32, ptr = B.r32, B.ri32, B.ptr
++local mod = RegisterMod("rgon lab icfg probe", 1)
++local function say(s) B.log("lab_icfg_probe: " .. s) end
++local frame = 0
++local function keys(t)
++  local out = {}
++  if type(t) == "table" then for k in pairs(t) do if type(k) == "string" then out[#out + 1] = k end end end
++  table.sort(out)
++  return table.concat(out, ",")
++end
++-- is `name` writable on an object: try the write with its own value
++local function try_write(label, obj, name)
++  local ok, cur = pcall(function() return obj[name] end)
++  if not ok then say(string.format("WRITE %-28s getter fails: %s", label, tostring(cur))) return end
++  local ok2, err = pcall(function() obj[name] = cur end)
++  say(string.format("WRITE %-28s value %s  write %s %s", label, tostring(cur), ok2 and "OK" or "REFUSED", ok2 and "" or tostring(err)))
++end
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frame = frame + 1
++  if frame ~= 5 then return end
++  local config = Isaac.GetItemConfig()
++  local item = config:GetCollectible(CollectibleType.COLLECTIBLE_BOOK_OF_BELIAL)
++  local mt = getmetatable(item)
++  local class = rawget(mt, "__class")
++  say("item mt __type " .. tostring(rawget(mt, "__type")) .. "; const __propset: " .. keys(rawget(mt, "__propset")))
++  say("class __propset: " .. keys(rawget(class, "__propset")))
++  local player = Isaac.GetPlayer(0)
++  local room = Game():GetRoom()
++  local fly = Isaac.Spawn(EntityType.ENTITY_FLY, 0, 0, room:GetCenterPos(), Vector(0, 0), nil)
++  try_write("Entity.Variant (fly)", fly, "Variant")
++  try_write("Entity.Type (fly)", fly, "Type")
++  try_write("Entity.SubType (fly)", fly, "SubType")
++  try_write("Game.Difficulty", Game(), "Difficulty")
++  try_write("Options.SFXVolume", Options, "SFXVolume")
++  try_write("ItemConfigCard.Weight", config:GetCard(1), "Weight")
++  try_write("ItemConfigCard.Hidden", config:GetCard(1), "Hidden")
++  try_write("ItemConfigCostume.SkinColor", item.Costume, "SkinColor")
++  say("before BabySkin read")
++  local okb, babyskin = pcall(function() return player.BabySkin end)
++  say("BabySkin read " .. tostring(okb) .. " " .. tostring(babyskin))
++  say("before FriendBallEnemy read")
++  local okf, fbe = pcall(function() return player.FriendBallEnemy end)
++  say("FriendBallEnemy read " .. tostring(okf) .. " " .. tostring(fbe))
++  try_write("ProjectileParams.Damage", ProjectileParams(), "Damage")
++  local ok, tp = pcall(function() return player:GetTearHitParams(WeaponType.WEAPON_TEARS) end)
++  if ok and tp then try_write("TearParams.TearDamage", tp, "TearDamage") end
++  local desc = Game():GetLevel():GetCurrentRoomDesc()
++  try_write("RoomDescriptor.Flags", desc, "Flags")
++  try_write("RoomDescriptor.VisitedCount", desc, "VisitedCount")
++  try_write("RoomDescriptor.Data", desc, "Data")
++  -- (EntityLaser.HomingType, GridEntityDoor.PreviousState are not probed: a bad EntityLaser.ShootAngle call crashes the game)
++  fly:Remove()
++end)
+diff --git a/scripts/recomp/rgon/lab_icfg_test.lua b/scripts/recomp/rgon/lab_icfg_test.lua
+new file mode 100644
+index 0000000..2423b50
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_icfg_test.lua
+@@ -0,0 +1,157 @@
++-- lab_icfg_test.lua (development only; ISAAC_RGON_LAB=lab_icfg_test.lua): ItemConfigItem field writes (api_item_fields.lua).
++--  1. every writable field of Book of Belial: write a new value, read it back through the vanilla getter, diff the
++--     record's words before and after (where the game's own setter wrote), restore, check the restore.
++--  2. the game uses it: MaxCharges via EntityPlayer:GetActiveMaxCharge; ChargeType via room clear: a normal-charge
++--     book gains a charge when a room is cleared, a special-charge one does not.
++-- Result lines: "lab_icfg_test: FIELD ..." and one "lab_icfg_test: RESULT PASS|FAIL".
++local T = ...
++local B = T.B
++local r32, w32, ptr = B.r32, B.w32, B.ptr
++local mod = RegisterMod("rgon lab icfg test", 1)
++local function say(s) B.log("lab_icfg_test: " .. s) end
++local fails = 0
++local function check(ok, what)
++  if not ok then fails = fails + 1 say("FAIL " .. what) end
++end
++
++local FIELDS = { "AchievementID", "AddBlackHearts", "AddBombs", "AddCoins", "AddCostumeOnPickup", "AddHearts", "AddKeys",
++  "AddMaxHearts", "AddSoulHearts", "CacheFlags", "ChargeType", "ClearEffectsOnRemove", "CraftingQuality", "Description",
++  "DevilPrice", "GfxFileName", "Hidden", "InitCharge", "MaxCharges", "MaxCooldown", "Name", "PassiveCache", "PersistentEffect",
++  "Quality", "ShopPrice", "Special", "Tags", "Type" }
++-- REPENTOGON's struct offsets (v1.9.7.12), only to print next to what was measured; nothing is written from them
++local THEIRS = { Type = 0x0, ID = 0x4, Name = 0x8, Description = 0x20, GfxFileName = 0x38, AchievementID = 0x50, CacheFlags = 0x54,
++  AddMaxHearts = 0x58, AddHearts = 0x5c, AddSoulHearts = 0x60, AddBlackHearts = 0x64, AddBombs = 0x68, AddKeys = 0x6c, AddCoins = 0x70,
++  MaxCharges = 0x74, MaxCooldown = 0x78, DevilPrice = 0x7c, ShopPrice = 0x7e, ChargeType = 0xac, Special = 0xb0, PassiveCache = 0xb1,
++  AddCostumeOnPickup = 0xb2, Hidden = 0xb3, PersistentEffect = 0xb4, ClearEffectsOnRemove = 0xb5, Tags = 0xb8, Quality = 0xc0, CraftingQuality = 0xc4 }
++
++local function snapshot(p)
++  local w = {}
++  for off = 0, 0xdc, 4 do w[off] = r32(p + off) end
++  return w
++end
++local function diff(a, b)
++  local out = {}
++  for off = 0, 0xdc, 4 do
++    if a[off] ~= b[off] then out[#out + 1] = string.format("+%02x:%08x->%08x", off, a[off], b[off]) end
++  end
++  return table.concat(out, " ")
++end
++
++local function fields_test()
++  local config = Isaac.GetItemConfig()
++  local item = config:GetCollectible(CollectibleType.COLLECTIBLE_BOOK_OF_BELIAL)
++  local p = ptr(item)
++  for _, name in ipairs(FIELDS) do
++    local orig = item[name]
++    local new
++    if type(orig) == "boolean" then new = not orig
++    elseif type(orig) == "string" then new = "rgon test string for " .. name .. " (longer than sso)"
++    elseif name == "ChargeType" then new = (orig == 2) and 1 or 2
++    elseif name == "Tags" then new = orig ~ (1 << 40)
++    else new = orig + 3 end
++    local before = snapshot(p)
++    local ok, err = pcall(function() item[name] = new end)
++    local after = snapshot(p)
++    local got = item[name]
++    local same = (got == new)
++    say(string.format("FIELD %-20s write ok=%s readback %s (wrote %s)  diff %s  [REPENTOGON offset %s]", name, tostring(ok), tostring(got), tostring(new), diff(before, after), THEIRS[name] and string.format("0x%x", THEIRS[name]) or "-"))
++    check(ok and same, name .. " read back " .. tostring(got) .. " not " .. tostring(new) .. " (" .. tostring(err) .. ")")
++    ok, err = pcall(function() item[name] = orig end)
++    check(ok and item[name] == orig, name .. " restore")
++  end
++  -- ID and Type are 'writable' in the game's table too; they were written above with their original values restored.
++  -- a trinket, a null item and an item from a list answer too
++  local tr = config:GetTrinket(1)
++  local tn = tr.Name
++  local ok = pcall(function() tr.Quality = 3 end)
++  check(ok and tr.Quality == 3, "trinket Quality")
++  pcall(function() tr.Quality = 0 end)
++  local list = config:GetCollectibles()
++  local li = list:Get(2)
++  say("list item: " .. tostring(li) .. " type " .. type(li) .. " mt type " .. tostring(li and getmetatable(li) and rawget(getmetatable(li), "__type")))
++  local okq, lq = pcall(function() return li.Quality end)
++  if okq then
++    ok = pcall(function() li.Quality = lq + 1 end)
++    check(ok and li.Quality == lq + 1, "item from the list Quality")
++    pcall(function() li.Quality = lq end)
++  else
++    say("list item has no Quality (" .. tostring(lq) .. "); not an ItemConfigItem")
++  end
++  -- the read-only ones still refuse
++  ok = pcall(function() item.Costume = nil end)
++  check(not ok, "Costume stays read-only")
++  say("fields done, failures so far " .. fails)
++end
++
++local frame = 0
++local phase = "fields"
++local trial
++local belial = CollectibleType.COLLECTIBLE_BOOK_OF_BELIAL
++local results = {}
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frame = frame + 1
++  if phase == "fields" and frame == 5 then
++    fields_test()
++    phase = "maxcharges"
++  elseif phase == "maxcharges" and frame == 10 then
++    local player = Isaac.GetPlayer(0)
++    player:AddCollectible(belial, 0, false)
++    local item = Isaac.GetItemConfig():GetCollectible(belial)
++    local base = player:GetActiveMaxCharge(ActiveSlot.SLOT_PRIMARY)
++    item.MaxCharges = 7
++    local now = player:GetActiveMaxCharge(ActiveSlot.SLOT_PRIMARY)
++    item.MaxCharges = 3
++    local back = player:GetActiveMaxCharge(ActiveSlot.SLOT_PRIMARY)
++    say(string.format("MAXCHARGES player's active max charge: before %d, after writing 7: %d, restored to 3: %d", base, now, back))
++    check(base == 3 and now == 7 and back == 3, "GetActiveMaxCharge follows MaxCharges")
++    phase = "clear"
++    trial = { { type = 0, name = "normal" }, { type = 2, name = "special" } }
++    trial.i, trial.start = 0, 0
++  elseif phase == "clear" then
++    local player = Isaac.GetPlayer(0)
++    local room = Game():GetRoom()
++    local item = Isaac.GetItemConfig():GetCollectible(belial)
++    if trial.start == 0 or frame - trial.start > 400 then
++      -- next trial
++      if trial.i > 0 and trial.start ~= 0 then
++        say("CLEAR trial " .. trial[trial.i].name .. " did not finish in time")
++        check(false, "trial timeout")
++      end
++      trial.i = trial.i + 1
++      if not trial[trial.i] then phase = "done" return end
++      item.ChargeType = trial[trial.i].type
++      player:SetActiveCharge(0, ActiveSlot.SLOT_PRIMARY)
++      trial.start, trial.state, trial.kills = frame, "spawn", 0
++      say(string.format("CLEAR trial %s: ChargeType now %d, charge %d, room clear %s", trial[trial.i].name, item.ChargeType, player:GetActiveCharge(ActiveSlot.SLOT_PRIMARY), tostring(room:IsClear())))
++    end
++    local t = trial[trial.i]
++    if trial.state == "spawn" and frame - trial.start >= 5 then
++      room:SetClear(false)
++      trial.fly = Isaac.Spawn(EntityType.ENTITY_FLY, 0, 0, room:GetCenterPos() + Vector(80, 0), Vector(0, 0), nil)
++      trial.state = "kill"
++      trial.t = frame
++    elseif trial.state == "kill" and frame - trial.t >= 5 then
++      if trial.fly and trial.fly:Exists() then trial.fly:Kill() end
++      trial.state = "wait"
++      trial.t = frame
++    elseif trial.state == "wait" then
++      if room:IsClear() and frame - trial.t >= 5 then
++        local charge = player:GetActiveCharge(ActiveSlot.SLOT_PRIMARY)
++        say(string.format("CLEAR trial %s: room clear after %d frames, charge now %d", t.name, frame - trial.t, charge))
++        results[t.name] = charge
++        trial.start, trial.state = frame, "pause"
++        trial.start = frame
++        trial.pause = frame
++      end
++    elseif trial.state == "pause" and frame - trial.pause >= 10 then
++      trial.start = -1000   -- force the next trial
++    end
++    if trial.start == -1000 then trial.start = 0 trial.i = trial.i end
++  elseif phase == "done" then
++    phase = "finished"
++    check(results.normal == 1, "normal-charge book gains 1 on clear (got " .. tostring(results.normal) .. ")")
++    check(results.special == 0, "special-charge book gains nothing on clear (got " .. tostring(results.special) .. ")")
++    Isaac.GetItemConfig():GetCollectible(belial).ChargeType = 0
++    say("RESULT " .. (fails == 0 and "PASS" or ("FAIL (" .. fails .. ")")))
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_minimap_scan.lua b/scripts/recomp/rgon/lab_minimap_scan.lua
 new file mode 100644
 index 0000000..d9b783b
@@ -5730,7 +6013,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..e7931df 100644
+index 4175f07..f227fcb 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -5793,7 +6076,7 @@ index 4175f07..e7931df 100644
    rearm = function() arm(nil) end,
  }
 -for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_hooks.lua" }) do
-+for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_hooks.lua" }) do
++for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_hooks.lua" }) do
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)

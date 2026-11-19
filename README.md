@@ -47,7 +47,8 @@ Working, on an M2 MacBook Air:
   Tarnished characters too) and Fiend Folio: RELOADED, whose items, enemies and characters
   now load in full. The layer decides per mod whether it can run. It has about 590 of
   REPENTOGON's 1,727 functions and 135 of its 380 callbacks, the ones the tested mods use
-  first. `scripts/mac/rgon_census.py` measures the rest.
+  first. Item settings such as `ChargeType` are writable, as with REPENTOGON.
+  `scripts/mac/rgon_census.py` measures the rest.
 - Large mod collections: the file table holds about 95 mods' worth of files, and a mod's
   `content-repentogon/` folder is read as REPENTOGON does.
 - A Launcher with a startup window that shows each loading step. A boot with about 95 mods
@@ -61,8 +62,7 @@ Not done yet:
 - Mod status effects declared without an id (some of Epiphany's and Fiend Folio's) do
   nothing yet. They used to freeze the game on a room change; that's fixed.
 - More REPENTOGON coverage: most missing callbacks need new hooks in the game, and
-  External Item Descriptions and StageAPI still miss a few names each. Writable item
-  settings (for example `ChargeType`) are in progress.
+  External Item Descriptions and StageAPI still miss a few names each.
 - A from-scratch build check, and a known rare Lua garbage-collector crash.
 
 ## Use

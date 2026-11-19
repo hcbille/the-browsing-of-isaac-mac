@@ -410,6 +410,43 @@ player init, after the dump), inert 37 to 39, missing used by REPENTOGON-naming 
 shown, as before. Per mod (the gate's "missing"): Epiphany 97 to 93, Fiend Folio 191 to 187, External Item Descriptions 14, StageAPI 12,
 Unique Items API 2; no mod flipped.
 
+### Writable ItemConfigItem fields (`api_item_fields.lua`, 2026-11-19)
+
+The bug: Fiend Folio's `hotpotatobook.lua:45` (`Isaac.GetItemConfig():GetCollectible(id).ChargeType = ItemConfig.CHARGE_SPECIAL`, also
+`bookOfLeviathan.lua`, `creativeAI.lua`, and `.Description`/`.Name` in `briend.lua` and `friend.lua`, `.GfxFileName` in `double_dog.lua`)
+failed in `MC_PRE_PLAYER_TRIGGER_ROOM_CLEAR` with "no member named 'ChargeType'".
+
+What the game has (`lab_icfg_probe.lua`): `ItemConfig:GetCollectible/GetTrinket/GetNullItem` hand out a `const Item` userdata. luabridge's
+plain `Item` class has a `__propset` table with a setter for all 29 fields (AchievementID, AddBlackHearts, AddBombs, AddCoins,
+AddCostumeOnPickup, AddHearts, AddKeys, AddMaxHearts, AddSoulHearts, CacheFlags, ChargeType, ClearEffectsOnRemove, CraftingQuality,
+Description, DevilPrice, GfxFileName, Hidden, ID, InitCharge, MaxCharges, MaxCooldown, Name, PassiveCache, PersistentEffect, Quality,
+ShopPrice, Special, Tags, Type); the `const Item` class has `__propget` only, so a write through it ends in luabridge's "no member
+named". REPENTOGON's source has no per-field setters for ItemConfigItem (its `LuaItemConfig.cpp` adds only the custom-tag functions);
+what it does is push the plain `Item` metatable for the items it hands to callbacks, `GetTaggedItems` and `GetItemsWithCustomTag`
+(CustomCallbacks.cpp, LuaItemConfig.cpp), and a mod that reaches items from `GetCollectible` is the case the Layer must cover.
+
+What the Layer does: the const metatable gets a `__propset` whose entries take the const userdata, build a plain-class userdata at the
+same address (`B.obj`) and call the game's own setter. So the game's own code writes its own record (strings included); the Layer
+knows no offset. `lab_icfg_test.lua` (Book of Belial, headless, `.scratch/m8-batch4/test2.log`) writes every field, reads it back through
+the vanilla getter and diffs the record's words before and after. The record, in this build, agrees with REPENTOGON's struct for every
+field: Type +0x0, Name +0x8 (std::string, 24 bytes), Description +0x20, GfxFileName +0x38, AchievementID +0x50, CacheFlags +0x54,
+AddMaxHearts +0x58, AddHearts +0x5c, AddSoulHearts +0x60, AddBlackHearts +0x64, AddBombs +0x68, AddKeys +0x6c, AddCoins +0x70,
+MaxCharges +0x74, MaxCooldown +0x78, DevilPrice +0x7c (short), ShopPrice +0x7e (short), ChargeType +0xac, Special +0xb0, PassiveCache
++0xb1, AddCostumeOnPickup +0xb2, Hidden +0xb3, PersistentEffect +0xb4, ClearEffectsOnRemove +0xb5, Tags +0xb8 (64-bit), Quality +0xc0,
+CraftingQuality +0xc4; and InitCharge +0xc8 (REPENTOGON has no name for it). `Costume` stays read-only (a getter only, in the game too).
+The game uses the written values: `EntityPlayer:GetActiveMaxCharge` follows MaxCharges (3, then 7 after the write, 3 after restoring),
+and ChargeType decides the room-clear charge (a Book of Belial with ChargeType 0 gains 1 charge when a room is cleared, with
+CHARGE_SPECIAL (2) it gains 0). Lab result PASS, 0 failures. The 95-mod `lab_trapdoor` run through floors 1 to 5
+(`.scratch/m8-batch4/trap-batch4.log`): 6 levels, no "failed" line, the one `ERR:` of `! fired's_angels_and_statues` as in
+`.scratch/m8-batch3/trap-batch3.log`.
+
+Other REPENTOGON-writable fields, probed in this build (`lab_icfg_probe.lua`): `Entity.Variant` and `SubType` already write; `Options.SFXVolume`
+writes; `ProjectileParams.Damage` and `TearParams` fields write. Still refused (not implemented): `Game.Difficulty`, `ItemConfigCard.Weight`
+(and its getter), `ItemConfigCostume.SkinColor` (the getter is a bare userdata), `RoomDescriptor.AllowedDoors`. None of these is
+written by a mod in the 99-mod Workshop set (grep of `.Difficulty =`, `.Weight =`, `.SkinColor =`, `.AllowedDoors =`): the only
+hits are the mods' own tables. `RoomDescriptor` fields such as `Flags` are refused on `Level:GetCurrentRoomDesc()` (a const descriptor,
+as in vanilla; REPENTOGON does not change that).
+
 ### The global `Minimap` (`api_minimap.lua`)
 
 REPENTOGON's `Minimap` is a plain table of functions that all act on the game's one Minimap and ignore `self` (so `Minimap:GetIconsSprite()`
