@@ -3,11 +3,64 @@
 Full status table, decisions and uncommitted-work list: the "Status overview"
 at the top of `docs/mac/PROGRESS.md`.
 
-## Resume here (2026-11-19, session stopped by the user)
+## Resume here (2026-11-19 ~11:30)
 
-- Done today and committed on mac-native (not all published):
+- **Done since 04:00, committed on mac-native, not published** (public is still at 5d2e8cd):
+  - EID is Shown (c42b3c0).
+  - StageAPI names (3aaf55f). MC_PRE_BOSS_SELECT is lifted and fires in the play binary (rebuilt 11:14; headless M1
+    reached 3,010 frames; `lab_stageapi_boss` with `ISAAC_LAB_BOSS=19` gives a boss room with subtype 19).
+  - Lua heap debug tooling, off by default (869da06).
+  - Game version pinning: `scripts/mac/game-pin.txt`, `fetch-game.sh`, the exe check in `build.sh` (703d09f,
+    c6ce0bf). Verified with a real SteamCMD run, matching `game/` file for file.
+  - `rgon.lua` loads the two new api files (5aff3b2).
+  - The wip branch is fully merged in spirit and can be deleted once the user agrees.
+- **Lua GC crash: set aside as not reproducible (the user's call, 2026-11-19).** About 45,000 windowed frames with heap
+  checks found nothing. Don't soak for it again. Only if it comes back: run with `ISAAC_LUA_REDZONE=1
+  ISAAC_LUA_HEAPCHECK=10` (RUNBOOK). Two other crash reports from that night were not investigated:
+  - 01:04: an abort in `sub_0040cf00`.
+  - 03:16: a null read in `lua_rawgetp` <- `sub_0085c590`, two seconds after launch, while the WIP Layer was in the tree.
+- **Next:**
+  1. Publish: run the check, update the README progress numbers from a fresh `rgon_census.py`, and add the pinned
+     fetch to the README build steps. Ask the user before pushing.
+  2. StageAPI Shown: a real `RoomConfig.GetRoomByStageTypeAndVariant`, then the room-set functions (AddRooms and the
+     rest), then StageAPI's 33 `if REPENTOGON` branches. MC_CONSOLE_AUTOCOMPLETE comes last, since the game's own
+     console has nothing to hook; decide with the user.
+  3. The next census batches (layer-gaps section 9).
+- **Still for the user to check by hand:** EID's box and a TM Trainer item in play; a StageAPI floor with water; and the
+  older items (Epiphany `throwable_item_lib.lua:727`, Fiend Folio's veil curse minimap, Hot Potato Book).
+
+## Before 11:30 (kept for history)
+
+- **Published:** everything verified on mac-native up to 5d2e8cd is public at github.com/hcbille/the-porting-of-isaac
+  (renamed from the-browsing-of-isaac-mac). That covers full-screen adapt, the Epiphany freeze, the Fiend Folio fix,
+  Layer batches 1-3, Minimap and writable ItemConfigItem fields. The README has a REPENTOGON section (parity target
+  `0cd8f863f`); update it at every publish (see the local project notes, CLAUDE.md).
+- **Unfinished, on branch `wip/eid-stageapi-luagc` (fda1b87, unverified, not on mac-native):** three parallel tasks
+  the user asked for, stopped mid-way. Resume each from that branch (`git checkout wip/eid-stageapi-luagc -- <files>`
+  or a merge once verified).
+  1. **EID** (`api_eid.lua`, `lab_eid_*.lua`): Bag of Crafting contents and output (match the game's own
+     CalculateBagOfCraftingOutput) and RoomDescriptor:GetEntitiesSaveState pass their lab. Left: ProceduralItemManager
+     and ProceduralItem (TM Trainer), GetPlayerFormCounter, IsItemInCollection, the action and condition getters,
+     the gate check ("is shown REPENTOGON"), and a screenshot of EID's box.
+  2. **StageAPI** (`api_stageapi.lua`, `lab_stageapi_*.lua`; plus the hook-table row for BossPool::GetBossId, c8ed18a,
+     already on mac-native but not yet applied to the lift or binary): room water amount and current, rails, and
+     SetBackdropType exist. Left: actually changing water and backdrop (screenshots), the deco/grid/entity save
+     states, Tainted Keeper coin spawns, InitFlipState, MC_PRE_BOSS_SELECT (lift rebuild) and MC_CONSOLE_AUTOCOMPLETE,
+     the gate check, and that StageAPI's dependents still change floors.
+  3. **Lua GC crash** (`host_lua.c`, `host_lua_gcstate.c`, `run.sh` ISAAC_BIN): a redzone allocator, quarantine and
+     heap walk, all off by default (ISAAC_LUA_REDZONE, ISAAC_LUA_HEAPCHECK, ISAAC_LUA_GC_FORCE, ISAAC_LUA_QUARANTINE_MB).
+     A 2,500-frame debug run passed 5,000 heap checks: not reproduced yet. Next: lab_unlock_all on a fresh save,
+     long 95-mod soaks. Finding from reading: Lua's heap is in the guest arena (same guest malloc), so a guest overflow
+     or write-after-free into a Lua block gives exactly the corrupted `next` seen.
+- After those: the missing REPENTOGON functions the mods use, in batches (census order in layer-gaps section 9).
+- The play build (`.scratch/play/play.sh`, binary output/mac/isaac-mac built 02:17) matches mac-native and contains none
+  of the WIP.
+
+### Earlier notes (same day)
+
+- Done today and committed on mac-native:
   - Full-screen adapt (public e6b48e5) and the Epiphany room-change freeze (public db9495c).
-  - Not yet published: census and Layer batches 1-3, plus the Fiend Folio fix c3985fd (file table 131,072 slots; content-repentogon/ read as content/). The user confirmed Fiend Folio works in play.
+  - Census and Layer batches 1-3, plus the Fiend Folio fix c3985fd (file table 131,072 slots; content-repentogon/ read as content/). The user confirmed Fiend Folio works in play.
 - Batch 3 verified (headless labs all PASS, the 95-mod trapdoor run through floors 1 to 5 shows the same one `ERR:` and no "failed" line as batch 2) and the global `Minimap` is in (`api_minimap.lua`, found at game+0x25ecc, GetIconsSprite is the real sprite: a replaced sheet draws after the next room change; Fiend Folio's curseveil branches run clean). Details: `layer-gaps.md` section 9, "Batch 3". Census: functions implemented 570 to 586, missing used by REPENTOGON-naming mods 256 to 245.
 - Still to see by hand (RUNBOOK-style test for the user): Epiphany's `throwable_item_lib.lua:727` gone in play (the headless runs never hit it), and Fiend Folio's veil curse changing the minimap icons in a real run (steps in the report of that session: `giveitem`/curse console, then open a new room).
 - ItemConfigItem field writes (2026-11-19): Fiend Folio's `i.ChargeType = ...` (`hotpotatobook.lua:45`) failed with "no member named 'ChargeType'" because the game hands out `const Item` userdata. `api_item_fields.lua` gives the const class a `__propset` that calls the game's own setters (29 fields). Verified headless (`lab_icfg_test.lua` PASS; special-charge book gains nothing on room clear; 95-mod trapdoor run clean), details in `layer-gaps.md` section 9. Still to see by hand: Hot Potato Book in a real Fiend Folio run (no error on room clear).

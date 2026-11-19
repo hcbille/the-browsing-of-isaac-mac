@@ -1,0 +1,21 @@
+# The one game build the static recompilation works with. Read by scripts/mac/build.sh
+# (the exe check) and scripts/mac/fetch-game.sh (the download). Only IDs and a hash, no game data.
+# Moving to a new game version = edit this file (see docs/mac/build.md, "Moving the pin").
+#
+# Lines are "<key> <value...>"; "#" starts a comment. Depot lines are in merge order (later depots
+# overwrite earlier ones):
+#   depot          <depot id> <manifest id> <dlcappid or -> <name>   required; fetch-game.sh stops without it
+#   optional_depot <depot id> <manifest id> <dlcappid>      <name>   fetched when owned, else skipped
+# A new DLC depot is one more line; its manifest must be the one of the build that matches
+# exe_sha256 (InstalledDepots of appmanifest_250900.acf of an install at that build id), never the
+# current one.
+version     1.9.7.17
+app         250900
+build_id    22878971
+exe_sha256  3bdfc8bae0dc7e334b76009d0ad45dfbb16ee5f00c06ffbc3a0094e34d44616b
+depot 250902  4994611894646808503  -        Rebirth (base game)
+depot 250905  1709017229885880564  401920   Afterbirth
+depot 250908  7333987924869605149  570660   Afterbirth+
+depot 250911  7652847940910762229  1426300  Repentance
+depot 3353471 229910742625134068   3353470  Repentance+
+# Shared depot 228986 (Visual C++ redistributable) is not needed.

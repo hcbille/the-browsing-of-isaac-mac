@@ -18,6 +18,7 @@
 #   FRESH=1        move gamestate1.dat aside first (scripts/mac/fresh.sh), so Enter starts a New Run
 #   ALARM=s        kill the run after s seconds (default 600)
 #   BUNDLE=dir     the game bundle (default .scratch/game-bundle, where build.sh's bundle stage writes)
+#   ISAAC_BIN=path the binary to run (default output/mac/isaac-mac; a debug build goes elsewhere)
 #
 # One heavy job at a time: refuses to start while any isaac-mac runs (the user may be playing).
 set -u
@@ -48,7 +49,7 @@ ENV=(ISAAC_MAC_RUN_FRAMES="${FRAMES:-1500}" REPENTANCE_MAC_LAUNCH_SETTINGS="$S/l
 [ -n "${LAB:-}" ] && ENV+=("ISAAC_RGON_LAB=$LAB")
 [ "${HEADLESS:-0}" = 1 ] && ENV+=("ISAAC_MAC_HEADLESS=1")
 cd "$R" && perl -e 'alarm shift; exec @ARGV' "${ALARM:-600}" env "${ENV[@]}" \
-  output/mac/isaac-mac --launch-settings "$S/launch-settings.json" > "$LOG" 2>&1
+  "${ISAAC_BIN:-output/mac/isaac-mac}" --launch-settings "$S/launch-settings.json" > "$LOG" 2>&1
 rc=$?
 echo "rc=$rc" >> "$LOG"
 echo "run.sh: rc=$rc, log $LOG"

@@ -480,6 +480,53 @@ sheet back; a third change from a hand-set state also resets it. No "failed" lin
 Hidden by `--luadebug`: with `LUADBG=true` in `run.sh` the game's `require` of a mod's own files fails ("module ... not found"), so most mods stop
 at their `main.lua`; don't use it for mod runs.
 
+### External Item Descriptions (`api_eid.lua`, 2026-11-19)
+
+All 14 names EID was missing are in: `EntityPlayer` GetPlayerFormCounter, GetBagOfCraftingContent/Slot/Output/OutputItemPool,
+`PersistentGameData:IsItemInCollection`, `RoomDescriptor:GetEntitiesSaveState` with the `EntitiesSaveStateVector` and
+`EntitySaveState` getters, the global `ProceduralItemManager` (GetProceduralItem, GetProceduralItemCount), `ProceduralItem` and
+`ProceduralEffect` (condition/action type and property, trigger chance, score). Every offset is in the header of the file and was measured in
+v1.9.7.17 (they differ from REPENTOGON's .12: form counters +0x17dc, bag +0x1f44/0x1f4c/0x1f50, procedural list at game +0x67758; the
+ProceduralItem record, the effect record and SavedEntities +0x74 are laid out as REPENTOGON has them). Not done: `CreateProceduralItem`
+(no signature match in this exe), the setters.
+Verified headless (`lab_eid_test.lua`, support folder without mods, `.scratch/eid/test3.log`): 92 PASS, 0 FAIL. The game is the other side of
+each check: its own HasPlayerForm (counter > 2) against the form counters, `TryAddToBagOfCrafting` and `CalculateBagOfCraftingOutput`
+(0x007d5170, 0x007d9d00) against the bag names (output item equals the game's), `AddToCollection` against IsItemInCollection, spawned pickups
+against the saved states (seeds, positions, shop price in I3), and 17 TM Trainer procedural items against the player's stats after
+`AddCollectible(-1 - n)`: damage 0.2717 = player delta 0.2717; speed 0.616 -> 0.1232 (x0.2), range 1.18 -> 70.8 (x60), fire delay 0.42 -> -1.47
+(the game converts fire delay to tears), so each stat sits at the field its name says; luck and shot speed were 0 in all 17 items (same
+layout as REPENTOGON, not seen non-zero). Gate: `layer-gate.json` of the 95-mod census run has "external item descriptions is shown
+REPENTOGON (30 name(s) used, 0 missing)". Windowed screenshot (`lab_eid_shot.lua`, `.scratch/eid/shot1300.png`): EID's box over the Bag of
+Crafting pedestal shows the bag's eight pickups. The 95-mod `lab_trapdoor` run through floors 1 to 5 (7 levels reached, `.scratch/eid/trap.log`) has no "failed" line and the one known
+`ERR:` (`! fired's_angels_and_statues`, `AngelStatueMod`).
+
+### Custom Stage API (`api_stageapi.lua`, 2026-11-19): names done, the mod is still not Shown
+
+Done and measured in v1.9.7.17 (offsets in the file header): `Room` SetBackdropType (the game's `Backdrop::Init` 0x0093d960), Get/SetWaterAmount (+0x7240),
+Get/SetWaterCurrent (+0x7460), Get/SetRail (+0x746c, one byte per grid index); `RoomDescriptor` Get/SetTaintedKeeperCoinSpawns (short at +0x52, the
+game's own coin-drop code reads it), GetDecoSaveState, GetGridEntitiesSaveState (with `Clear` and the `GridEntityDesc` fields StageAPI zeroes),
+GetEntitiesSaveState (+ `Clear`; `api_eid.lua` provides the richer vector class, the two share it); `EntityPickup:InitFlipState` (builds the same
+flip record the game's spawn code builds; the game's own `TryFlip` then morphs into it); `MC_PRE_BOSS_SELECT` (hook slot 174, `BossPool::GetBossId`).
+Verified: `lab_stageapi_test.lua` 55 PASS, 0 FAIL (headless, `.scratch/stageapi/test5.log`). Windowed screenshots (`lab_stageapi_shot.lua`,
+`.scratch/stageapi/shots/`): `SetBackdropType(12, 1)` turns the Basement's brick walls into red-veined flesh walls, `SetWaterAmount(1)` darkens the floor
+and puts a reflection of Isaac under him, and 0 puts the room back (`SetBackdropType(orig, 1)` re-rolls the decoration). `lab_stageapi_boss.lua`: the callback
+fires from level generation (`lab_stageapi_boss: CALL 1: bossId=56 pool=nil levelType=1 levelVariant=0 -> answer 19`), and the floor's boss room then has
+subtype 19 (without an answer the game's own pick 2 is the subtype). The Tainted Keeper coin count is a round trip plus the disassembly only (no
+Tainted Keeper run was played).
+**Hook 174 is in the lift but only in a binary built from it**: `.scratch/stageapi/mac-out/isaac-mac` (a copy of `output/mac`, built with
+`build_native.py --out`); `output/mac/isaac-mac` (what `play.sh` runs) was not rebuilt, so there the callback never fires. `hook_table.py --write`
+only works with the prebuilt reg/sig outputs; the row was added by hand to `lift_patches.py` `RGON_HOOKS` and `hook_slots.lua` (the table's own check of
+row 174 says ok, ret 0xc), and `apply_wrap_patches` (about 2 minutes: it scans all 112 lifted files) wrapped `sub_00422830` in `lifted_000.c`.
+**Gate, still "not shown"**: the census run (`lab_census.lua`, 95 mods, `.scratch/stageapi/census.log`) lists one missing name, `MC_CONSOLE_AUTOCOMPLETE`: it only
+fires from REPENTOGON's ImGui console, and the game's own console has no completion to hook, so it is not registered (it would be a lie). It is not just
+a gate nuisance: with `ISAAC_RGON_ALLOW=stageapi15_1348031964` (`.scratch/stageapi/trap-allow.log`) StageAPI fails at load (`extrarooms.lua:115`,
+`RoomConfig.GetRoomByStageTypeAndVariant` is nil; the Layer only has a nil-returning `RoomConfigHolder` stand-in), then `StageAPI.GetCurrentLevelMap` is nil
+and its `MC_POST_UPDATE` fails 1,335 times in the run. StageAPI's other `if REPENTOGON` branches (33 sites: minecarts, entity config, boss intro, HUD
+callbacks, `RoomConfig.AddRooms`/virtual room sets) are not looked at. So Shown is a project of its own: a real `RoomConfig.GetRoomByStageTypeAndVariant`
+(the game's room tables) first, then those branches, then the autocomplete callback last.
+Regression (95 mods, `lab_trapdoor`, floors 1 to 5, `.scratch/stageapi/trap.log`): 5 levels reached, no "failed" line, the one known `ERR:`
+(`! fired's_angels_and_statues`); StageAPI-dependent mods load and floors change as before.
+
 ### Next batches (proposed)
 
 1. (done, batch 2: see above) EntityPlayer weapon/laser fields, `Weapon`, EntityKnife. What is left of them: Weapon's virtual

@@ -5,7 +5,7 @@ game as a second program, ANGLE and SDL3 bundled, ad-hoc signed). It is resumabl
 a stamp and skips itself when its inputs and output are current.
 
 ```sh
-scripts/mac/build.sh --game <game dir> [--out <dir>] [--jobs N] [--force-stage X]... [--no-seed] [--dry-run] [--list]
+scripts/mac/build.sh --game <game dir> [--out <dir>] [--jobs N] [--force-stage X]... [--no-seed] [--allow-other-exe] [--dry-run] [--list]
 ```
 
 | Option | Meaning |
@@ -15,11 +15,42 @@ scripts/mac/build.sh --game <game dir> [--out <dir>] [--jobs N] [--force-stage X
 | `--jobs N` | Parallelism of the lift and the C compile (default 3; the machine has 8 GB of RAM). |
 | `--force-stage X` | Run stage X although it is current (repeatable, `all` = every stage). Later stages rerun by themselves. |
 | `--no-seed` | Do not adopt existing outputs that have no stamp (see below). |
+| `--allow-other-exe` | Warn instead of stopping when `isaac-ng.exe` is not the pinned build (also `ISAAC_ALLOW_OTHER_EXE=1`). |
 | `--dry-run` | Say what each stage would do, run nothing. |
 
 Run it from a shell that has the toolchain (or let it source one, see "Environment"). A first run from
 nothing takes hours (the Ghidra export alone is about 50 minutes); a rerun with nothing changed takes
 seconds.
+
+## Getting the pinned game, and moving the pin
+
+The recompilation only works with one exact `isaac-ng.exe`. `scripts/mac/game-pin.txt` is the single
+place that names it: game version, Steam build id, the SHA-256 of `isaac-ng.exe`, and the Steam depot and
+manifest ids (base game, Afterbirth, Afterbirth+, Repentance, Repentance+, in merge order). Both scripts
+read it.
+
+- `build.sh` hashes `<game>/isaac-ng.exe` before the first stage and stops on a mismatch, naming the
+  expected version and build id and pointing to `fetch-game.sh`. `--allow-other-exe` (or
+  `ISAAC_ALLOW_OTHER_EXE=1`) only warns; for developers, the lift and Layer offsets will not fit.
+- `scripts/mac/fetch-game.sh --user <steam login> --out <dir> [--steamcmd <path>]` runs SteamCMD with the
+  platform forced to windows and `download_depot <app> <depot> <manifest>` for each pinned depot, then moves
+  the depots into `<dir>` in order (later ones overwrite; `rsync --remove-source-files`, so the disk is not
+  doubled) and checks the exe hash. You type the password and Steam Guard code into SteamCMD yourself; the
+  script never sees them. The account must own Rebirth and the four DLCs. Each depot is fetched at its pinned manifest and reported as fetched or not found; a missing required one stops the run with the DLC's name and store app id. The same session prints `app_info_print 250900`; Windows depots with a `dlcappid` that are not pinned are listed as a warning and are not fetched (best effort). If the depots are not found, pass
+  `--content-dir <folder holding app_250900/>`.
+- Without SteamCMD: run the lines printed by `fetch-game.sh --print-cmds` in the Steam client console
+  (`steam://open/console`), then `fetch-game.sh --merge-from <steamapps/content folder> --out <dir>`.
+
+Adding a DLC depot is one line in `game-pin.txt` (`depot` or `optional_depot`: depot id, manifest, dlcappid,
+name). Its manifest must be the one of the build that matches our exe, read from `InstalledDepots` in
+`steamapps/appmanifest_250900.acf` of an install at that build id, never the current manifest (that would be
+a different patch).
+
+To move the pin to a new game version: install the new build, read `buildid` and each depot's `manifest`
+from `steamapps/appmanifest_250900.acf` (`InstalledDepots`), hash the new `isaac-ng.exe`, and edit
+`game-pin.txt`. That is the whole script change, but the work is not: the recompiled exe, the lift, the
+patch spans of `prepare-input.py`, `CANON_SHA` in `build.sh` and every Layer struct offset must be redone
+and re-measured for the new build.
 
 ## Stages
 

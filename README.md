@@ -45,10 +45,16 @@ Working, on an M2 MacBook Air:
   on or off. The game's mods menu agrees with the Launcher.
 - REPENTOGON-using mods through upstream's compatibility layer, including Epiphany (its
   Tarnished characters too) and Fiend Folio: RELOADED, whose items, enemies and characters
-  now load in full. The layer decides per mod whether it can run. It has about 590 of
-  REPENTOGON's 1,727 functions and 135 of its 380 callbacks, the ones the tested mods use
-  first. Item settings such as `ChargeType` are writable, as with REPENTOGON.
-  `scripts/mac/rgon_census.py` measures the rest.
+  now load in full. External Item Descriptions now sees REPENTOGON too: Bag of Crafting
+  contents and output, TM Trainer's procedural items, transformation progress. The layer
+  decides per mod whether it can run. It has about 630 of REPENTOGON's 1,727 functions and
+  136 of its 380 callbacks, the ones the tested mods use first. Item settings such as
+  `ChargeType` are writable, as with REPENTOGON. `scripts/mac/rgon_census.py` measures the
+  rest.
+- One pinned game version. The recompilation only works with one exact `isaac-ng.exe`
+  (Repentance+ 1.9.7.17, Steam build 22878971). `scripts/mac/fetch-game.sh` downloads
+  exactly that build of the base game and every DLC from Steam, and `build.sh` refuses any
+  other version.
 - Large mod collections: the file table holds about 95 mods' worth of files, and a mod's
   `content-repentogon/` folder is read as REPENTOGON does.
 - A Launcher with a startup window that shows each loading step. A boot with about 95 mods
@@ -61,9 +67,12 @@ Not done yet:
   with a real Steam client.
 - Mod status effects declared without an id (some of Epiphany's and Fiend Folio's) do
   nothing yet. They used to freeze the game on a room change; that's fixed.
-- More REPENTOGON coverage: most missing callbacks need new hooks in the game, and
-  External Item Descriptions and StageAPI still miss a few names each.
-- A from-scratch build check, and a known rare Lua garbage-collector crash.
+- More REPENTOGON coverage: most missing callbacks need new hooks in the game. StageAPI
+  has most of its REPENTOGON names now (room water, backdrops, the boss-pick callback),
+  but still runs without REPENTOGON until its room-config functions are in.
+- A from-scratch build check.
+- A rare Lua garbage-collector crash, seen once and not reproducible since. Debug switches
+  for it are built in and off by default (`docs/mac/RUNBOOK.md`).
 
 ## REPENTOGON
 
@@ -81,7 +90,7 @@ game.
   [`0cd8f863f`](https://github.com/TeamREPENTOGON/REPENTOGON/commit/0cd8f863fe9947a8414d9018a700269603e629e6)
   (2026-11-09, version 1.1.3, its latest snapshot). That snapshot targets game v1.9.7.12;
   this build runs v1.9.7.17, which is why fields are re-measured.
-- **Progress:** about 590 of its 1,727 functions and 135 of its 380 callbacks, the ones
+- **Progress:** about 630 of its 1,727 functions and 136 of its 380 callbacks, the ones
   the tested mods use coming first. `scripts/mac/rgon_census.py` compares the layer
   against a REPENTOGON checkout, and `docs/mac/layer-gaps.md` has the details.
 - The layer tells each mod whether REPENTOGON is there, and only says yes when every
@@ -99,10 +108,19 @@ git -C the-browsing-of-isaac checkout b986dd8
 scripts/mac/apply.sh the-browsing-of-isaac
 ```
 
-Then, in the checkout, build the app from your Windows copy of the game:
+Then, in the checkout, get the pinned Windows build of the game. You need to own Rebirth
+and all four DLCs (Afterbirth, Afterbirth+, Repentance, Repentance+) on Steam. This uses
+SteamCMD (`brew install --cask steamcmd`); you type your password and Steam Guard code
+into SteamCMD yourself:
 
 ```sh
-scripts/mac/build.sh --game "<folder with isaac-ng.exe>"
+scripts/mac/fetch-game.sh --user "<steam login>" --out "<game folder>"
+```
+
+Then build the app from it:
+
+```sh
+scripts/mac/build.sh --game "<game folder>"
 ```
 
 It needs Python, Java, Ghidra, Steamless, SDL3 and an ANGLE build with the Metal backend.

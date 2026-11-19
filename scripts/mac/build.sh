@@ -14,6 +14,8 @@
 #   --force-stage X     run stage X even if current (repeatable; "all" forces every stage).
 #                       Stages after X rerun on their own, their stamps include X's.
 #   --no-seed           do not adopt existing outputs that have no stamp yet (default: adopt them)
+#   --allow-other-exe   only warn when isaac-ng.exe is not the pinned build (also ISAAC_ALLOW_OTHER_EXE=1);
+#                       for developers: the lift and the Layer offsets are for the pinned build only
 #   --dry-run           print what each stage would do, run nothing
 #   --list              print the stage names and exit
 #
@@ -45,6 +47,7 @@ JOBS=3
 FORCE=" "
 SEED=1
 DRY=0
+ALLOW_OTHER=${ISAAC_ALLOW_OTHER_EXE:-0}
 STAGES="steamless ghidra tables lift build_boot bundle memimage build_native launcher layer app dylibs config sign"
 
 die() { echo "build.sh: $*" >&2; exit 1; }
@@ -58,6 +61,7 @@ while [ $# -gt 0 ]; do
         --jobs) JOBS=${2:?--jobs needs a number}; shift 2 ;;
         --force-stage) FORCE="$FORCE${2:?--force-stage needs a name} "; shift 2 ;;
         --no-seed) SEED=0; shift ;;
+        --allow-other-exe) ALLOW_OTHER=1; shift ;;
         --dry-run) DRY=1; shift ;;
         --list) echo $STAGES; exit 0 ;;
         -h|--help) sed -n '2,/^set -eu/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -73,6 +77,25 @@ for s in $FORCE; do
 done
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
+
+# ---- game version pin (scripts/mac/game-pin.txt) -------------------------------------------
+PIN_FILE="$REPO/scripts/mac/game-pin.txt"
+[ -f "$PIN_FILE" ] || die "$PIN_FILE not found"
+pin_get() { awk -v k="$1" '$1==k {print $2; exit}' "$PIN_FILE"; }
+PIN_VERSION=$(pin_get version); PIN_BUILD=$(pin_get build_id); PIN_SHA=$(pin_get exe_sha256)
+GOT_SHA=$(shasum -a 256 "$GAME/isaac-ng.exe" | cut -d' ' -f1)
+if [ "$GOT_SHA" = "$PIN_SHA" ]; then
+    say "game: isaac-ng.exe matches the pin (Repentance+ $PIN_VERSION, Steam build $PIN_BUILD)"
+elif [ "$ALLOW_OTHER" = 1 ]; then
+    warn "isaac-ng.exe (sha256 $GOT_SHA) is not the pinned build; continuing because of --allow-other-exe. The lift and the Layer offsets only fit $PIN_VERSION."
+else
+    die "isaac-ng.exe is not the build this port supports.
+  expected: Repentance+ $PIN_VERSION, Steam build $PIN_BUILD, sha256 $PIN_SHA
+  found:    sha256 $GOT_SHA
+  The static recompilation only works with that exact exe. Get it with:
+    scripts/mac/fetch-game.sh --user <steam login> --out <dir>
+  then build with --game <dir>. (Developers: --allow-other-exe or ISAAC_ALLOW_OTHER_EXE=1.)"
+fi
 
 # ---- toolchain discovery --------------------------------------------------------------
 TC_ENV=${ISAAC_TOOLCHAIN_ENV:-}

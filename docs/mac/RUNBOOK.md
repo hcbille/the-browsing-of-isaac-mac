@@ -60,11 +60,28 @@ python scripts/mac/build_native.py --jobs 3        # -> output/mac/isaac-mac, ab
   `<dir>` (`--layer-dir`). Staging takes a snapshot, so later edits don't change a running game.
 - An engine hook (new row in `scripts/recomp/rgon/tools/hook_table.py`) changes the lifted game:
   `hook_table.py --write`, then `apply_wrap_patches` on `output/recomp/lift/gu`, then `build_native.py`
-  (only the touched lifted files recompile). Recipe: `layer-gaps.md` section 5.
+  (only the touched lifted files recompile). Recipe: `layer-gaps.md` section 5. In practice (hook 174, 2026-11-19):
+  `hook_table.py` (no `--write`) checks the row's `ret` but fails the reg/sig rows when the prebuilt outputs are gone, so add
+  the row by hand to `lift_patches.py` `RGON_HOOKS` and `hook_slots.lua`; apply with
+  `cd scripts/recomp/lift && python3 -c "from pathlib import Path; import lift_patches as L; L.apply_wrap_patches(Path('<repo>/output/recomp/lift/gu'))"`
+  (about 2 min, rewrites only the TU holding the function); build with `cp -Rp output/mac <dir>` then
+  `build_native.py --out <dir>` (10 s, keeps the other objects) and run it with `ISAAC_BIN=<dir>/isaac-mac` when the tree holds
+  other workers' uncommitted host changes. A Layer that arms a slot with no wrapper in the binary fires nothing (silently).
 - The Launcher: `native/mac/launcher/build.sh <out dir>`; tests `native/mac/launcher/Tests/run.sh <scratch dir>`.
 - The whole app: `scripts/mac/build.sh --game <game>` (`build.md`). Stages 1-8 (Steamless to
   `build_native`) are adopted from existing outputs and skipped; 9-14 (Launcher, Layer, bundle, dylibs,
   config, sign) run. A from-scratch run of 1-8 has never been done.
+- The game build is pinned in `scripts/mac/game-pin.txt` (version, Steam build id, exe SHA-256, depot and
+  manifest ids). `build.sh` refuses any other `isaac-ng.exe` (`--allow-other-exe` to override);
+  `scripts/mac/fetch-game.sh` downloads exactly that build with SteamCMD. To move the pin: new manifests
+  from `appmanifest_250900.acf`, the new exe hash, edit the file; then redo the lift, `CANON_SHA` and every
+  Layer offset. A new DLC depot is one line (id, manifest from that build's `InstalledDepots`, dlcappid, name). Details: `build.md`, "Getting the pinned game, and moving the pin".
+  Verified 2026-11-19 with a real account: Steam still serves all five pinned manifests (about 2 GB). The
+  merged folder matched the reference install file for file (1,203 files, same SHA-1), apart from the
+  shared VC redist depot, which is not needed. Homebrew's `steamcmd` is a wrapper, so the depots land in
+  `<Caskroom>/steamcmd/<ver>/MacOS/steamapps/content/`. SteamCMD prints that path with backslashes, and
+  the script reads it from SteamCMD's output. If the merge step fails, rerun with
+  `--merge-from <that content folder>`; no new download is needed.
 
 ## 5. Run
 
@@ -174,7 +191,18 @@ appears, plus mouse, pad, `fullscreen`, `window:WxH` tokens.
 `sweeplist` <- `luaC_step` <- `lua_gc` <- `isaac_lua_gc` <- `sub_008657c0`, about 50 frames after the unlock,
 reading `0x0000000f00000052`: a GC object's `next` pointer was `0x0000000f00000049` (`marked` is at +9), i.e. two
 32-bit guest values over a native 64-bit Lua header. The same lab on the play save did not crash. Treat it as guest
-memory corruption into the native Lua heap, not memory pressure.
+memory corruption into the native Lua heap, not memory pressure. Declared not reproducible (2026-11-19) after
+about 45,000 windowed frames with 95 mods, a fresh save and `lab_unlock_all`, with every check below on and no fault.
+
+**Lua heap debug knobs** (`host_lua.c`; all off by default, a build with them compiled in behaves like the release):
+`ISAAC_LUA_REDZONE=1` (redzones around every Lua block, freed blocks filled with 0xDD and quarantined,
+`ISAAC_LUA_QUARANTINE_MB`, default 48), `ISAAC_LUA_HEAPCHECK=N` (every N-th `lua_gc` call, about one a frame: verify all
+redzones, a slice of the quarantine and Lua's own object lists; on a fault it logs `[isaac][luagc] HEAP FAULT` with the
+guest address and header, then aborts unless `ISAAC_LUA_HEAPCHECK_ABORT=0`), `ISAAC_LUA_GC_FORCE=N` (a whole collection
+every N-th call). Build into its own folder (`build_native.py --out .scratch/<x>/out`), run with `ISAAC_BIN=` in
+`run.sh`. Cost with 95 mods (1.1M live blocks): HEAPCHECK=10 about 30 fps windowed. Note the unlock popups: after
+`lab_unlock_all` the game shows about 1,000 achievement popups, so tap Enter every 10 frames
+(`until=...:enter:from=120:every=10:hold=4`).
 
 **Room-change hang with Epiphany (fixed 2026-11-19)**: the game froze at 99% CPU inside one frame at a room change,
 printing `EL: invalid sublist` (the game's per-frame EntityList sublist arena filling up; only a symptom). Cause: the game
