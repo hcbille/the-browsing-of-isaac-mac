@@ -202,6 +202,7 @@ int main(int argc, char **argv) {
      * meant relative to where the user ran it */
     { char cwd[4096]; if (getcwd(cwd, sizeof cwd)) setenv("ISAAC_MAC_LAUNCH_CWD", cwd, 1); }
     if (!mac_launch_parse(argc, argv)) return 2;
+    { extern void isaac_mac_window_adapt_begin(void); isaac_mac_window_adapt_begin(); }   /* adapt: the fake display (mac_window.c) */
     if (!g_mac_cfg.segs || !g_mac_cfg.bundle) {
         fprintf(stderr, "usage: %s [--headless] [--launch-settings <json>] [--vanilla] [--debug-console] [--lua-debug]\n"
                         "          [--segs F] [--bundle D] [--layer-dir D] [--save-dir D] [--mods-dir D] [--modscan F] [--gate-log F] [--stage boot|main]\n"

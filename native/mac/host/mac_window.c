@@ -1,6 +1,6 @@
 /* mac_window.c -- the Mac Build's window modes (M5): scaling, fullscreen, mouse mapping.
  *
- * The game always renders at its own client size, 960x540 (the Guest's window
+ * In integer and fill the game renders at its own client size, 960x540 (the Guest's window
  * size, DAT_00c799a8/ac; the Host's fake display is 960x540 too, so the game's own
  * fullscreen setup leaves the picture at that size). Its "default framebuffer"
  * is an offscreen framebuffer of that size (host_gl_webgl.c maps framebuffer 0 to
@@ -14,9 +14,25 @@
  *                      scale), linear filtering unless it happens to be whole, black bars
  *                      on the short axis.
  *
- * Mode: --scale integer|fill, launch-settings key scale_mode, env REPENTANCE_MAC_SCALE /
- * ISAAC_MAC_SCALE (mac_launch.c). Window size at start: --window WxH, ISAAC_MAC_WINDOW=WxH.
- * The window is resizable. No Retina rendering: the drawable is in points.
+ *   adapt (default)    the GAME does the layout, as the PC build does when its window is resized or
+ *                      made full screen: the drawable's pixel size (Retina, SDL_WINDOW_HIGH_PIXEL_DENSITY)
+ *                      divided by the smallest whole k that makes it at most 1920 wide is the game's
+ *                      window size (adapt_k: the game's own layout, FUN_00954320, floors 960/width+0.5
+ *                      for a factor that is 0 above 1920 and then renders 0x0 and crashes). The Host
+ *                      tells the game that size the way Windows would: the fake display
+ *                      (host_shims_win.c) answers it, GetClientRect answers it, and a WM_SIZE goes
+ *                      through the game's own GLFW window procedure into its framebuffer-size callback
+ *                      (isaac_native_window_resized), at the first frame and at every change of the
+ *                      drawable (window resize, full screen on/off). The game then picks its own
+ *                      whole-number scale (min(w/400, h/240) floored, capped by Options MaxScale),
+ *                      centres its viewport and anchors the HUD to the edges; the offscreen
+ *                      framebuffer is the game's window size and compose is a whole-number (k)
+ *                      nearest blit, so every game pixel is an N x N block; only the odd leftover
+ *                      pixels (under k per side) are bars.
+ *
+ * Mode: --scale adapt|integer|fill, launch-settings key scale_mode, env REPENTANCE_MAC_SCALE /
+ * ISAAC_MAC_SCALE (mac_launch.c). Window size at start: --window WxH, ISAAC_MAC_WINDOW=WxH (points).
+ * The window is resizable. integer and fill render in points (no Retina); adapt in pixels.
  *
  * Fullscreen is SDL3's desktop (borderless, Spaces) fullscreen. It follows the game's
  * Fullscreen option (Options.Fullscreen, the byte at Manager+0x2a360: Manager is the
@@ -35,9 +51,11 @@
  */
 #include <SDL3/SDL.h>
 #include <GLES3/gl3.h>
+#include <dlfcn.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "isaac_host.h"
@@ -59,12 +77,99 @@ static int g_gw = 960, g_gh = 540;              /* the game's framebuffer size *
 static int g_fs;                                /* fullscreen as last requested or reported */
 static int g_opt_seen = -1;                     /* Options.Fullscreen as last seen */
 
-typedef struct { int x, y, w, h, linear; } wrect;
+/* x, y, w, h: where the picture lands in the drawable (top-left origin). sx, sy_gl, sw, sh: the part of the game
+ * framebuffer shown (sx from the left, sy_gl from the bottom, GL style); the whole framebuffer unless adapt shows only
+ * the game's own viewport (a cutscene's 960x540). */
+typedef struct { int x, y, w, h, linear; int sx, sy_gl, sw, sh; } wrect;
+
+/* ---- adapt mode ------------------------------------------------------------------- */
+static int g_adapt;                             /* 1: the game renders at the drawable's pixel size */
+static int g_told_w, g_told_h;                  /* the window size the game was last told (pixels) */
+void isaac_native_adapt_begin(int disp_w, int disp_h);   /* host_shims_win.c */
+void isaac_native_window_resized(int w, int h);
+
+int isaac_mac_window_adapt(void) { return g_adapt; }
+
+/* The game's own layout (FUN_00954320, found in the decompile) takes floor(960 / width + 0.5) as its "DP per
+ * point": 1 up to a window 1920 wide, 0 above, and then its render size is 0x0 and it crashes. So the game is
+ * given the drawable divided by the smallest whole k that makes it at most 1920 wide, and the picture is
+ * blitted back up by k (nearest, whole pixels). A Retina drawable of 3420 wide is a 1710 wide game window, k 2. */
+#define ADAPT_MAX_W 1920
+static int adapt_k(int pw) {
+    int k = 1;
+    while (k < 16 && pw / k > ADAPT_MAX_W) ++k;
+    return k;
+}
+/* the game's window size for a drawable */
+static void adapt_game_size(int pw, int ph, int *gw, int *gh) {
+    int k = adapt_k(pw);
+    *gw = pw / k; *gh = ph / k;
+}
+
+/* the main display's size in pixels and points (CoreGraphics through dlsym: the Host links only SDL) */
+static int display_px(int *pxw, int *pxh, int *ptw, int *pth) {
+    void *cg = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", RTLD_LAZY);
+    if (!cg) return 0;
+    typedef uint32_t (*f_main)(void);
+    typedef void *(*f_mode)(uint32_t);
+    typedef size_t (*f_dim)(void *);
+    typedef void (*f_rel)(void *);
+    f_main fmain = (f_main)dlsym(cg, "CGMainDisplayID");
+    f_mode fmode = (f_mode)dlsym(cg, "CGDisplayCopyDisplayMode");
+    f_dim fpw = (f_dim)dlsym(cg, "CGDisplayModeGetPixelWidth"), fph = (f_dim)dlsym(cg, "CGDisplayModeGetPixelHeight");
+    f_dim fw = (f_dim)dlsym(cg, "CGDisplayModeGetWidth"), fh = (f_dim)dlsym(cg, "CGDisplayModeGetHeight");
+    f_rel frel = (f_rel)dlsym(cg, "CGDisplayModeRelease");
+    if (!fmain || !fmode || !fpw || !fph || !fw || !fh) return 0;
+    void *m = fmode(fmain());
+    if (!m) return 0;
+    *pxw = (int)fpw(m); *pxh = (int)fph(m); *ptw = (int)fw(m); *pth = (int)fh(m);
+    if (frel) frel(m);
+    return *pxw > 0 && *pxh > 0 && *ptw > 0 && *pth > 0;
+}
+
+/* before the game creates its window: the fake display is the real display's pixel size, its first window
+ * is the initial window (points) in pixels. Headless and the other modes leave the 960x540 display. */
+void isaac_mac_window_adapt_begin(void) {
+    const char *hl = getenv("ISAAC_MAC_HEADLESS");
+    g_adapt = g_mac_cfg.scale_adapt && !(hl && *hl && *hl != '0');
+    if (!g_adapt) return;
+    int pxw = 1920, pxh = 1080, ptw = 960, pth = 540;
+    if (!display_px(&pxw, &pxh, &ptw, &pth)) printf("[mac][window] adapt: the display size is unknown, assuming 1920x1080\n");
+    int dw, dh;                                 /* the display as the game sees it: the pixels divided by k (see adapt_k) */
+    adapt_game_size(pxw, pxh, &dw, &dh);
+    isaac_native_adapt_begin(dw, dh);
+    g_told_w = 0; g_told_h = 0;                 /* so the first frame tells the game its real size (it starts from its option, 960x540) */
+    printf("[mac][window] adapt: display %dx%d pixels (%dx%d points); the game sees a %dx%d display (k %d)\n",
+           pxw, pxh, ptw, pth, dw, dh, adapt_k(pxw));
+}
 
 /* ---- the picture's rectangle -------------------------------------------------- */
 static void layout(int pw, int ph, wrect *r) {
     int gw = g_gw, gh = g_gh;
-    if (pw <= 0 || ph <= 0) { *r = (wrect){ 0, 0, gw, gh, 0 }; return; }
+    *r = (wrect){ 0, 0, gw, gh, 0, 0, 0, gw, gh };
+    if (g_adapt) {
+        /* Show the game's own viewport (0x00c799a8/ac at the origin the game's glViewport uses): in a room it is the
+         * whole window less the game's few padding pixels, in a cutscene (FUN_00954150) a fixed 960x540. It is scaled by
+         * the largest whole number that fits the drawable (nearest) and centred, black around it: every game pixel is
+         * an N x N block, as the PC build shows a 16:9 cutscene in a bigger window. */
+        int vw = (int)isaac_r32(GUEST_WIN_W), vh = (int)isaac_r32(GUEST_WIN_H), ox = 0, oy = 0;
+        uint32_t fl = isaac_r32(0x00c798e4u), bx = isaac_r32((fl & 0x40u) ? 0x00c79984u : 0x00c7b640u),
+                 by = isaac_r32((fl & 0x40u) ? 0x00c79988u : 0x00c7b644u);
+        float fx, fy;
+        memcpy(&fx, &bx, 4); memcpy(&fy, &by, 4);
+        if (fx >= 0.f && fx < 16384.f) ox = (int)fx;
+        if (fy >= 0.f && fy < 16384.f) oy = (int)fy;
+        if (vw < 64 || vh < 64 || ox + vw > gw || oy + vh > gh) { vw = gw; vh = gh; ox = oy = 0; }   /* not (yet) valid: all of it */
+        int m = 1;
+        if (pw > 0 && ph > 0) { int mx = pw / vw, my = ph / vh; m = mx < my ? mx : my; if (m < 1) m = 1; }
+        r->w = vw * m; r->h = vh * m; r->linear = 0;
+        r->x = (pw - r->w) / 2; r->y = (ph - r->h) / 2;
+        if (r->x < 0) r->x = 0;
+        if (r->y < 0) r->y = 0;
+        r->sx = ox; r->sy_gl = oy; r->sw = vw; r->sh = vh;
+        return;
+    }
+    if (pw <= 0 || ph <= 0) return;
     int sx = pw / gw, sy = ph / gh, s = sx < sy ? sx : sy;
     if (!g_mac_cfg.scale_fill && s >= 1) {
         r->w = gw * s; r->h = gh * s; r->linear = 0;
@@ -95,11 +200,14 @@ int isaac_mac_window_to_game(SDL_Window *win, float wx, float wy, int *gx, int *
     wrect r;
     layout(pw, ph, &r);
     float px = wx * (float)pw / (float)(ww > 0 ? ww : 1), py = wy * (float)ph / (float)(wh > 0 ? wh : 1);
-    int x = (int)floorf((px - (float)r.x) * (float)g_gw / (float)r.w);
-    int y = (int)floorf((py - (float)r.y) * (float)g_gh / (float)r.h);
+    int x = (int)floorf((px - (float)r.x) * (float)r.sw / (float)r.w);
+    int y = (int)floorf((py - (float)r.y) * (float)r.sh / (float)r.h);
+    int inside = x >= 0 && y >= 0 && x < r.sw && y < r.sh;
+    x += r.sx;                                      /* the shown part's corner, in the game's top-left coordinates */
+    y += g_gh - (r.sy_gl + r.sh);
     *gx = x < 0 ? 0 : x >= g_gw ? g_gw - 1 : x;
     *gy = y < 0 ? 0 : y >= g_gh ? g_gh - 1 : y;
-    return x >= 0 && y >= 0 && x < g_gw && y < g_gh;
+    return inside;
 }
 
 /* the middle of a game pixel in window (point) coordinates (scripted mouse) */
@@ -109,8 +217,8 @@ void isaac_mac_game_to_window(int gx, int gy, float *wx, float *wy) {
     if (win) sizes(win, &ww, &wh, &pw, &ph);
     wrect r;
     layout(pw, ph, &r);
-    float px = (float)r.x + ((float)gx + 0.5f) * (float)r.w / (float)g_gw;
-    float py = (float)r.y + ((float)gy + 0.5f) * (float)r.h / (float)g_gh;
+    float px = (float)r.x + ((float)(gx - r.sx) + 0.5f) * (float)r.w / (float)r.sw;
+    float py = (float)r.y + ((float)(gy - (g_gh - (r.sy_gl + r.sh))) + 0.5f) * (float)r.h / (float)r.sh;
     *wx = px * (float)ww / (float)pw;
     *wy = py * (float)wh / (float)ph;
 }
@@ -150,11 +258,17 @@ uint32_t isaac_mac_screen_fbo(void) { return g_fbo; }
 int isaac_mac_window_gl_ready(void) {
     int w = (int)isaac_r32(GUEST_WIN_W), h = (int)isaac_r32(GUEST_WIN_H);
     if (w < 64 || h < 64 || w > 8192 || h > 8192) { w = 960; h = 540; }
+    if (g_adapt) {                                      /* the drawable's size, not the game's viewport size */
+        SDL_Window *win = isaac_mac_gl_window();
+        int pw = 0, ph = 0;
+        if (win) SDL_GetWindowSizeInPixels(win, &pw, &ph);
+        if (pw >= 64 && ph >= 64) adapt_game_size(pw, ph, &w, &h);
+    }
     if (!fbo_alloc(w, h)) return 0;
     glViewport(0, 0, g_gw, g_gh);
     glClearColor(0.f, 0.f, 0.f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
-    printf("[mac][window] game framebuffer %dx%d, scale mode %s\n", g_gw, g_gh, g_mac_cfg.scale_fill ? "fill" : "integer");
+    printf("[mac][window] game framebuffer %dx%d, scale mode %s\n", g_gw, g_gh, g_adapt ? "adapt" : g_mac_cfg.scale_fill ? "fill" : "integer");
     return 1;
 }
 
@@ -169,6 +283,14 @@ void isaac_mac_window_compose(void) {
     if (!g_fbo || !win) return;
     int ww, wh, pw, ph;
     sizes(win, &ww, &wh, &pw, &ph);
+    if (g_adapt && pw >= 16 && ph >= 16 && pw <= 16384 && ph <= 16384) {
+        int aw, ah;                     /* the drawable changed: the screen framebuffer follows (the game's window size) */
+        adapt_game_size(pw, ph, &aw, &ah);
+        if (aw != g_gw || ah != g_gh) {
+            int ow = g_gw, oh = g_gh;
+            if (fbo_alloc(aw, ah)) printf("[mac][window] screen framebuffer %dx%d (was %dx%d)\n", aw, ah, ow, oh);
+        }
+    }
     wrect r;
     layout(pw, ph, &r);
 
@@ -187,7 +309,7 @@ void isaac_mac_window_compose(void) {
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glClearColor(0.f, 0.f, 0.f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT);
-    glBlitFramebuffer(0, 0, g_gw, g_gh, r.x, ph - (r.y + r.h), r.x + r.w, ph - r.y,
+    glBlitFramebuffer(r.sx, r.sy_gl, r.sx + r.sw, r.sy_gl + r.sh, r.x, ph - (r.y + r.h), r.x + r.w, ph - r.y,
                       GL_COLOR_BUFFER_BIT, r.linear ? GL_LINEAR : GL_NEAREST);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)rfb);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)dfb);
@@ -200,13 +322,13 @@ void isaac_mac_window_compose(void) {
         lpw = pw; lph = ph; lx = r.x; ly = r.y; lw = r.w; lh = r.h; lfs = g_fs;
         printf("[mac][window] %s %dx%d (window %dx%d points): game %dx%d at %d,%d size %dx%d (x%.2f, %s), bars l/r %d/%d t/b %d/%d, mode %s\n",
                g_fs ? "fullscreen" : "windowed", pw, ph, ww, wh, g_gw, g_gh, r.x, r.y, r.w, r.h,
-               (double)r.w / g_gw, r.linear ? "linear" : "nearest", r.x, pw - r.x - r.w, r.y, ph - r.y - r.h,
-               g_mac_cfg.scale_fill ? "fill" : "integer");
+               (double)r.w / r.sw, r.linear ? "linear" : "nearest", r.x, pw - r.x - r.w, r.y, ph - r.y - r.h,
+               g_adapt ? "adapt" : g_mac_cfg.scale_fill ? "fill" : "integer");
     }
 
     /* the game changed its window size (a mod, an option): follow it. The picture of this frame is already shown. */
     int gw = (int)isaac_r32(GUEST_WIN_W), gh = (int)isaac_r32(GUEST_WIN_H);
-    if (gw >= 64 && gh >= 64 && gw <= 8192 && gh <= 8192 && (gw != g_gw || gh != g_gh)) {
+    if (!g_adapt && gw >= 64 && gh >= 64 && gw <= 8192 && gh <= 8192 && (gw != g_gw || gh != g_gh)) {
         int ow = g_gw, oh = g_gh;
         if (fbo_alloc(gw, gh)) printf("[mac][window] the game's window is now %dx%d (was %dx%d)\n", gw, gh, ow, oh);
     }
@@ -269,6 +391,18 @@ int isaac_mac_window_toggle_fullscreen(const char *why) {
 
 /* a poll of Options.Fullscreen, once per frame: the game's F key and its options menu change it */
 void isaac_mac_window_frame(uint32_t frame) {
+    if (g_adapt) {                               /* the drawable's size changed: tell the game, as Windows would (WM_SIZE) */
+        SDL_Window *win = isaac_mac_gl_window();
+        int pw = 0, ph = 0;
+        if (win) SDL_GetWindowSizeInPixels(win, &pw, &ph);
+        int aw = 0, ah = 0;
+        if (pw >= 16 && ph >= 16) adapt_game_size(pw, ph, &aw, &ah);
+        if (aw >= 16 && (aw != g_told_w || ah != g_told_h)) {
+            g_told_w = aw; g_told_h = ah;
+            printf("[mac][window] adapt: drawable %dx%d pixels, telling the game its window is %dx%d (frame %u)\n", pw, ph, aw, ah, frame);
+            isaac_native_window_resized(aw, ah);
+        }
+    }
     if (g_f_down_at >= 0 && (int)frame >= g_f_down_at + 4) { g_f_down_at = -1; isaac_input_key(0x46, 0x21, 0, 0); }   /* let go of F */
     if (g_f_pending >= 0) {
         uint8_t *q = opt_fullscreen_byte();

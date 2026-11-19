@@ -57,6 +57,7 @@ void isaac_mac_input_event(const SDL_Event *ev);
 void isaac_mac_input_end_events(void);
 void isaac_mac_window_initial_size(int *w, int *h);
 int isaac_mac_window_gl_ready(void);
+int isaac_mac_window_adapt(void);
 void isaac_mac_window_compose(void);
 void isaac_mac_window_frame(uint32_t frame);
 void isaac_mac_window_event(const SDL_Event *ev);
@@ -131,6 +132,7 @@ int isaac_mac_gl_open(void) {
     int iw = NATIVE_W, ih = NATIVE_H;
     isaac_mac_window_initial_size(&iw, &ih);
     SDL_WindowFlags wf = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
+    if (isaac_mac_window_adapt()) wf |= SDL_WINDOW_HIGH_PIXEL_DENSITY;   /* adapt: the drawable is in Retina pixels */
     /* test hook: macOS keeps a titled window inside the screen; a borderless one can be larger (2x/3x screenshots) */
     { const char *bl = getenv("ISAAC_MAC_WINDOW_BORDERLESS"); if (bl && *bl && *bl != '0') wf |= SDL_WINDOW_BORDERLESS; }
     g_win = SDL_CreateWindow("The Binding of Isaac: Repentance+", iw, ih, wf);

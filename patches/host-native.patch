@@ -1088,10 +1088,23 @@ index 8eb0646..2a799f7 100644
      if (steam_slot_is_fake(slot)) {
          if (isaac_is_guest_va(slot)) isaac_w32(slot, STEAM_OBJ_VA);
 diff --git a/scripts/recomp/host/src/host_shims_win.c b/scripts/recomp/host/src/host_shims_win.c
-index 372e76d..d50d3db 100644
+index 372e76d..3180176 100644
 --- a/scripts/recomp/host/src/host_shims_win.c
 +++ b/scripts/recomp/host/src/host_shims_win.c
-@@ -17,14 +17,24 @@
+@@ -10,6 +10,12 @@
+  * Window size answers a fixed 1280x720 "display"; CreateWindowEx stores the
+  * requested size and GetClientRect/GetWindowRect return it, so resolution
+  * detection sees a plausible window.
++ *
++ * Mac Build (ISAAC_NATIVE): the fake display is 960x540, or, in the "adapt" scale mode
++ * (native/mac/host/mac_window.c), the game's view of the real display (isaac_native_adapt_begin).
++ * In adapt mode isaac_native_window_resized(w, h) is how the game learns its window size: it stores
++ * the size (GetClientRect then answers it exactly) and queues a WM_SIZE for the game's GLFW window,
++ * which DispatchMessageW hands to the game's own window procedure.
+  */
+ #include "isaac_host.h"
+ #include "shim_decls.h"
+@@ -17,14 +23,29 @@
  #include <stdio.h>
  #include <string.h>
  #include <stdlib.h>
@@ -1107,8 +1120,13 @@ index 372e76d..d50d3db 100644
 +/* Mac Build: the game's "display" is its own 960x540 client size, so the game's
 + * fullscreen option leaves the picture at 960x540 and native/mac/host/mac_window.c
 + * scales it into the real window or desktop (whole-number, bars). */
-+#define DISPLAY_W 960
-+#define DISPLAY_H 540
++#define DISPLAY_W g_disp_w
++#define DISPLAY_H g_disp_h
++/* "adapt" scale mode (native/mac/host/mac_window.c): the fake display is the real display's pixel size,
++ * the game's window is the real drawable's pixel size, and a size change reaches the game as a WM_SIZE
++ * through its own GLFW window procedure. Off: 960x540 as above. */
++static int g_adapt_sized;                       /* adapt: the Host has told the game a real size (the stored size is the client size from then on) */
++static int g_disp_w = 960, g_disp_h = 540;
 +#else
  #define DISPLAY_W 1280
  #define DISPLAY_H 720
@@ -1116,7 +1134,7 @@ index 372e76d..d50d3db 100644
  
  static struct {
      char     name[64];
-@@ -291,6 +301,17 @@ void imp_user32__GetClientRect(CpuState *restrict cpu) {
+@@ -291,6 +312,17 @@ void imp_user32__GetClientRect(CpuState *restrict cpu) {
      if (isaac_is_guest_va(r)) {
          isaac_w32(r + 0, 0);
          isaac_w32(r + 4, 0);
@@ -1124,7 +1142,7 @@ index 372e76d..d50d3db 100644
 +        /* the stored size is the window rect (CreateWindowEx got it from AdjustWindowRectEx); the client
 +         * area is that minus the frame AdjustWindowRectEx added. Without this the game's own fullscreen
 +         * toggle (the F key, the options menu) sees a 976x578 client for its 960x540 window. */
-+        if (g_win[i].style & 0x00CF0000u && g_win[i].w > 16 && g_win[i].h > 38) {
++        if (!g_adapt_sized && g_win[i].style & 0x00CF0000u && g_win[i].w > 16 && g_win[i].h > 38) {
 +            isaac_w32(r + 8,  g_win[i].w - 16);
 +            isaac_w32(r + 12, g_win[i].h - 38);
 +            cpu->EAX = 1;
@@ -1134,7 +1152,7 @@ index 372e76d..d50d3db 100644
          isaac_w32(r + 8,  g_win[i].w);
          isaac_w32(r + 12, g_win[i].h);
      }
-@@ -1091,7 +1112,7 @@ void isaac_render_skipped(CpuState *restrict cpu) { (void)cpu; }
+@@ -1091,7 +1123,7 @@ void isaac_render_skipped(CpuState *restrict cpu) { (void)cpu; }
  #endif
  /* BOOL SwapBuffers(HDC) -- gdi32, 4 bytes. One call per presented frame. */
  void imp_gdi32__SwapBuffers(CpuState *restrict cpu) {
@@ -1143,7 +1161,7 @@ index 372e76d..d50d3db 100644
      { extern void isaac_web_present(void); isaac_web_present(); }
  #endif
      (void)isaac_arg(cpu, 0);
-@@ -1263,12 +1284,33 @@ void isaac_input_mouse_button(int button, int down) {
+@@ -1263,12 +1295,51 @@ void isaac_input_mouse_button(int button, int down) {
      msgq_push(message, g_mouse_mk, ((uint32_t)g_cur_y << 16) | ((uint32_t)g_cur_x & 0xFFFFu));
      ++g_input_events;
  }
@@ -1151,6 +1169,24 @@ index 372e76d..d50d3db 100644
 +/* The Mac Build's window close button / Cmd+Q: WM_CLOSE to the game's window,
 + * which GLFW turns into the game's own orderly exit. */
 +void isaac_input_window_close(void) { msgq_push(0x10u, 0u, 0u); }
++/* Adapt mode (mac_window.c). Before the game creates its window: the real display's pixel size (what
++ * GetSystemMetrics, GetMonitorInfo and EnumDisplaySettings answer) and the first window size in pixels. */
++void isaac_native_adapt_begin(int disp_w, int disp_h) {
++    g_disp_w = disp_w; g_disp_h = disp_h;
++}
++/* The drawable changed size (window resize, full screen on/off): the game's window is now w x h pixels.
++ * What Windows would do: the next GetClientRect answers it, and the window gets WM_SIZE (SIZE_RESTORED,
++ * lParam = width | height << 16), which the game's statically linked GLFW turns into its framebuffer-size
++ * callback and the game's own re-layout (scale, viewport, HUD anchors). */
++void isaac_native_window_resized(int w, int h) {
++    uint32_t hw = main_hwnd();
++    int i = win_find_hwnd(hw);
++    if (i < 0 || w < 1 || h < 1) return;
++    g_win[i].w = (uint32_t)w; g_win[i].h = (uint32_t)h;
++    g_adapt_sized = 1;
++    msgq_push(0x05u, 0u, ((uint32_t)h << 16) | ((uint32_t)w & 0xFFFFu));
++    isaac_log("[isaac][ui] adapt: the game's window is now %dx%d (WM_SIZE sent)", w, h);
++}
 +/* WM_MOUSEWHEEL: delta in wheel units (120 per notch, positive = away from the user) */
 +void isaac_input_mouse_wheel(int32_t delta) {
 +    msgq_push(0x20Au, ((uint32_t)delta << 16) | (g_mouse_mk & 0xFFFFu),
@@ -1177,7 +1213,7 @@ index 372e76d..d50d3db 100644
  static void input_poll_page(void) {
      int32_t ev[4];
      for (unsigned n = 0; n < 64; ++n) {
-@@ -1280,6 +1322,9 @@ static void input_poll_page(void) {
+@@ -1280,6 +1351,9 @@ static void input_poll_page(void) {
          case 1: isaac_input_key((uint32_t)ev[1], (uint32_t)ev[2] & 0xFFu, (ev[2] >> 8) & 1, ev[3] != 0); break;
          case 2: isaac_input_mouse_move(ev[1], ev[2]); break;
          case 3: isaac_input_mouse_button(ev[1], ev[2] != 0); break;

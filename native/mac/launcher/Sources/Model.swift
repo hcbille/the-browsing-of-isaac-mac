@@ -86,8 +86,9 @@ struct LauncherSettings: Codable, Equatable {
     var debugConsole = false
     var logWindow = false
     var luaDebug = false
-    /// "integer" = whole-number scaling with black bars (default); "fill" = fill the window.
-    var scaleMode = "integer"
+    /// "adapt" = the game lays itself out at the window's pixel size (default); "integer" = whole-number
+    /// scaling of the 960x540 picture with black bars; "fill" = stretch the picture to the window.
+    var scaleMode = "adapt"
     /// Load the vendored NotchFill library into the game (full screen uses the strip beside the notch).
     var notchFill = false
 
@@ -104,8 +105,8 @@ struct LauncherSettings: Codable, Equatable {
         debugConsole = try c.decodeIfPresent(Bool.self, forKey: .debugConsole) ?? false
         logWindow = try c.decodeIfPresent(Bool.self, forKey: .logWindow) ?? false
         luaDebug = try c.decodeIfPresent(Bool.self, forKey: .luaDebug) ?? false
-        let sm = try c.decodeIfPresent(String.self, forKey: .scaleMode) ?? "integer"
-        scaleMode = sm == "fill" ? "fill" : "integer"
+        let sm = try c.decodeIfPresent(String.self, forKey: .scaleMode) ?? "adapt"
+        scaleMode = (sm == "fill" || sm == "integer") ? sm : "adapt"
         notchFill = try c.decodeIfPresent(Bool.self, forKey: .notchFill) ?? false
     }
 

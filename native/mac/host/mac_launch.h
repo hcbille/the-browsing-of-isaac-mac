@@ -8,7 +8,8 @@ typedef struct {
     const char *stage;
     int vanilla, debug_console, lua_debug;
     int positional_save;             /* the 4th positional argument was a save dir */
-    int scale_fill;                  /* window scaling: 0 whole-number with bars (default), 1 fill (aspect-preserving) */
+    int scale_fill;                  /* window scaling: 0 whole-number with bars, 1 fill (aspect-preserving) */
+    int scale_adapt;                 /* 1 (default): "adapt", the game renders at the drawable's pixel size and lays itself out */
     int win_w, win_h;                /* initial window size in points, 0 = the game's own 960x540 */
     const char *launch_settings;
 } mac_cfg;

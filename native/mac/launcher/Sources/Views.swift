@@ -237,13 +237,16 @@ struct OptionsView: View {
             }
             Section("Window") {
                 Picker("Scaling", selection: $model.settings.scaleMode) {
+                    Text("Fill the window (the game lays out for it)").tag("adapt")
                     Text("Whole-number scaling (black bars)").tag("integer")
-                    Text("Fill the window").tag("fill")
+                    Text("Stretch to the window").tag("fill")
                 }
                 .pickerStyle(.radioGroup)
                 Text(model.settings.scaleMode == "fill"
                      ? "The picture is stretched to fill the window; pixels may be uneven."
-                     : "The picture is scaled by whole numbers and centred, with black bars around it.")
+                     : model.settings.scaleMode == "integer"
+                     ? "The picture is scaled by whole numbers and centred, with black bars around it."
+                     : "The game picks its own whole-number pixel size for the window, like the PC version, and fills the rest itself.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if model.hasNotch {

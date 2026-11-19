@@ -62,8 +62,9 @@ game runs (Steam tracks the process it started) and quits when the game exits.
   too (`ModStore.gameLoadOrder`: dot-folders, files and a folder named `repentogon` are not mods) and
   shows that number on each row; the Mods tab can sort "By load order". The list itself is sorted like
   the in-game MODS menu, by display name, case-insensitive. The order is display-only and cannot be changed.
-- **Window.** Options > Window: "Whole-number scaling (black bars)" (default) or "Fill the window",
-  stored as `scale_mode` (`"integer"` | `"fill"`) in `launcher-settings.json` and written to
+- **Window.** Options > Window: "Fill the window (the game lays out for it)" (default), "Whole-number scaling
+  (black bars)" or "Stretch to the window", stored as `scale_mode` (`"adapt"` | `"integer"` | `"fill"`; anything
+  else reads as `"adapt"`) in `launcher-settings.json` and written to
   `launch-settings.json` at each Play. The game side must read `scale_mode`. No fullscreen-at-start key is
   defined, so the Launcher has none.
 - **NotchFill** (`native/mac/third_party/notchfill/`, MIT, Copyright (c) 2026 Dmitrii Tikhonov, vendored
@@ -186,7 +187,7 @@ are invented.)
 
 ```json
 { "skip_launcher": false, "vanilla_launch": false, "debug_console": false,
-  "log_window": false, "lua_debug": false, "scale_mode": "integer", "notch_fill": false }
+  "log_window": false, "lua_debug": false, "scale_mode": "adapt", "notch_fill": false }
 ```
 
 ### Launch contract (what the game must implement)
@@ -217,7 +218,7 @@ convenience):
   "version": 1,
   "launched_at": "2026-11-18T01:41:16Z",
   "vanilla_launch": false, "debug_console": false, "log_window": false, "lua_debug": false,
-  "scale_mode": "integer", "notch_fill": false,
+  "scale_mode": "adapt", "notch_fill": false,
   "support_dir": "<support>", "mods_dir": "<mods>",
   "gate_log_path": "<support>/logs/layer-gate.json",
   "game_log_path": "<support>/logs/game.log",
@@ -232,7 +233,7 @@ The game must read the mods folder from `mods_dir` and write the gate log to
 ### Game side (implemented in `native/mac/host/mac_launch.c`, `mac_fs.c`, `mac_gate.c`)
 
 Flags (`isaac-mac`, all optional): `--launch-settings <json>`, `--vanilla`, `--debug-console`, `--lua-debug`,
-`--scale integer|fill`, `--window WxH`, `--segs <file>`, `--bundle <dir>`, `--layer-dir <dir>`, `--save-dir <dir>`, `--mods-dir <dir>`, `--modscan <file>`,
+`--scale adapt|integer|fill`, `--window WxH`, `--segs <file>`, `--bundle <dir>`, `--layer-dir <dir>`, `--save-dir <dir>`, `--mods-dir <dir>`, `--modscan <file>`,
 `--gate-log <file>`, `--stage boot|main`, `--headless` (no window, fake GL; tests). The positional dev form
 `isaac-mac <segs> <bundle> [boot|main] [save dir]` still works.
 
@@ -246,9 +247,11 @@ Flags (`isaac-mac`, all optional): `--launch-settings <json>`, `--vanilla`, `--d
   load. If the Layer folder is missing the game launches the same way and the gate log says `"reason": "layer not installed"`.
 - **`--lua-debug`**: passes `--luadebug` in the Guest's argv, so mods get `io`, `os` and `debug`
   (`type(io)` is `"table"`; without the flag it is `nil`).
-- **Window scaling (M5, `mac_window.c`)**: launch-settings key `"scale_mode"`: `"integer"` (default; the largest
+- **Window scaling (M5, `mac_window.c`)**: launch-settings key `"scale_mode"`: `"adapt"` (default; the game is told the
+  window's size and lays itself out: whole-number pixel size chosen by the game, padding by the game, see
+  PROGRESS.md "Full-screen adapt"), `"integer"` (the largest
   whole multiple of the game's 960x540 that fits the window, nearest filter, black bars) or `"fill"` (largest
-  aspect-preserving size, linear filter, bars on the short axis). Flag `--scale integer|fill` overrides it, then the
+  aspect-preserving size, linear filter, bars on the short axis). Flag `--scale adapt|integer|fill` overrides it, then the
   environment (`REPENTANCE_MAC_SCALE`, `ISAAC_MAC_SCALE`). Read at launch, so a Launcher setting takes effect at the
   next Play. `--window WxH` / `ISAAC_MAC_WINDOW=WxH` sets the initial window size in points (default 960x540, the
   window is resizable). Fullscreen is the game's own option (Options menu, the F key) or Cmd+Ctrl+F; the Launcher

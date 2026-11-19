@@ -34,9 +34,12 @@ Working, on an M2 MacBook Air:
 
 - A native arm64 `Repentance+.app`, built from your copy of the game by one resumable
   command (`scripts/mac/build.sh`). It runs from its own bundle.
-- Picture through SDL3 and ANGLE on Metal: resizable window, full screen, integer or fill
-  scaling. Keyboard, mouse and gamepads (rumble, hot-plug). Native audio, with the intro
-  video in sync.
+- Picture through SDL3 and ANGLE on Metal: resizable window and full screen. By default
+  the game lays itself out for the window's real size, as on PC: it fills the screen,
+  keeps every pixel a whole number of screen pixels, and pads the rest. Retina-sharp, at
+  60 fps in full screen. Cutscenes stay 16:9, centred. Whole-number and stretch scaling
+  are still options. Keyboard, mouse and gamepads (rumble, hot-plug). Native audio, with
+  the intro video in sync.
 - Your saves, imported from the Windows or Steam folders on first start.
 - Steam Workshop mods: a Launcher syncs your subscriptions, and each mod can be switched
   on or off. The game's mods menu agrees with the Launcher.
@@ -51,7 +54,8 @@ Not done yet:
 
 - Steam achievements: the bridge works against a stub, but stays off until it's checked
   with a real Steam client.
-- Full-screen scaling that fills the whole notched display.
+- A freeze seen once in play: a room change with many mods loops on the game's
+  "EL: invalid sublist". Under investigation.
 - More REPENTOGON coverage (External Item Descriptions, StageAPI and others).
 - A from-scratch build check, and a known rare Lua garbage-collector crash.
 

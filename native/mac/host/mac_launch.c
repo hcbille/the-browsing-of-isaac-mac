@@ -7,7 +7,7 @@
  *   isaac-mac [--headless] [--launch-settings <json>] [--vanilla] [--debug-console]
  *             [--lua-debug] [--segs F] [--bundle D] [--layer-dir D] [--save-dir D]
  *             [--mods-dir D] [--modscan F] [--gate-log F] [--stage main|boot]
- *             [--scale integer|fill] [--window WxH]     (M5, mac_window.c; JSON key scale_mode)
+ *             [--scale adapt|integer|fill] [--window WxH]     (M5, mac_window.c; JSON key scale_mode)
  *   isaac-mac [--headless] <isaac.segs.bin> <instance dir> [boot|main] [save dir]   (dev)
  *
  * Precedence for every path: command-line flag, launch-settings.json, environment
@@ -246,15 +246,17 @@ int mac_launch_parse(int argc, char **argv) {
     c->debug_console = json_bool("debug_console", 0) || f_console;
     c->lua_debug = json_bool("lua_debug", 0) || f_lua;
 
-    /* window scaling: flag, JSON scale_mode, env REPENTANCE_MAC_SCALE / ISAAC_MAC_SCALE, then "integer" */
+    /* window scaling: flag, JSON scale_mode, env REPENTANCE_MAC_SCALE / ISAAC_MAC_SCALE, then "adapt" */
     {
         const char *m = f_scale;
         if (!m) m = json_str("scale_mode");
         if (!m) m = env_nonempty("REPENTANCE_MAC_SCALE");
         if (!m) m = env_nonempty("ISAAC_MAC_SCALE");
         c->scale_fill = 0;
-        if (m && !strcmp(m, "fill")) c->scale_fill = 1;
-        else if (m && strcmp(m, "integer")) fprintf(stderr, "[mac] unknown scale mode '%s' (integer or fill); using integer\n", m);
+        c->scale_adapt = 1;
+        if (m && !strcmp(m, "fill")) { c->scale_fill = 1; c->scale_adapt = 0; }
+        else if (m && !strcmp(m, "integer")) c->scale_adapt = 0;
+        else if (m && strcmp(m, "adapt")) fprintf(stderr, "[mac] unknown scale mode '%s' (adapt, integer or fill); using adapt\n", m);
         /* initial window size WxH in points (flag --window, env ISAAC_MAC_WINDOW); a test and power-user knob */
         const char *w = f_window ? f_window : env_nonempty("ISAAC_MAC_WINDOW");
         int ww = 0, wh = 0;

@@ -93,6 +93,14 @@ pre-launch (`.scratch/verify67/prelaunch.bin`) with `REPENTANCE_MAC_SUPPORT_DIR=
 `REPENTANCE_MAC_WORKSHOP_DIR=/nonexistent`, `REPENTANCE_MAC_WORKSHOP_FALLBACK=<workshop>`,
 `REPENTANCE_MAC_STEAM_USERDATA=<empty dir>`.
 
+**Clean up after every test run (user rule, 2026-11-19).** When a test run is finished, delete the big
+folders it made: the support folder with its copied mods (0.4 to 1.1 GB each), copied game bundles, app
+copies. Keep only the evidence (screenshots, logs, the run's commands) in its `.scratch/<task>/` folder. Don't
+copy the mods into a new support folder for each run; reuse one, or use one without mods when the test doesn't
+need them. Never delete `.scratch/play/` (the user's play setup), `.scratch/m11/out` (the built app),
+`.scratch/game-bundle`, `output/`, or anything outside `.scratch/`. The disk is small: 6.3 GB of leftover
+support folders had built up before this rule.
+
 **The app itself, without touching the real save**: `open -n <app> --env REPENTANCE_MAC_SUPPORT_DIR=<scratch
 support>` plus `--env ISAAC_MAC_SCRIPT=...`, `--env ISAAC_MAC_SHOT=...` and `--env ISAAC_MAC_RUN_FRAMES=...`.
 The Launcher passes its environment to the game. `{"skip_launcher": true}` in that folder's
@@ -130,6 +138,12 @@ appears, plus mouse, pad, `fullscreen`, `window:WxH` tokens.
 - If `gamestate1.dat` exists, Enter picks Continue, not New Run. `scripts/mac/fresh.sh <support>` moves it aside.
 - **Debug console**: grave (`` ` ``) opens it during a run (not on the title screen); **Escape closes it**.
   Pressing grave again only types a backtick, and every later key then goes into the console as text.
+- **Window sizes (adapt is the default scale mode)**: the game lays itself out for the window (see PROGRESS.md "Full-screen
+  adapt"). Check a size with `ISAAC_MAC_SCRIPT='until=Room 1.2(Start Room):enter,@60:window:1280x800,@200:fullscreen:on'`
+  and `ISAAC_MAC_SHOT=@150:<png>,...`; the log shows `Viewport: WxH` (the game's own layout) and `[mac][window] adapt:` lines.
+  `ISAAC_MAC_SCALE=integer|fill` gives the M5 modes. Full screen over the notch: add
+  `DYLD_INSERT_LIBRARIES=<app>/Contents/Frameworks/libNotchFillHook.dylib`. `.scratch/m13-adapt/blocks.py <png>` prints the
+  art pixel block size. A game window wider than 1920 pixels crashes the game's layout, so the Host never gives it one.
 - **Fiend Folio: RELOADED** (Workshop 3778123093, the Repentance+ one) is on the Layer's hand list in
   `rgon.lua` as `fiendfolio-reloaded`. The host looks mods up by their full folder name, lowercased,
   which on a Mac carries the Workshop id (`fiendfolio-reloaded_3778123093`). The list's metatable retries a

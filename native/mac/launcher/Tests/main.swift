@@ -231,12 +231,16 @@ do {
         check(!logged.isEmpty && logged == mine, "real run: LOADED MOD order of \(logged.count) mods equals the Launcher's load order")
     } else { print("SKIP  real LOADED MOD comparison (REPENTANCE_MAC_LOADED_MOD_LOG / _DIR not set)") }
     let s0 = try JSONDecoder().decode(LauncherSettings.self, from: Data("{}".utf8))
-    check(s0.scaleMode == "integer", "scale_mode defaults to integer")
+    check(s0.scaleMode == "adapt", "scale_mode defaults to adapt")
     var s1 = LauncherSettings(); s1.scaleMode = "fill"
     let enc = try JSONEncoder().encode(s1)
     check((try? JSONDecoder().decode(LauncherSettings.self, from: enc))?.scaleMode == "fill"
           && String(decoding: enc, as: UTF8.self).contains("\"scale_mode\""), "scale_mode fill round-trips under the key scale_mode")
-    check((try JSONDecoder().decode(LauncherSettings.self, from: Data("{\"scale_mode\":\"weird\"}".utf8))).scaleMode == "integer", "unknown scale_mode falls back to integer")
+    check((try JSONDecoder().decode(LauncherSettings.self, from: Data("{\"scale_mode\":\"weird\"}".utf8))).scaleMode == "adapt", "unknown scale_mode falls back to adapt")
+    var sInt = LauncherSettings(); sInt.scaleMode = "integer"
+    check((try? JSONDecoder().decode(LauncherSettings.self, from: JSONEncoder().encode(sInt)))?.scaleMode == "integer", "scale_mode integer round-trips")
+    var sAd = LauncherSettings(); sAd.scaleMode = "adapt"
+    check((try? JSONDecoder().decode(LauncherSettings.self, from: JSONEncoder().encode(sAd)))?.scaleMode == "adapt", "scale_mode adapt round-trips")
     check(s0.notchFill == false, "notch_fill defaults to off")
     var s2 = LauncherSettings(); s2.notchFill = true
     let enc2 = try JSONEncoder().encode(s2)
