@@ -574,9 +574,34 @@ the 13 may be theirs); constructors 3 to 4; gate lists lose `Capsule` (Epiphany,
 `GetVec2`, `GetVec3` (FiendFolio). Regression run (95 mods, floors 1 to 5): same six floor changes and the same failed and `ERR:` lines.
 No screenshot: shapes are not drawn.
 
+### Batch B3: small state getters (`api_state_getters.lua`, 2026-11-19)
+
+Eleven census names (plus three trivial neighbours) done, every field measured in this build (`lab_state_probe.lua`: diffs while the game changed
+the state, the sprites inside the structure, and the game's own code found with `pequery.py fieldrefs`). Checked by `lab_state_test.lua`
+(53 PASS, 0 FAIL, headless with the 95 mods; Escape twice in the first room, a Delirium spawned, the Death Certificate used).
+
+| Name | Where | How measured |
+|---|---|---|
+| `Game.IsPauseMenuOpen`, `Game.GetPauseMenuState`, `PauseMenu.GetState/SetState` | pause screen at game+0x23a74 (REPENTOGON 0x2363c, +0x438), state at +0 | the only word that went 0 to 1 while Escape held the pause menu open and back to 0 after; its four sprites sit at +0x2c, +0x140, +0x254, +0x368 (self pointers). State 1 open, 2 options. `IsPauseMenuOpen` is `state > 0`; it differs from `Game:IsPaused()`, which is also true for the game's first frames and during a room transition (the lab logs both) |
+| `Game.GetGenericPrompt`, `GenericPrompt.IsActive` | prompt at game+0xa88 past REPENTOGON's 0x25cf0 = 0x26778, the same shift the minimap and frame counter have; first member is its ANM2 | self pointers at +0x30/+0x50 there; `IsActive` is the game's own function 0x00838210 (unique signature match, `cmp [ecx+0x34],0 / cmp byte [ecx+0x44],0`, bool in AL); the lab calls it on a block of its own with those two fields set and cleared |
+| `DailyChallengeMenu.GetState/SetState` | manager+0xdd4 (REPENTOGON 0xdd0, +4 like the character menu), state at +0 | the manager's render calls `Menu_DailyChallenge::Render` 0x008cfd40 with `lea ecx,[esi+0xdd4]`; that function reads its position at +0xc/+0x10 and `cmp [ebx],0` for the state; the sprite at +0x14 has its self pointers; idle value 0, round trip checked. Not seen: the game moving the state itself, or reacting to it on screen (the daily menu cannot be reached by script: the "Lost connection to Steam" popup returns on every menu and `SetActiveMenu` only sets a byte) |
+| `EntityDelirium.BossType`, `BossVariant`, `Cycle`, `TransformationTimer` | on the NPC (`ToDelirium` answers with it): +0xbc8, +0xbcc, +0xbe0 (u32), +0xbd0 (u16): REPENTOGON's offsets, unchanged | Delirium's AI function 0x004a6500 reads and writes boss type and variant as a pair (compares with 0x111 and 0xa), the timer with word instructions, the cycle with `and 0x1ffffff`; on a spawned Delirium the type reads 412, the variant 0, the timer counts down one a frame and is reloaded at 0 (a timer set to 3 was reloaded 13 frames later: the game acted on it). Other NPCs answer nil, and setting is an error |
+| `RoomDescriptor.GetDimension` | not a field: the level's lists answer which dimension holds the descriptor (api_more.lua) | it was already installed, but only at the first player init, so the census (a menu-time run) counted it missing; the global's class table gets it at load too. Checked: 0 in the start room, 2 after the Death Certificate (`lab_state_test.lua`). A slot with no room in it (the empty descriptor `GetRoomByIdx(84, 1)` gives on a normal floor) answers 0 |
+
+`Entity:ToDelirium` now also answers for a Delirium that has transformed into a boss (its own type and variant equal the boss fields, as REPENTOGON's
+rule), not only for type 412. Not done: `GenericPrompt`'s constructor and other functions (the object size 0x134 and the game's constructor are not
+checked), `PauseMenu`/`DailyChallengeMenu` `Get/SetSelectedElement` and the sprite getters, Delirium's other fields (`AttackID`, `Angle`,
+`RemainingAttacks`, `StateD`: their bit layout was not worked out), a transformed Delirium (the room spawn never changed type in the lab, so
+`BossType` different from 412 was not seen). The mods that name these (the census heuristic matches method names, so `GenericPrompt.IsActive` and
+`PauseMenu.GetState` are listed for Epiphany, Fiend Folio and the music mod without those mods calling the class) lose
+`IsPauseMenuOpen` from the gate lists of Epiphany and Fiend Folio; Shown flags are unchanged. Census: functions implemented 649 to 658, variables 6 to 10,
+missing and used by REPENTOGON mods 202 to 195 (variables 4 to 0). Regression run (95 mods, floors 1 to 5): same six floor changes, same failed
+and `ERR:` lines. Screenshot: `PauseMenu.SetState(2)` in a run made the game draw its Options page (`.scratch/b3/shots/pause_2.png`), and
+`SetState(0)` took it away (`pause_3.png`).
+
 ### Next batches (proposed)
 
-0. (done, B1: quad getters, Copy, Translate, Flip. B2: Capsule value type, Shape, FindInCapsule; left: Capsule:Collide and the game-made capsules.)
+0. (done, B1: quad getters, Copy, Translate, Flip. B2: Capsule value type, Shape, FindInCapsule; left: Capsule:Collide and the game-made capsules. B3: pause/daily/prompt state, Delirium fields, GetDimension; left: the rest of GenericPrompt, selected elements, Delirium's other fields.)
 1. (done, batch 2: see above) EntityPlayer weapon/laser fields, `Weapon`, EntityKnife. What is left of them: Weapon's virtual
    functions, the unmeasured player fields, hitbox parent knife (a hook).
 2. (done, batch 3, except `TryPlaceRoom`/`TryPlaceRoomAtDoor` and `MC_PRE_LEVEL_PLACE_ROOM`, which need the game's PlaceRoom: its

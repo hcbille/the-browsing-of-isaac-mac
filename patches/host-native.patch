@@ -5001,6 +5001,201 @@ index 0000000..ede0040
 +    w32(ess + 8, id & 0xffffffff)
 +  end)
 +end
+diff --git a/scripts/recomp/rgon/api_state_getters.lua b/scripts/recomp/rgon/api_state_getters.lua
+new file mode 100644
+index 0000000..8ca40a1
+--- /dev/null
++++ b/scripts/recomp/rgon/api_state_getters.lua
+@@ -0,0 +1,189 @@
++-- api_state_getters.lua -- census batch B3 (M8): small state getters, each field measured in THIS executable (v1.9.7.17)
++-- (lab_state_probe.lua: the structure diffed while the game changed it, the sprites inside it, and the game's own code
++-- that reads it, found with pequery.py fieldrefs / callers). REPENTOGON's offsets are for v1.9.7.12; the shifts are:
++--
++--   what                    REPENTOGON  here            how it was measured
++--   Game: pause screen      +0x2363c    +0x23a74 (+0x438)  the only word that went 0 -> 1 while Escape held the pause menu
++--                                       open and back to 0 after it; its four sprites (mainsprite at +0x2c, mini sprite
++--                                       +0x140, stats +0x254, my stuff +0x368, each a self pointer at +0x30/+0x50) sit
++--                                       exactly there (0x23aa0, 0x23bb4, 0x23cc8, 0x23ddc). State: 0 closed, 1 open
++--                                       (2 options, not seen here). Game:IsPauseMenuOpen is `state > 0`, as REPENTOGON
++--   Game: generic prompt    +0x25cf0    +0x26778 (+0xa88)  the same shift the minimap and the frame counter have
++--                                       (api_minimap.lua, api_more.lua); the object starts with its ANM2, a sprite with
++--                                       self pointers there. GenericPrompt::IsActive is the game's own function 0x00838210
++--                                       (REPENTOGON's signature matches once; asm: `cmp [ecx+0x34],0 / je / cmp byte
++--                                       [ecx+0x44],0`, bool in AL, plain `ret`, no stack argument)
++--   MenuManager: daily run  +0xdd0      +0xdd4 (+4)        like the character menu (api_menus.lua, +4): the game's own
++--                                       manager render calls Menu_DailyChallenge::Render (0x008cfd40) with
++--                                       `lea ecx,[manager+0xdd4]`; that function reads the menu's pointer position at +0xc/+0x10
++--                                       and its sprite at +0x14 (self pointers at manager+0xde8); State is +0; its render
++--                                       prints the time left (+0x12c/+0x130/+0x134) when State is not 0, else 00:00:00
++--   Entity_NPC: Delirium    +0xbc8..    +0xbc8..           the same offsets: Delirium's AI function (0x004a6500) reads and writes
++--                                       boss type [+0xbc8] (compares with 0x111) and variant [+0xbcc] (compares with 0xa)
++--                                       as a pair, the 16-bit timer [+0xbd0] with word instructions, and [+0xbe0] with
++--                                       `and 0x1ffffff`; on a spawned Delirium the type reads 412 (its own), the variant 0,
++--                                       and the timer counts down by one a frame (270, 262 ... 2) and is reloaded at 0
++--
++-- Done here: Game.IsPauseMenuOpen / GetPauseMenuState / GetGenericPrompt, GenericPrompt.IsActive, PauseMenu.GetState/SetState,
++-- DailyChallengeMenu.GetState/SetState, EntityDelirium BossType, BossVariant, Cycle, TransformationTimer, and
++-- RoomDescriptor.GetDimension counted from load (api_more.lua installs the method itself at the first player init).
++-- Not done: GenericPrompt's constructor (the game's own constructor and the object's size 0x134 are not checked) and its other
++-- functions; the selected elements of the two menus; Delirium's other fields (their bit layout was not worked out).
++
++local T = ...
++local B, R, method, property = T.B, T.R, T.method, T.property
++local r8, r16, r32, ri32, w16, w32, call, log = B.r8, B.r16, B.r32, B.ri32, B.w16, B.w32, B.call, B.log
++local type, error, rawget, rawset, setmetatable, tostring, getmetatable = type, error, rawget, rawset, setmetatable, tostring, getmetatable
++local mathtype = math.type
++
++local GAME_PTR, MM_PTR = 0x00c71678, 0x00c72a20
++local PAUSE_SCREEN, GENERIC_PROMPT = 0x23a74, 0x26778
++local DAILY_MENU = 0xdd4
++local PROMPT_IS_ACTIVE = 0x00838210
++local DELIRIUM = 412
++
++local function int_arg(v, n, what)
++  if mathtype(v) == "float" and v == math.floor(v) then v = math.tointeger(v) end
++  if mathtype(v) ~= "integer" then error("bad argument #" .. n .. " to '" .. what .. "' (number expected, got " .. (v == nil and "no value" or type(v)) .. ")", 3) end
++  return v
++end
++local function game(what)
++  local g = r32(GAME_PTR)
++  if g == 0 then error(what .. ": there is no game yet", 3) end
++  return g
++end
++local function manager(what)
++  local mm = r32(MM_PTR)
++  if mm == 0 then error(what .. ": the main menu does not exist (it is only there outside a run's first frames)", 3) end
++  return mm
++end
++
++------------------------------------------------------------------------------
++-- RoomDescriptor.GetDimension: api_more.lua puts the method on the tables of a real descriptor at the first player's init;
++-- the global's own table gets it here, so it exists (and counts) from load, as it does for a mod that calls it later.
++------------------------------------------------------------------------------
++do
++  local function dimension_of(desc)
++    local level = Game():GetLevel()
++    local me, idx = GetPtrHash(desc), desc.SafeGridIndex
++    for dim = 0, 2 do
++      local d = level:GetRoomByIdx(idx, dim)
++      if d ~= nil and GetPtrHash(d) == me then return dim end
++    end
++    return 0
++  end
++  method("RoomDescriptor", "GetDimension", dimension_of)       -- (counts it, unless the global has no class table to hold it)
++end
++
++------------------------------------------------------------------------------
++-- Game: the pause screen and the generic prompt
++------------------------------------------------------------------------------
++local function pause_state() return ri32(game("PauseMenu") + PAUSE_SCREEN) end
++method("Game", "IsPauseMenuOpen", function() return pause_state() > 0 end)
++method("Game", "GetPauseMenuState", function() return pause_state() end)
++
++-- GenericPrompt: a Lua class around the game's object (its address); only IsActive. Game:GetGenericPrompt() is the game's own one.
++local GenericPrompt = rawget(_G, "GenericPrompt")
++if GenericPrompt == nil then
++  GenericPrompt = { __type = "GenericPrompt", __name = "GenericPrompt" }
++  GenericPrompt.__index = GenericPrompt
++  rawset(_G, "GenericPrompt", GenericPrompt)
++end
++local prompts = setmetatable({}, { __mode = "v" })
++local function prompt_at(address)
++  local p = prompts[address]
++  if not p then
++    p = setmetatable({ address = address }, GenericPrompt)
++    prompts[address] = p
++  end
++  return p
++end
++T.generic_prompt = prompt_at                -- (address) for a lab that wants a prompt of its own
++function GenericPrompt.IsActive(self)
++  if type(self) ~= "table" or getmetatable(self) ~= GenericPrompt then error("bad argument #1 to 'IsActive' (GenericPrompt expected, got " .. type(self) .. ")", 2) end
++  return (call(PROMPT_IS_ACTIVE, self.address) & 0xff) ~= 0
++end
++R.Implemented["GenericPrompt.IsActive"] = true
++method("Game", "GetGenericPrompt", function() return prompt_at(game("Game:GetGenericPrompt") + GENERIC_PROMPT) end)
++
++------------------------------------------------------------------------------
++-- PauseMenu, DailyChallengeMenu: tables of functions called with '.', as REPENTOGON's are
++------------------------------------------------------------------------------
++local function table_global(name)
++  local t = rawget(_G, name)
++  if type(t) ~= "table" then
++    t = {}
++    rawset(_G, name, t)
++  end
++  return t
++end
++do
++  local PM = table_global("PauseMenu")
++  if rawget(PM, "GetState") == nil then
++    function PM.GetState() return pause_state() end
++    function PM.SetState(state)
++      state = int_arg(state, 1, "SetState")
++      w32(game("PauseMenu.SetState") + PAUSE_SCREEN, state & 0xffffffff)
++    end
++    R.Implemented["PauseMenu.GetState"] = true
++    R.Implemented["PauseMenu.SetState"] = true
++  end
++  local DM = table_global("DailyChallengeMenu")
++  if rawget(DM, "GetState") == nil then
++    function DM.GetState() return ri32(manager("DailyChallengeMenu.GetState") + DAILY_MENU) end
++    function DM.SetState(state)
++      state = int_arg(state, 1, "SetState")
++      w32(manager("DailyChallengeMenu.SetState") + DAILY_MENU, state & 0xffffffff)
++    end
++    R.Implemented["DailyChallengeMenu.GetState"] = true
++    R.Implemented["DailyChallengeMenu.SetState"] = true
++  end
++end
++
++------------------------------------------------------------------------------
++-- EntityDelirium: the variables, on the NPC (Entity:ToDelirium answers with the NPC). A Delirium is the NPC of type 412 or
++-- one that has transformed into a boss: then its own type and variant are the boss type and variant it holds (REPENTOGON's
++-- rule for ToDelirium). Any other NPC answers nil.
++------------------------------------------------------------------------------
++do
++  local BOSS_TYPE, BOSS_VARIANT, TIMER, CYCLE = 0xbc8, 0xbcc, 0xbd0, 0xbe0
++  local function delirium_at(self)
++    local a = B.ptr(self)
++    if a == 0 then error("rgon: a Delirium variable was read without its object (use ':')", 3) end
++    if self.Type == DELIRIUM or (r32(a + BOSS_TYPE) == self.Type and r32(a + BOSS_VARIANT) == self.Variant and self.Type ~= 0) then return a end
++    return nil
++  end
++  property("EntityNPC", "BossType", function(self) local a = delirium_at(self) return a and ri32(a + BOSS_TYPE) or nil end)
++  property("EntityNPC", "BossVariant", function(self) local a = delirium_at(self) return a and ri32(a + BOSS_VARIANT) or nil end)
++  property("EntityNPC", "TransformationTimer",
++    function(self) local a = delirium_at(self) return a and r16(a + TIMER) or nil end,
++    function(self, v)
++      local a = delirium_at(self)
++      if not a then error("rgon: TransformationTimer is only for Delirium", 2) end
++      w16(a + TIMER, int_arg(v, 2, "TransformationTimer") & 0xffff)
++    end)
++  property("EntityNPC", "Cycle",
++    function(self) local a = delirium_at(self) return a and ri32(a + CYCLE) or nil end,
++    function(self, v)
++      local a = delirium_at(self)
++      if not a then error("rgon: Cycle is only for Delirium", 2) end
++      w32(a + CYCLE, int_arg(v, 2, "Cycle") & 0xffffffff)
++    end)
++
++  for _, n in ipairs({ "BossType", "BossVariant", "TransformationTimer", "Cycle" }) do
++    R.Implemented["EntityNPC." .. n] = nil                    -- property() names the class it is put on; the census name is EntityDelirium's
++    R.Implemented["EntityDelirium." .. n] = true
++  end
++
++  -- Entity:ToDelirium (api_more.lua answers for type 412 only): also a Delirium that has transformed into a boss
++  for _, c in pairs({ T.class_tables("Entity") }) do
++    if type(c) == "table" and rawget(c, "ToDelirium") ~= nil then
++      rawset(c, "ToDelirium", B.cfn(function(self)
++        local npc = self:ToNPC()
++        if npc == nil then return nil end
++        if delirium_at(npc) == nil then return nil end
++        return npc
++      end))
++    end
++  end
++end
 diff --git a/scripts/recomp/rgon/hook_slots.lua b/scripts/recomp/rgon/hook_slots.lua
 index 2187a0e..daba022 100644
 --- a/scripts/recomp/rgon/hook_slots.lua
@@ -8210,6 +8405,356 @@ index 0000000..5ca375e
 +    step = 6
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_state_probe.lua b/scripts/recomp/rgon/lab_state_probe.lua
+new file mode 100644
+index 0000000..3ddf7a9
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_state_probe.lua
+@@ -0,0 +1,136 @@
++-- lab_state_probe.lua (development only; ISAAC_RGON_LAB=lab_state_probe.lua, census batch B3): finds, by diffs and by the
++-- game's own reaction, where this build keeps the state the batch's getters read. Logs "lab_state_probe: ..".
++--   ISAAC_LAB_MODE=menu : at the main menu, selects the daily run menu and logs what changes in its structure.
++--   (default)           : in a run (script: Escape at +100 and +220 frames after the first room): the pause screen's state,
++--                         the sprites inside the game object (GenericPrompt's first member is one), then Delirium.
++local T = ...
++local B = T.B
++local r32, ri32, r8, log = B.r32, B.ri32, B.r8, B.log
++local mod = RegisterMod("rgon lab state probe", 1)
++local function say(s) log("lab_state_probe: " .. s) end
++local mode = B.env("ISAAC_LAB_MODE") or "run"
++local GAME_PTR, MM_PTR = 0x00c71678, 0x00c72a20
++
++local function snap(a, lo, hi)
++  local t = {}
++  for o = lo, hi - 4, 4 do t[o] = r32(a + o) end
++  return t
++end
++
++if mode == "menu" then
++  local f, started, base_off = 0, nil, 0xdd0
++  local lo, hi = 0xd00, 0x1540
++  local prev
++  mod:AddCallback(ModCallbacks.MC_MAIN_MENU_RENDER, function()
++    f = f + 1
++    local mm = r32(MM_PTR)
++    if mm == 0 then return end
++    if f == 5 then
++      -- every sprite (a self pointer at +0x30 and +0x50) inside the manager between the Menu_Game and the Menu_Character
++      local out = {}
++      for o = 0xb90, 0x1800, 4 do
++        if r32(mm + o + 0x30) == mm + o and r32(mm + o + 0x50) == mm + o then out[#out + 1] = string.format("%x", o) end
++      end
++      say("sprites at manager offsets: " .. table.concat(out, " "))
++      say("selected menu " .. ri32(mm + 0x40))
++      local row = {}
++      for o = 0xdc8, 0xe00, 4 do row[#row + 1] = string.format("%x:%x", o, r32(mm + o)) end
++      say("words 0xdc8..0xe00: " .. table.concat(row, " "))
++      prev = snap(mm, lo, hi)
++    end
++    if f == 20 then
++      say("SetActiveMenu(DAILYRUN)")
++      MenuManager.SetActiveMenu(MainMenuType.DAILYRUN)
++    end
++    if f >= 20 and f % 10 == 0 and f <= 200 then
++      local n = 0
++      for o = lo, hi - 4, 4 do
++        local v = r32(mm + o)
++        if v ~= prev[o] then
++          n = n + 1
++          if n <= 24 then say(string.format("frame %d manager+%x %08x -> %08x (%d -> %d)", f, o, prev[o], v, prev[o] >= 0x80000000 and prev[o] - 2^32 or prev[o], v >= 0x80000000 and v - 2^32 or v)) end
++          prev[o] = v
++        end
++      end
++      say(string.format("frame %d: %d words changed since the last look; selected menu %d; state words +dd0 %d +dd4 %d +dd8 %d", f, n, ri32(mm + 0x40), ri32(mm + 0xdd0), ri32(mm + 0xdd4), ri32(mm + 0xdd8)))
++    end
++  end)
++  return
++end
++
++------------------------------------------------------------------------------ run mode
++local LO, HI = 0x22000, 0x27800
++local fin, paused_for, unpaused_for = 0, 0, 0
++local S0, S1, S2, S3, S4
++local was_paused = false
++local g
++local function hex(v) return string.format("%x", v) end
++local function report()
++  say("candidates (stable idle, changed while paused and stable there, back after unpausing), game+offset: idle -> paused")
++  local n = 0
++  for o = LO, HI - 4, 4 do
++    if S0[o] == S1[o] and S2[o] == S3[o] and S2[o] ~= S0[o] and S4[o] == S0[o] then
++      n = n + 1
++      if n <= 60 then say(string.format("  game+%x %d -> %d", o, S0[o], S2[o])) end
++    end
++  end
++  say("candidates: " .. n)
++  for _, name in ipairs({ "S0", "S1", "S2", "S3", "S4" }) do
++    local S = ({ S0 = S0, S1 = S1, S2 = S2, S3 = S3, S4 = S4 })[name]
++    local row = {}
++    for o = 0x23660, 0x23690, 4 do row[#row + 1] = string.format("%x:%x", o, S[o]) end
++    say(name .. " words 0x23660..0x23690: " .. table.concat(row, " "))
++  end
++  local n2 = 0
++  for o = 0x23600, 0x23700, 4 do
++    if S0[o] ~= S2[o] then say(string.format("  changed idle->paused game+%x %x -> %x", o, S0[o], S2[o])) end
++  end
++  -- sprites in the game object (self pointer at +0x30 and +0x50)
++  local out = {}
++  for o = 0x23000, 0x28000, 4 do
++    if r32(g + o + 0x30) == g + o and r32(g + o + 0x50) == g + o then out[#out + 1] = hex(o) end
++  end
++  for i = 1, #out, 16 do say("sprites at game offsets: " .. table.concat(out, " ", i, math.min(i + 15, #out))) end
++end
++
++local delirium, dframe = nil, 0
++local spawned = false
++local function dump_npc(e, tag)
++  local a = B.ptr(e)
++  local row = {}
++  for o = 0xbc8, 0xbe4, 4 do row[#row + 1] = string.format("%x:%x", o, r32(a + o)) end
++  say(string.format("%s type %d var %d sub %d state %d statef %d: %s", tag, e.Type, e.Variant, e.SubType, e:ToNPC().State, e:ToNPC().StateFrame, table.concat(row, " ")))
++end
++
++mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++  if not Isaac.IsInGame() then return end
++  g = r32(GAME_PTR)
++  fin = fin + 1
++  local p = Game():IsPaused()
++  if fin == 1 then say(string.format("game at %x", g)) end
++  if fin == 30 then S0 = snap(g, LO, HI) end
++  if fin == 40 then S1 = snap(g, LO, HI) end
++  if p then paused_for = paused_for + 1 else paused_for = 0 end
++  if p == false and was_paused then unpaused_for = 0 end
++  if not p then unpaused_for = unpaused_for + 1 end
++  if p and paused_for == 1 then say("paused at in-game frame " .. fin) end
++  if p and paused_for == 15 then S2 = snap(g, LO, HI) end
++  if p and paused_for == 25 then S3 = snap(g, LO, HI) say("paused snapshot done") end
++  if S3 and not p and unpaused_for == 15 and not S4 then
++    S4 = snap(g, LO, HI)
++    report()
++  end
++  was_paused = p
++end)
++
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  if not S4 then return end
++  if not spawned then
++    spawned = true
++    local d = Isaac.Spawn(412, 0, 0, Vector(320, 260), Vector(0, 0), nil)
++    delirium = d
++    say("spawned Delirium " .. tostring(d))
++  end
++  dframe = dframe + 1
++  if delirium and delirium:Exists() and (dframe <= 2 or dframe % 20 == 0) and dframe <= 700 then dump_npc(delirium, "delirium f" .. dframe) end
++end)
+diff --git a/scripts/recomp/rgon/lab_state_test.lua b/scripts/recomp/rgon/lab_state_test.lua
+new file mode 100644
+index 0000000..71b1a57
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_state_test.lua
+@@ -0,0 +1,202 @@
++-- lab_state_test.lua (development only; ISAAC_RGON_LAB=lab_state_test.lua, census batch B3): the small state getters of
++-- api_state_getters.lua against known game states. Logs "lab_state_test: PASS/FAIL ..", INFO lines for what is only looked
++-- at, and a final "lab_state_test: DONE n PASS m FAIL". Run (headless, scripted: Escape twice in the first room):
++--   HEADLESS=1 FRESH=1 FRAMES=2600 LAB=lab_state_test.lua SCRIPT='until=Room 1.2(Start Room):enter,@100:esc:hold=4,@220:esc:hold=4'
++-- ISAAC_LAB_MODE=shot is for a windowed run with ISAAC_MAC_SHOT: in a run it sets the pause screen's state by hand
++-- (1, 2 = the options page, 0) and logs "SHOT <name>" lines; shots at @40, @90, @150, @210 after the first room.
++local T = ...
++local B = T.B
++local R = T.R or REPENTOGON
++local r32, w32, w8, ri32, log = B.r32, B.w32, B.w8, B.ri32, B.log
++local mod = RegisterMod("rgon lab state test", 1)
++local pass, fail = 0, 0
++local function say(s) log("lab_state_test: " .. s) end
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  say((ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function info(s) say("INFO " .. s) end
++local mode = B.env("ISAAC_LAB_MODE") or "test"
++local MM_PTR = 0x00c72a20
++
++------------------------------------------------------------------------------ the names
++for _, n in ipairs({ "RoomDescriptor.GetDimension", "Game.IsPauseMenuOpen", "Game.GetPauseMenuState", "Game.GetGenericPrompt", "GenericPrompt.IsActive",
++  "PauseMenu.GetState", "PauseMenu.SetState", "DailyChallengeMenu.GetState", "DailyChallengeMenu.SetState",
++  "EntityDelirium.BossType", "EntityDelirium.BossVariant", "EntityDelirium.Cycle", "EntityDelirium.TransformationTimer" }) do
++  check("Implemented " .. n, R.Implemented[n] == true)
++end
++check("no stray Implemented EntityNPC.BossType", R.Implemented["EntityNPC.BossType"] == nil)
++
++------------------------------------------------------------------------------ main menu: DailyChallengeMenu
++local menu_done, menu_frames = false, 0
++mod:AddCallback(ModCallbacks.MC_MAIN_MENU_RENDER, function()
++  if menu_done then return end
++  menu_frames = menu_frames + 1
++  local mm = r32(MM_PTR)
++  if mm == 0 then return end
++  if mode == "shot" then menu_done = true return end        -- (the daily run menu cannot be reached by script: the Steam popup comes back on every menu)
++  if menu_frames < 30 then return end
++  menu_done = true
++  local s0 = DailyChallengeMenu.GetState()
++  check("DailyChallengeMenu.GetState idle is 0", s0 == 0, s0)
++  check("the daily run sprite is where the game's render has it (self pointers at manager+0xde8)", r32(mm + 0xde8 + 0x30) == mm + 0xde8 and r32(mm + 0xde8 + 0x50) == mm + 0xde8)
++  DailyChallengeMenu.SetState(3)
++  check("DailyChallengeMenu.SetState(3) reads back", DailyChallengeMenu.GetState() == 3, DailyChallengeMenu.GetState())
++  check("the state is the word at manager+0xdd4", ri32(mm + 0xdd4) == 3)
++  DailyChallengeMenu.SetState(0)
++  check("DailyChallengeMenu.SetState(0) puts it back", DailyChallengeMenu.GetState() == 0)
++  local ok = pcall(DailyChallengeMenu.SetState, "x")
++  check("DailyChallengeMenu.SetState(\"x\") is an argument error", not ok)
++end)
++
++if mode == "shot" then
++  -- in a run: the pause menu, driven by SetState with the game not paused
++  local f = 0
++  mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++    if not Isaac.IsInGame() then return end
++    f = f + 1
++    if f == 60 then PauseMenu.SetState(1) say("SHOT pause SetState(1) at run frame 60 (paused before: " .. tostring(Game():IsPaused()) .. ")") end
++    if f == 120 then PauseMenu.SetState(2) say("SHOT pause SetState(2) at run frame 120") end
++    if f == 180 then PauseMenu.SetState(0) say("SHOT pause SetState(0) at run frame 180") end
++    if f > 50 and f <= 240 and f % 10 == 0 then say(string.format("INFO run frame %d: PauseMenu.GetState %d IsPaused %s IsPauseMenuOpen %s", f, PauseMenu.GetState(), tostring(Game():IsPaused()), tostring(Game():IsPauseMenuOpen()))) end
++  end)
++  return
++end
++
++------------------------------------------------------------------------------ in a run
++local fin = 0
++local mismatch, compared, opened = 0, 0, 0
++local last_open, closes = false, 0
++local did_room, did_prompt, did_delirium = false, false, false
++local seen_state = {}
++
++mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++  if not Isaac.IsInGame() then return end
++  fin = fin + 1
++  local open = Game():IsPauseMenuOpen()
++  local paused = Game():IsPaused()
++  local st = PauseMenu.GetState()
++  seen_state[st] = (seen_state[st] or 0) + 1
++  if fin > 20 then              -- (the game reports itself paused for its first few frames, with the pause screen closed)
++    compared = compared + 1
++    if open ~= paused or open ~= (st > 0) or Game():GetPauseMenuState() ~= st then
++      mismatch = mismatch + 1
++      if mismatch <= 5 then info(string.format("pause mismatch at frame %d: IsPauseMenuOpen %s IsPaused %s state %d", fin, tostring(open), tostring(paused), st)) end
++    end
++  end
++  if open and not last_open then opened = opened + 1 info("pause menu opened at run frame " .. fin .. ", state " .. st) end
++  if (not open) and last_open then closes = closes + 1 info("pause menu closed at run frame " .. fin .. ", state " .. st) end
++  last_open = open
++end)
++
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  local g = Game()
++  if not did_room then
++    did_room = true
++    local level, room = g:GetLevel(), g:GetRoom()
++    local idx = level:GetCurrentRoomIndex()
++    local here = level:GetCurrentRoomDesc()
++    check("GetDimension of the start room is 0", here:GetDimension() == 0, here:GetDimension())
++    check("GetDimension agrees with Level:GetDimension", here:GetDimension() == level:GetDimension())
++    local h0 = GetPtrHash(level:GetRoomByIdx(idx, 0))
++    for dim = 1, 2 do
++      local d = level:GetRoomByIdx(idx, dim)
++      info(string.format("GetRoomByIdx(%d, %d): %s, same object as dimension 0's: %s, GetDimension %s", idx, dim, tostring(d), tostring(d ~= nil and GetPtrHash(d) == h0), tostring(d and d:GetDimension())))
++    end
++    -- the game's generic prompt
++    local gp = g:GetGenericPrompt()
++    check("Game:GetGenericPrompt gives a GenericPrompt", gp ~= nil and getmetatable(gp) == GenericPrompt)
++    check("the same object on every call", g:GetGenericPrompt() == gp)
++    local a = gp.address
++    check("its ANM2 is where the game keeps the prompt (self pointers at +0x30 and +0x50)", r32(a + 0x30) == a and r32(a + 0x50) == a, string.format("%x", a))
++    check("GenericPrompt.IsActive is false in a normal run", gp:IsActive() == false)
++    check("GenericPrompt.IsActive(gp), static form", GenericPrompt.IsActive(gp) == false)
++    -- the game's own function reads +0x34 (non zero) and the byte +0x44; a block of our own shows the call is the game's test
++    local blk = B.alloc(0x134)
++    for o = 0, 0x130, 4 do w32(blk + o, 0) end
++    local fake = T.generic_prompt(blk)
++    check("a prompt block with nothing set is not active", fake:IsActive() == false)
++    w32(blk + 0x34, 0x1000)
++    check("+0x34 set alone is not active", fake:IsActive() == false)
++    w8(blk + 0x44, 1)
++    check("+0x34 and +0x44 set is active", fake:IsActive() == true)
++    w32(blk + 0x34, 0)
++    check("+0x34 cleared is not active", fake:IsActive() == false)
++    B.free(blk)
++    check("GenericPrompt.IsActive with a non prompt is an error", not pcall(GenericPrompt.IsActive, 5))
++    check("PauseMenu.GetState is 0 outside the pause menu", PauseMenu.GetState() == 0 and g:IsPauseMenuOpen() == false)
++  end
++end)
++
++------------------------------------------------------------------------------ Delirium and the end
++local D, dframe = nil, 0
++local t_prev, steps, exact = nil, 0, 0
++local fly
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  if fin < 260 or opened < 1 or closes < 1 then return end       -- after the pause menu has been opened and closed
++  if not D then
++    check("pause menu opened once and closed once", opened == 1 and closes == 1, opened .. "/" .. closes)
++    check("IsPauseMenuOpen, GetPauseMenuState, PauseMenu.GetState and IsPaused agreed on every frame", mismatch == 0, mismatch .. " of " .. compared)
++    check("the pause state was seen as 0 and 1", (seen_state[0] or 0) > 100 and (seen_state[1] or 0) > 20, (seen_state[0] or 0) .. "/" .. (seen_state[1] or 0))
++    fly = Isaac.Spawn(EntityType.ENTITY_FLY, 0, 0, Vector(200, 200), Vector(0, 0), nil)
++    check("ToDelirium of a fly is nil", fly:ToDelirium() == nil)
++    check("BossType of a fly is nil", fly:ToNPC().BossType == nil and fly:ToNPC().TransformationTimer == nil)
++    check("setting TransformationTimer on a fly is an error", not pcall(function() fly:ToNPC().TransformationTimer = 5 end))
++    fly:Remove()
++    D = Isaac.Spawn(412, 0, 0, Vector(320, 260), Vector(0, 0), nil)
++    check("ToDelirium of a Delirium is an NPC", D:ToDelirium() ~= nil and D:ToDelirium():ToNPC() ~= nil)
++    check("ToDelirium of the player is nil", Isaac.GetPlayer(0):ToDelirium() == nil)
++    return
++  end
++  dframe = dframe + 1
++  local n = D:ToDelirium()
++  if dframe == 1 then
++    local t0 = n.TransformationTimer
++    check("TransformationTimer is a number", type(t0) == "number" and t0 >= 0 and t0 <= 0xffff, t0)
++  elseif dframe == 50 then
++    -- (the first frames are Delirium's appearing state: its boss fields are still empty there)
++    check("BossType is 412 on a spawned Delirium", n.BossType == 412, n.BossType)
++    check("BossVariant is 0 on a spawned Delirium", n.BossVariant == 0, n.BossVariant)
++  elseif dframe >= 55 and dframe <= 65 then
++    local t = n.TransformationTimer
++    if t_prev then
++      steps = steps + 1
++      if t == t_prev - 1 then exact = exact + 1 end
++    end
++    t_prev = t
++  elseif dframe == 66 then
++    check("TransformationTimer counts down one a frame (the game's own update)", steps == 10 and exact >= 8, exact .. " of " .. steps .. " steps were -1")
++    local c1 = n.Cycle
++    check("Cycle is a number", type(c1) == "number", c1)
++    n.Cycle = c1
++    check("Cycle reads back what was written", n.Cycle == c1)
++    n.TransformationTimer = 500
++    check("TransformationTimer reads back what was set", n.TransformationTimer == 500, n.TransformationTimer)
++  elseif dframe == 67 then
++    local t = n.TransformationTimer
++    check("the game went on counting from the written timer (499 or 500)", t == 499 or t == 500, t)
++    n.TransformationTimer = 3
++  elseif dframe == 80 then
++    local t = n.TransformationTimer
++    info("TransformationTimer 13 frames after it was set to 3: " .. t .. ", type " .. D.Type .. ", variant " .. D.Variant .. ", BossType " .. tostring(n.BossType) .. ", Cycle " .. n.Cycle)
++    check("the game acted on a timer set to 3 (it ran out and was reloaded)", t > 100, t)
++  elseif dframe == 81 then
++    D:Remove()
++    for _, e in ipairs(Isaac.GetRoomEntities()) do if e.Type == 412 then e:Remove() end end
++    -- the Death Certificate sends the player to dimension 2 (a room of its own): the descriptor of that room must say 2
++    local p = Isaac.GetPlayer(0)
++    p:UseActiveItem(CollectibleType.COLLECTIBLE_DEATH_CERTIFICATE, UseFlag.USE_NOANIM)
++    info("Death Certificate used; dimension of the room now " .. Game():GetLevel():GetCurrentRoomDesc():GetDimension())
++  elseif dframe > 81 and dframe <= 200 then
++    local level = Game():GetLevel()
++    local here = level:GetCurrentRoomDesc()
++    if dframe % 20 == 0 then info(string.format("dframe %d: room %d, GetDimension %d, Level:GetDimension %d", dframe, level:GetCurrentRoomIndex(), here:GetDimension(), level:GetDimension())) end
++    if dframe == 140 then
++      check("GetDimension of the Death Certificate room is 2", here:GetDimension() == 2, here:GetDimension())
++      check("the same room asked through GetRoomByIdx(index, 2) is the same descriptor", GetPtrHash(level:GetRoomByIdx(level:GetCurrentRoomIndex(), 2)) == GetPtrHash(here))
++      local d0 = level:GetRoomByIdx(level:GetCurrentRoomIndex(), 0)
++      check("and the dimension 0 descriptor at that index (if any) says 0", d0 == nil or GetPtrHash(d0) == GetPtrHash(here) or d0:GetDimension() == 0, d0 and d0:GetDimension())
++    end
++    if dframe == 141 then say(string.format("DONE %d PASS %d FAIL", pass, fail)) end
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_store.lua b/scripts/recomp/rgon/lab_store.lua
 new file mode 100644
 index 0000000..4c6aa35
@@ -8510,7 +9055,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..a4f8b3a 100644
+index 4175f07..3442a06 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -8573,7 +9118,7 @@ index 4175f07..a4f8b3a 100644
    rearm = function() arm(nil) end,
  }
 -for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_hooks.lua" }) do
-+for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_shapes.lua", "api_eid.lua", "api_hooks.lua" }) do
++for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_shapes.lua", "api_state_getters.lua", "api_eid.lua", "api_hooks.lua" }) do
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)
