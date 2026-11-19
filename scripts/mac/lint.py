@@ -99,6 +99,25 @@ def rule_inert_not_implemented(fs):
                                  'list them as "accepted, not supported" in the file and in layer-gaps.md' % name)
 
 
+def rule_global_pointer_plus_offset(fs):
+    """0x00c71678 (Game), 0x00c7169c (Manager) and 0x00c71690 (LuaEngine) are VARIABLES that hold a pointer to the object
+    (2026-11-19, B4: a lab read r32(0xc7169c + 8) and got 0 for the Manager's state; the field is r32(r32(0xc7169c) + 8)).
+    Read the pointer first, then add the field offset."""
+    pat = re.compile(r'\br(?:8|16|32|i32|f32)\(\s*0x0?0?c71(?:678|690|69c)\s*\+')
+    for f in fs:
+        if not f.endswith('.lua') or not f.startswith(RGON + '/'):
+            continue
+        t = text_of(f)
+        if t is None:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            if re.match(r'\s*--', line):
+                continue
+            if pat.search(line):
+                yield (f, n, 'a field read at (global variable address + offset): the game variables 0x00c71678 / 0x00c7169c / '
+                             '0x00c71690 hold a pointer; read it first, e.g. r32(r32(0x00c7169c) + 8), never r32(0x00c7169c + 8)')
+
+
 STATUS_FILES = ('NEXT.md', 'PROGRESS.md')
 
 
@@ -139,7 +158,7 @@ def rule_flip_default(fs):
                              'never the bare name')
 
 
-RULES = [rule_flip_default, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes]
+RULES = [rule_global_pointer_plus_offset, rule_flip_default, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes]
 
 
 def main():

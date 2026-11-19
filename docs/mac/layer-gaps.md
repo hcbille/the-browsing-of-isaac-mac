@@ -20,7 +20,7 @@ Measured on the Mac Build: the 95 mods of the user's Workshop collection (<works
 | Custom Stage API | 1348031964 | hidden | **hidden** | 38 / 13: GetDecoSaveState, GetEntitiesSaveState, GetGridEntitiesSaveState, GetTaintedKeeperCoinSpawns, GiveMinecart, InitFlipState, MC_CONSOLE_AUTOCOMPLETE, MC_PRE_BOSS_SELECT, SetBackdropType, SetRail, SetTaintedKeeperCoinSpawns, SetWaterAmount and 1 more | Not shown; loads, 3 real floor changes, no Lua error. |
 | !!miniMAPI | 1978904635 | hidden | **Shown** | 2 / 0 | Shown now (round 2: Level:HasMirrorDimension). 3 real floor changes in the 95-mod run, no Lua error. |
 | !![REP]Music Mod Callback | 2491006386 | hidden | **Shown** | 2 / 0 | Shown now (round 2: NightmareScene, MC_POST_NIGHTMARE_SCENE_RENDER by a new engine hook). 3 real floor changes through the nightmare scene, no Lua error. |
-| !Unique Items API | 2836316643 | hidden | **Shown** | 6 / 0 | Shown now (round 2: MC_PRE/POST_GLOWING_HOURGLASS_SAVE/LOAD by engine hooks, MC_MENU_INPUT_ACTION by a hook; see "MC_MENU_INPUT_ACTION" below). Same run, no Lua error. |
+| !Unique Items API | 2836316643 | hidden | **Shown** | 6 / 0 | Shown (round 2 hooks; MC_MENU_INPUT_ACTION and MC_PRE/POST_GLOWING_HOURGLASS_LOAD fire for real since batch B4). |
 | !!~External item descriptions | 836319872 | hidden | **hidden** | 30 / 14: GetActionProperty, GetActionType, GetBagOfCraftingContent, GetBagOfCraftingOutput, GetConditionProperty, GetConditionType, GetEffect, GetEffectCount, GetEntitiesSaveState, GetI3, GetPlayerFormCounter, GetTargetItem and 2 more | Not shown; runs on its own code, no Lua error. |
 | Mantle Rework | 2665189152 | hidden | **hidden** | 0 / 0 | Not shown (steps aside); no Lua error. |
 | Giant Props! | 2846951982 | hidden | **hidden** | 0 / 0 | Not shown (uses nothing); no Lua error. |
@@ -63,13 +63,13 @@ Scope: the lift/hook pipeline may be edited. Three engine hooks were added (each
 |---|---|---|---|
 | 171 | `NightmareScene::Render` | 0x00920940 (REPENTOGON's signature matches nothing here; found as the only callee of `Manager::Render` next to `NightmareScene::Show` 0x00921ce0) | `MC_POST_NIGHTMARE_SCENE_RENDER` |
 | 172 | `Game::SaveState` | 0x006f9000 (REPENTOGON's signature matches twice; this one is next to `RestoreState`) | `MC_PRE/POST_GLOWING_HOURGLASS_SAVE`; with the existing `Game::RestoreState` hook, `MC_PRE/POST_GLOWING_HOURGLASS_LOAD`. The hourglass states are the game's array at game+0x269ec, 0x20660 bytes each (read off `Game::GetGlowingHourglassState`); slot 0 and -1 seen in a run |
-| 173 | `LuaCallbackCaller::CallInputAction` | 0x00874910 (REPENTOGON's signature matches once) | `MC_MENU_INPUT_ACTION`: outside a run the callback id the function runs is changed to 1464, as REPENTOGON does |
+| 173 | `LuaCallbackCaller::CallInputAction` | 0x00874910 (REPENTOGON's signature matches once) | unused since batch B4: nothing calls it outside a run in this build; `MC_MENU_INPUT_ACTION` is on slots 175-177 |
 
 The hooks are generic wrappers that do nothing until the Layer arms them; the Browser Build's lifted code has the same wrappers (not re-lifted or run here: the host sources compile with `emcc -fsyntax-only`; the Browser Build was not rebuilt or run).
 
 Lua-derived: `MC_MAIN_MENU_RENDER` (after `Manager::Render` while the menu manager exists), `Level:HasMirrorDimension`, `MainMenu`, `NightmareScene`, the menu offsets (measured with `lab_scan.lua`: Menu_Character at manager+0x1534, view positions +0xf704, colour blocks +0xf7c0/d8/f0, nightmare scene +0x21628; Menu_Game at +0xb90 as REPENTOGON has it), `Isaac.WorldToMenuPosition`, enum tables from `enums_ex.lua` (`BossType`) counted as implemented, and the character wheel's ids (id 0 random, 1 to 17 the game's characters in order Isaac ... Jacob, checked against the menu; from 0x12 a mod's).
 
-**MC_MENU_INPUT_ACTION, honestly:** the hook is REPENTOGON's and it is armed while something listens, but in the main menu of this build `CallInputAction` was never seen running (a vanilla `MC_INPUT_ACTION` listener sees events only from the first frame of a run; none in the title, game or character menu). So the callback is implemented as REPENTOGON implements it and has not been seen to fire; a mod that needs menu input through it will get nothing until the menu code is found to call that function. Unique Items API (its one use is in its save manager) is Shown on this basis.
+**MC_MENU_INPUT_ACTION:** superseded by batch B4 below (slots 175-177; it fires in the menu now).
 
 **Epiphany's characters in the character menu, not shown yet:** with every mod achievement unlocked (`lab_unlock.lua`, 137) the wheel still showed only the game's characters (screenshots `.scratch/m8/c3.png`, `c4.png`); Epiphany's own pages belong to its menu (`MENU.ID.TARNISHED`) and its tainted/Tarnished entries were not reached. Not verified.
 
@@ -557,6 +557,16 @@ custom rooms found by this call), so a room a mod adds is not found. Verified: `
 the game holds for the descriptor, with equal Type, Variant, Subtype, Shape, Name, Weight, Difficulty, Doors and spawn count, the same class,
 and `RoomConfigHolder` the same room; unknown and negative variants are nil; the call also works at load time.
 
+#### `BlendMode.Flag1..Flag4` (`api_gaps.lua`, 2026-11-19, chunk A3a)
+
+With the allow flag, Custom Stage API's `MC_POST_NEW_ROOM` failed at `roomgfx.lua:253` (`no member named 'Flag1'`, 4 times in a floors 1 to 5 run).
+REPENTOGON keeps `Flag1..Flag4` as deprecated names for the four factors (`RGBSourceFactor`, `RGBDestinationFactor`, `AlphaSourceFactor`,
+`AlphaDestinationFactor`, in that order), readable and writable. Added as aliases of the four ints already measured at layer state +0x78 (the
+default read back is `(0,1,7,1,7)`); same range check, `Equation` untouched. `lab_stageapi_blend.lua`: 7 PASS, 0 FAIL (default read, alias equals the
+named factors, a write reaches the layer on a fresh read, invalid factor and `Flag5` are errors). Allow-flag run: 0 `Flag1` errors, no new
+failed or `ERR:` line against the plain run. Survey of the other StageAPI branches: `notes/a3-stageapi.md`: only `RoomTransition.StartBossIntro`
+(inert, opt-in `UseRepentogonBossIntro` only) and `MC_CONSOLE_AUTOCOMPLETE` (held) are not real; most branches are not reached by a vanilla floor run.
+
 ### Batch B2: hit shapes (`api_shapes.lua`, 2026-11-19)
 
 `Capsule` (constructor and getters) is a Lua value type. `DebugRenderer.Get` and `Shape` (`Capsule`, `Circle`, `GetTimeout`, `SetTimeout`) are accepted, not supported: they record and draw nothing, so they are left out of `REPENTOGON.Implemented` (lint rule `rule_inert_not_implemented`).
@@ -598,6 +608,29 @@ checked), `PauseMenu`/`DailyChallengeMenu` `Get/SetSelectedElement` and the spri
 missing and used by REPENTOGON mods 202 to 195 (variables 4 to 0). Regression run (95 mods, floors 1 to 5): same six floor changes, same failed
 and `ERR:` lines. Screenshot: `PauseMenu.SetState(2)` in a run made the game draw its Options page (`.scratch/b3/shots/pause_2.png`), and
 `SetState(0)` took it away (`pause_3.png`).
+
+### Batch B4: MC_MENU_INPUT_ACTION and MC_PRE/POST_GLOWING_HOURGLASS_LOAD (hooks 175-178, 2026-11-19)
+
+Both callbacks fire for real now, and Unique Items API is Shown (gate: hidden for exactly these two names before, `used`/`missing` 0 after).
+- **Glowing Hourglass load.** Slot 21 `Game::RestoreState` 0x006bb790 was a false signature match (it is slot 25 of the NPC vtable, pops 0; it saw
+  three calls per room entry with 0xf60-spaced "states", never the hourglass). The real function is 0x006f8140 (`ret 8`, one `ret`, found from the
+  hourglass use 0x00706020, which calls it at 0x00706349 with `push 0; push state+4; ecx = game`; two more callers 0x0090e305, 0x00959b21):
+  new slot 178 `Game::RestoreStateReal`, checked by `hook_table.py` (ret 0x8 ok). `MC_PRE/POST_GLOWING_HOURGLASS_LOAD` get the slot (0/1) of the
+  hourglass state, as before. Slot 21 stays (nothing listens).
+- **Menu input.** The game's input accessors (`Input::IsActionPressed` 0x00956110, `IsActionTriggered` 0x009561e0, `GetActionValue` 0x009562d0, stdcall
+  `ret 0x10`, all ten `ret`s checked) call the Lua caller (0x00864c30/0x00864d80, then `CallInputAction` 0x00874910) only while the Manager's state
+  (`[0x00c7169c]+8`) is 2, a run. The menu is state 1, so REPENTOGON's swap of the callback id inside `CallInputAction` (slot 173) never runs in
+  this build; slot 173 is unused now and its handler is gone. Slots 175-177 hook the three accessors: outside state 2 the callback
+  runs with `(nil, hook, action)`, param = hook, and an answer replaces the query (boolean for hooks 0 and 1, boolean or float for hook 2).
+  Seen: the title menu's own queries reach it (hook 1: actions 14, 16, 17, 20, 21 about 440 times each in 600 frames).
+  **Not covered:** the menu's CONFIRM/BACK queries that sit inline in other functions (0x0095e2ae, 0x0095e309: the same `state == 2` guard), and the
+  float answer reaching XMM0 is not observed (`B.call` does not return XMM0); the callback is seen to run for value queries.
+- Lab `lab_b4_cb.lua`: 9 PASS 0 FAIL (`.scratch/b4/lab4.log`): hourglass save/load callbacks fire (load once per use, args 0), the use takes the player
+  back to the first room; the callback fires in the menu, its `true` replaces `IsActionTriggered(MENUUP)` (called from the lab through the accessor) and
+  MENUDOWN stays 0. Headless M1 3000 frames: guard intact. Census: callbacks 136 to 139, functions 658; gate shown 7 to 8.
+  Epiphany's save manager now gets its `MC_MENU_INPUT_ACTION` (it marks the menu active), which reached `SaveMenu.GetDeletePopupSprite` (nil, a Lua
+  error): it returns an empty sprite now.
+- Binary: `.scratch/b4/mac-out/isaac-mac`; `output/mac/isaac-mac` (play) does not have hooks 175-178 until it is rebuilt from the lifted output.
 
 ### Next batches (proposed)
 
