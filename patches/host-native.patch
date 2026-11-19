@@ -316,7 +316,7 @@ index 98869fc..641d6c5 100644
 -#endif /* ISAAC_WEB */
 +#endif /* ISAAC_WEB || ISAAC_NATIVE */
 diff --git a/scripts/recomp/host/src/host_lua.c b/scripts/recomp/host/src/host_lua.c
-index d845225..2b4fd85 100644
+index d845225..3a8f735 100644
 --- a/scripts/recomp/host/src/host_lua.c
 +++ b/scripts/recomp/host/src/host_lua.c
 @@ -41,6 +41,7 @@
@@ -527,7 +527,55 @@ index d845225..2b4fd85 100644
      if (nsize == 0) {
          if (ptr) isaac_guest_free(isaac_va(ptr));
          return NULL;
-@@ -1663,7 +1835,22 @@ static void gc_cycle_ended(lua_State *L) {
+@@ -1231,6 +1403,20 @@ unsigned isaac_lua_trampolines_used(void) { return g_tramp_n; }
+     } \
+     static void lua_shim_##name(CpuState *restrict cpu)
+ 
++/* The game walks its mod list at shutdown (sub_00897540: push a mod's LuaRef, lua_compare it with a mod
++ * table). A mod whose unload callback already ran has had its LuaRef freed and nulled, and the game does not
++ * check, so the compare reads a LuaRef at guest 0: L is guest 0, and natively guest 0 is a readable page, so
++ * Lua reads a null global_State and faults (crash 2026-11-19 14:41, StageAPI's SaveModData in MC_PRE_MOD_UNLOAD).
++ * A null lua_State answers as an empty one: 0 (nil / false) and nothing pushed or popped. The game then
++ * skips that mod, which is what it meant. Logged once. */
++static int lua_null_state(CpuState *restrict cpu, const char *name) {
++    if (isaac_arg(cpu, 0) != 0) return 0;
++    static int logged;
++    if (!logged++) isaac_log("[isaac][lua] %s with a null lua_State (a freed mod LuaRef at shutdown): answered 0", name);
++    cpu->EAX = 0;
++    return 1;
++}
++
+ /* state */
+ LUA_SHIM(luaL_newstate) {
+     /* luaL_newstate uses the default allocator; we must not. lua_newstate with
+@@ -1264,7 +1450,7 @@ LUA_SHIM(lua_atpanic)    {
+ /* stack */
+ LUA_SHIM(lua_absindex)   { cpu->EAX = (uint32_t)lua_absindex(L_ARG(0), I_ARG(1)); }
+ LUA_SHIM(lua_gettop)     { cpu->EAX = (uint32_t)lua_gettop(L_ARG(0)); }
+-LUA_SHIM(lua_settop)     { lua_settop(L_ARG(0), I_ARG(1)); cpu->EAX = 0; }
++LUA_SHIM(lua_settop)     { if (lua_null_state(cpu, "lua_settop")) return; lua_settop(L_ARG(0), I_ARG(1)); cpu->EAX = 0; }
+ LUA_SHIM(lua_rotate)     { lua_rotate(L_ARG(0), I_ARG(1), I_ARG(2)); cpu->EAX = 0; }
+ LUA_SHIM(lua_copy)       { lua_copy(L_ARG(0), I_ARG(1), I_ARG(2)); cpu->EAX = 0; }
+ LUA_SHIM(lua_pushvalue)  { lua_pushvalue(L_ARG(0), I_ARG(1)); cpu->EAX = 0; }
+@@ -1348,7 +1534,7 @@ LUA_SHIM(lua_isstring)    { cpu->EAX = (uint32_t)lua_isstring(L_ARG(0), I_ARG(1)
+ LUA_SHIM(lua_isuserdata)  { cpu->EAX = (uint32_t)lua_isuserdata(L_ARG(0), I_ARG(1)); }
+ LUA_SHIM(lua_iscfunction) { cpu->EAX = (uint32_t)lua_iscfunction(L_ARG(0), I_ARG(1)); }
+ LUA_SHIM(lua_rawequal)    { cpu->EAX = (uint32_t)lua_rawequal(L_ARG(0), I_ARG(1), I_ARG(2)); }
+-LUA_SHIM(lua_compare)     { cpu->EAX = (uint32_t)lua_compare(L_ARG(0), I_ARG(1), I_ARG(2), I_ARG(3)); }
++LUA_SHIM(lua_compare)     { if (lua_null_state(cpu, "lua_compare")) return; cpu->EAX = (uint32_t)lua_compare(L_ARG(0), I_ARG(1), I_ARG(2), I_ARG(3)); }
+ LUA_SHIM(lua_tolstring)   {
+     uint32_t lenp = isaac_arg(cpu, 2);
+     size_t n = 0;
+@@ -1367,7 +1553,7 @@ LUA_SHIM(lua_rawset)      { lua_rawset(L_ARG(0), I_ARG(1)); cpu->EAX = 0; }
+ LUA_SHIM(lua_rawgetp)     { cpu->EAX = (uint32_t)lua_rawgetp(L_ARG(0), I_ARG(1), P_ARG(2)); }
+ LUA_SHIM(lua_rawsetp)     { lua_rawsetp(L_ARG(0), I_ARG(1), P_ARG(2)); cpu->EAX = 0; }
+ /* lua_rawgeti(L, int idx, lua_Integer n): 4 + 4 + 8 = 16-byte argument area. */
+-LUA_SHIM(lua_rawgeti)     { cpu->EAX = (uint32_t)lua_rawgeti(L_ARG(0), I_ARG(1), i64_arg(cpu, 2)); }
++LUA_SHIM(lua_rawgeti)     { if (lua_null_state(cpu, "lua_rawgeti")) return; cpu->EAX = (uint32_t)lua_rawgeti(L_ARG(0), I_ARG(1), i64_arg(cpu, 2)); }
+ LUA_SHIM(lua_len)         { lua_len(L_ARG(0), I_ARG(1)); cpu->EAX = 0; }
+ LUA_SHIM(lua_getglobal)   { cpu->EAX = (uint32_t)lua_getglobal(L_ARG(0), S_ARG(1)); }
+ LUA_SHIM(lua_setglobal)   { lua_setglobal(L_ARG(0), S_ARG(1)); cpu->EAX = 0; }
+@@ -1663,7 +1849,22 @@ static void gc_cycle_ended(lua_State *L) {
          isaac_log("[isaac][lua] collector: cycle %u ended at %d KB; %u step(s) asked, %u deferred",
                    g_gc_cycles, g_gc_base_kb, g_gc_asked, g_gc_deferred);
  }
@@ -550,7 +598,7 @@ index d845225..2b4fd85 100644
      if (g_gc_pct < 0) {
          const char *e = getenv("ISAAC_LUA_GC");
          int v = (e && *e) ? atoi(e) : ISAAC_GC_DEFAULT_PCT;
-@@ -1737,10 +1924,76 @@ int isaac_lua_gc(lua_State *L, int what, int data) {
+@@ -1737,10 +1938,76 @@ int isaac_lua_gc(lua_State *L, int what, int data) {
      return r;
  }
  LUA_SHIM(lua_gc)      { cpu->EAX = (uint32_t)isaac_lua_gc(L_ARG(0), I_ARG(1), I_ARG(2)); }
@@ -627,7 +675,7 @@ index d845225..2b4fd85 100644
  
  /* auxiliary */
  LUA_SHIM(luaL_checkinteger) { ret_int(cpu, luaL_checkinteger(L_ARG(0), I_ARG(1))); }
-@@ -1820,8 +2073,15 @@ LUA_SHIM(luaL_loadfilex) {
+@@ -1820,8 +2087,15 @@ LUA_SHIM(luaL_loadfilex) {
       * sites; the buffer loader below has one, the console's). The layer boots
       * before the first of them that is a mod's. */
      isaac_rgon_before_chunk(L_ARG(0), S_ARG(1));
@@ -3161,6 +3209,172 @@ index e060b4d..b3de696 100644
  end
  
  ------------------------------------------------------------------------------
+diff --git a/scripts/recomp/rgon/api_familiar.lua b/scripts/recomp/rgon/api_familiar.lua
+new file mode 100644
+index 0000000..893760b
+--- /dev/null
++++ b/scripts/recomp/rgon/api_familiar.lua
+@@ -0,0 +1,160 @@
++-- api_familiar.lua -- EntityFamiliar:GetWeapon() and Entity:CopyStatusEffects(), written against REPENTOGON's
++-- behaviour (LuaEntityFamiliar.cpp, LuaEntity.cpp); every offset measured in THIS executable (v1.9.7.17).
++--
++--   EntityFamiliar weapon   REPENTOGON 0xdb0   here 0xdc4 (+0x14): lab_familiar_probe scanned a familiar's words for
++--       a pointer whose target's +4 (the Weapon's owner) is the familiar itself. Only Incubus (variant 80), Twisted
++--       Pair (235) and one more (76) hold one (type 1, tears, max fire delay 10); Brother Bobby, Little Steven and
++--       the 25 others tried hold 0 there, which is also REPENTOGON's "nil for a familiar without a weapon".
++--   Entity:CopyStatusEffects  the game has its own copy (0x006a8a20, `ret`, no arguments) that copies one entity's
++--       status block to its child chain (+0x3c0). It copies exactly the fields below and masks the 64-bit flags
++--       word (+0x168/+0x16c) with 0x015d8000:21001fe0 (the status bits); its offsets all agree with the ones in
++--       api_objects.lua. The boss cooldown (+0x238) is copied only when both ends are a "boss" for the game's
++--       own test (vtable slot 0x4c, or a player when the game mode word at game+0x26614 is >= 2).
++--       The colour-params vector is at +0x1ac (begin, end, capacity), 0x3c-byte entries as in REPENTOGON:
++--       priority (255), 0x2c bytes of colour, durations at +0x30/+0x34, fadeout byte +0x38, shared byte +0x39
++--       (lab_familiar_probe: a fly with burn, poison, slow, fear, freeze and charm held 4 entries, each priority 255,
++--       durations 100, shared 1).
++local T = ...
++local B, R, method, wrap, this = T.B, T.R, T.method, T.wrap, T.this
++local ptr, r8, r32, ri32, rf32, w8, w32, wf32, call = B.ptr, B.r8, B.r32, B.ri32, B.rf32, B.w8, B.w32, B.wf32, B.call
++local type, error, select = type, error, select
++
++------------------------------------------------------------------------------
++-- EntityFamiliar:GetWeapon() -> Weapon or nil
++------------------------------------------------------------------------------
++method("EntityFamiliar", "GetWeapon", function(self)
++  local p = this(self, "GetWeapon")
++  return T.Weapon.new(r32(p + 0xdc4))
++end)
++
++------------------------------------------------------------------------------
++-- EntityFamiliar:TryAimAtMarkedTarget(aimDirection = Vector(0, 0), direction = -1, targetPos = Vector(0, 0))
++------------------------------------------------------------------------------
++-- The game's Entity_Familiar::TryAimAtMarkedTarget is 0x006146e0 (`ret 0xc`: aim Vector*, int*, target Vector*;
++-- returns a bool in al; the three outputs are written only on success, except that without a marked target it zeroes
++-- the target buffer). Epiphany asks with no arguments on every update of every familiar that has a weapon, which is
++-- how this name showed up once GetWeapon worked. Like REPENTOGON: with exactly two arguments given it
++-- answers the target position or nil; otherwise it answers success and { aimDirection, direction, targetPos }.
++do
++  local function vec_arg(v, n)
++    if type(v) == "userdata" then return v.X, v.Y end
++    return 0, 0
++  end
++  method("EntityFamiliar", "TryAimAtMarkedTarget", function(self, ...)
++    local p = this(self, "TryAimAtMarkedTarget")
++    local nargs = select("#", ...)
++    local aim, direction, target = ...
++    local ax, ay = vec_arg(aim, 1)
++    local tx, ty = vec_arg(target, 3)
++    if direction ~= nil and math.type(direction) ~= "integer" then
++      if type(direction) == "number" and direction == math.floor(direction) then direction = math.tointeger(direction)
++      else error("bad argument #2 to 'TryAimAtMarkedTarget' (number expected, got " .. type(direction) .. ")", 2) end
++    end
++    local buf = B.alloc(24)
++    wf32(buf, ax) wf32(buf + 4, ay)
++    w32(buf + 8, (direction or -1) & 0xffffffff)
++    wf32(buf + 12, tx) wf32(buf + 16, ty)
++    local ok = (call(0x006146e0, p, buf, buf + 8, buf + 12) & 0xff) ~= 0
++    local aimv, dir, tpos = Vector(rf32(buf), rf32(buf + 4)), ri32(buf + 8), Vector(rf32(buf + 12), rf32(buf + 16))
++    B.free(buf)
++    if nargs == 2 then          -- REPENTOGON: exactly two arguments given answers just the target position
++      if ok then return tpos end
++      return nil
++    end
++    if ok then return true, { aimv, dir, tpos } end
++    return false, { aimv, dir, tpos }
++  end)
++end
++
++------------------------------------------------------------------------------
++-- Entity:CopyStatusEffects(target = nil, overwrite = false)
++------------------------------------------------------------------------------
++-- target given: copy this entity's status effects to it; nil: to every child (the chain at +0x3c0).
++-- overwrite false (REPENTOGON's default): a countdown is copied only when this entity's is not 0, status flags are
++-- added; overwrite true: the target's status flags are replaced and every countdown is copied as it is.
++do
++  local COUNTDOWNS = { 0x218, 0x21c, 0x220, 0x224, 0x228, 0x22c, 0x230, 0x234, 0x2e8, 0x23c, 0x320, 0x324,
++    0x2f0, 0x2f4, 0x2f8, 0x300, 0x2fc, 0x304, 0x3b4, 0x3b8 }
++  local MASK_LO, MASK_HI = 0x21001fe0, 0x015d8000
++  local COLOR_SIZE = 0x3c
++
++  -- the game's "counts as a boss" test for the cooldown
++  local function bossish(p)
++    local f = r32(r32(p) + 0x4c)
++    if (call(f, p) & 0xff) ~= 0 then return true end
++    local game = r32(0x00c71678)
++    return game ~= 0 and ri32(game + 0x26614) >= 2 and ri32(p + 0x28) == 1
++  end
++
++  local function shared(e) return r32(e) == 255 and r8(e + 0x38) == 0 and r8(e + 0x39) ~= 0 end
++
++  local function push_color(v, src)
++    local first, last, cap = r32(v), r32(v + 4), r32(v + 8)
++    if last + COLOR_SIZE > cap then
++      local n = (last - first) // COLOR_SIZE
++      local count = n * 2 + 2
++      local new = B.alloc(COLOR_SIZE * count)
++      if new == 0 then error("rgon: out of memory growing a colour list", 3) end
++      for o = 0, n * COLOR_SIZE - 4, 4 do w32(new + o, r32(first + o)) end
++      if first ~= 0 then B.free(first) end
++      first, last, cap = new, new + n * COLOR_SIZE, new + COLOR_SIZE * count
++      w32(v, first) w32(v + 8, cap)
++    end
++    for o = 0, COLOR_SIZE - 4, 4 do w32(last + o, r32(src + o)) end
++    w32(v + 4, last + COLOR_SIZE)
++  end
++
++  local function copy(s, d, overwrite)
++    if s == d then return end
++    local slo, shi = r32(s + 0x168), r32(s + 0x16c)
++    local dlo, dhi = r32(d + 0x168), r32(d + 0x16c)
++    if overwrite then
++      w32(d + 0x168, (dlo & ~MASK_LO & 0xffffffff) | (slo & MASK_LO))
++      w32(d + 0x16c, (dhi & ~MASK_HI & 0xffffffff) | (shi & MASK_HI))
++      for _, o in ipairs(COUNTDOWNS) do w32(d + o, r32(s + o)) end
++      w32(d + 0x308, r32(s + 0x308)) w32(d + 0x30c, r32(s + 0x30c))
++    else
++      w32(d + 0x168, dlo | (slo & MASK_LO))
++      w32(d + 0x16c, dhi | (shi & MASK_HI))
++      for _, o in ipairs(COUNTDOWNS) do
++        local v = r32(s + o)
++        if v ~= 0 then w32(d + o, v) end
++      end
++      if r32(s + 0x308) ~= 0 or r32(s + 0x30c) ~= 0 then w32(d + 0x308, r32(s + 0x308)) w32(d + 0x30c, r32(s + 0x30c)) end
++    end
++    if bossish(s) and bossish(d) then
++      local sc, dc = ri32(s + 0x238), ri32(d + 0x238)
++      local v = overwrite and sc or (sc > dc and sc or dc)
++      w32(d + 0x238, v & 0xffffffff)
++    end
++    if overwrite then          -- retire the target's shared colours (duration 2 := 1, as REPENTOGON does)
++      for e = r32(d + 0x1ac), r32(d + 0x1b0) - COLOR_SIZE, COLOR_SIZE do
++        if shared(e) then w32(e + 0x34, 1) end
++      end
++    end
++    -- snapshot the source's shared colours first: the source and target vectors are different, but pushing may move memory
++    local first, last = r32(s + 0x1ac), r32(s + 0x1b0)
++    for e = first, last - COLOR_SIZE, COLOR_SIZE do
++      if shared(e) then push_color(d + 0x1ac, e) end
++    end
++  end
++
++  method("Entity", "CopyStatusEffects", function(self, target, overwrite)
++    local s = this(self, "CopyStatusEffects")
++    if overwrite ~= nil and type(overwrite) ~= "boolean" then
++      error("bad argument #3 to 'CopyStatusEffects' (boolean expected, got " .. type(overwrite) .. ")", 2)
++    end
++    overwrite = overwrite == true
++    if target == nil then
++      local child = r32(s + 0x3c0)
++      while child ~= 0 do
++        copy(s, child, overwrite)
++        child = r32(child + 0x3c0)
++      end
++      return
++    end
++    local d = ptr(target)
++    if d == 0 then error("bad argument #2 to 'CopyStatusEffects' (Entity expected, got " .. type(target) .. ")", 2) end
++    copy(s, d, overwrite)
++  end)
++end
 diff --git a/scripts/recomp/rgon/api_gaps.lua b/scripts/recomp/rgon/api_gaps.lua
 new file mode 100644
 index 0000000..1e8ff7d
@@ -7417,6 +7631,261 @@ index 0000000..0a9e655
 +    say(string.format("after the room change: %d effect removals fired", removed))
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_familiar_probe.lua b/scripts/recomp/rgon/lab_familiar_probe.lua
+new file mode 100644
+index 0000000..8dc242a
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_familiar_probe.lua
+@@ -0,0 +1,85 @@
++-- lab_familiar_probe.lua (development only; ISAAC_RGON_LAB=lab_familiar_probe.lua): measures where an
++-- EntityFamiliar keeps its Weapon pointer (REPENTOGON 0xdb0 for v1.9.7.12) and where an Entity keeps its
++-- colour-params vector (REPENTOGON 0x1ac). A Weapon is recognised by its owner word (+4) being the entity itself.
++local T = ...
++local B = T.B
++local r32 = B.r32
++local mod = RegisterMod("rgon lab familiar probe", 1)
++local function say(s) B.log("lab_familiar_probe: " .. s) end
++local frame = 0
++local held = {}
++mod:AddCallback(ModCallbacks.MC_INPUT_ACTION, function(_, ent, hook, action)
++  if held[action] and ent and ent.Type == 1 then
++    if hook == InputHook.IS_ACTION_PRESSED or hook == InputHook.IS_ACTION_TRIGGERED then return true end
++    if hook == InputHook.GET_ACTION_VALUE then return 1.0 end
++  end
++end)
++local function dump(name, e)
++  local a = B.ptr(e)
++  say(string.format("%s dump +d90..: %08x %08x %08x %08x %08x %08x %08x %08x", name, r32(a + 0xda8), r32(a + 0xdac), r32(a + 0xdb0), r32(a + 0xdb4), r32(a + 0xdb8), r32(a + 0xdbc), r32(a + 0xdc0), r32(a + 0xdc4)))
++end
++local function scan(name, e)
++  local a = B.ptr(e)
++  for o = 0x600, 0x1400, 4 do
++    local v = r32(a + o)
++    if v > 0x10000 and v < 0xf0000000 then
++      local ok, owner = pcall(r32, v + 4)
++      if ok and owner == a then say(string.format("%s +%04x -> weapon candidate %08x (type %d, maxdelay %g)", name, o, v, B.ri32(v + 0x30), B.rf32(v + 0x10))) end
++    end
++  end
++end
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frame = frame + 1
++  local p = Isaac.GetPlayer(0)
++  if frame == 3 then
++    p:AddCollectible(CollectibleType.COLLECTIBLE_BROTHER_BOBBY, 0, false)
++    p:AddCollectible(CollectibleType.COLLECTIBLE_DEAD_BIRD, 0, false)
++    p:AddCollectible(CollectibleType.COLLECTIBLE_CUBE_OF_MEAT, 0, false)
++    for _, n in ipairs({ "INCUBUS", "TWISTED_PAIR", "LIL_BRIMSTONE", "DEMON_BABY", "ROBO_BABY_2", "SPRINKLER", "LORD_OF_THE_PIT", "SUCCUBUS", "SPIDER_MOD", "BBF", "LIL_HAUNT", "HARLEQUIN_BABY", "RAINBOW_BABY", "SERAPHIM", "BOT_FLY", "GHOST_BABY", "DARK_BUM", "ABEL", "LIL_LOKI", "LITTLE_STEVEN", "SISTER_MAGGY", "ROBO_BABY", "CAINS_OTHER_EYE", "ACID_BABY", "ISAACS_HEART", "JUICY_SACK", "SACK_OF_PENNIES", "LEECH", "LIL_GURDY", "BLOODSHOT_EYE" }) do
++      local id = CollectibleType["COLLECTIBLE_" .. n]
++      if id then p:AddCollectible(id, 0, false) else say("no item " .. n) end
++    end
++  end
++  if frame == 40 then
++    for _, f in ipairs(Isaac.FindByType(3)) do
++      say(string.format("familiar variant %d sub %d addr %x +da8..dc4 order:", f.Variant, f.SubType, B.ptr(f)))
++      scan("var" .. f.Variant, f)
++      dump("var" .. f.Variant, f)
++    end
++    held[ButtonAction.ACTION_SHOOTRIGHT] = true
++    -- colour vector: begin/end/cap of the player and of a fresh fly
++    local fly = Isaac.Spawn(18, 0, 0, p.Position + Vector(80, 0), Vector(0, 0), nil)
++    for _, e in ipairs({ p, fly }) do
++      local a = B.ptr(e)
++      say(string.format("ent type %d vec@1ac %08x %08x %08x ; flags %08x %08x", e.Type, r32(a + 0x1ac), r32(a + 0x1b0), r32(a + 0x1b4), r32(a + 0x168), r32(a + 0x16c)))
++    end
++    fly:AddBurn(EntityRef(p), 100, 1)
++    fly:AddPoison(EntityRef(p), 100, 1)
++    fly:AddSlowing(EntityRef(p), 100, 0.5, Color(1, 1, 1, 1, 0, 0, 0))
++    fly:AddFear(EntityRef(p), 100)
++    fly:AddFreeze(EntityRef(p), 100)
++    fly:AddCharmed(EntityRef(p), 100)
++    local a = B.ptr(fly)
++    say(string.format("fly after statuses vec@1ac %08x %08x %08x ; flags %08x %08x", r32(a + 0x1ac), r32(a + 0x1b0), r32(a + 0x1b4), r32(a + 0x168), r32(a + 0x16c)))
++    local b, e2 = r32(a + 0x1ac), r32(a + 0x1b0)
++    for q = b, e2 - 4, 4 do
++      say(string.format("  colorvec +%02x %08x (f %g)", q - b, r32(q), B.i2f(r32(q))))
++    end
++  end
++  if frame == 100 then
++    for _, f in ipairs(Isaac.FindByType(3)) do
++      say(string.format("after shooting: variant %d ShootDirection %d", f.Variant, f.ShootDirection or -1))
++      scan("late" .. f.Variant, f)
++      dump("late" .. f.Variant, f)
++    end
++  end
++  if frame == 60 then
++    local a
++    for _, e in ipairs(Isaac.GetRoomEntities()) do if e.Type == 18 then a = B.ptr(e) end end
++    if a then
++      local b, e2 = r32(a + 0x1ac), r32(a + 0x1b0)
++      say(string.format("fly later vec %08x %08x size %d", b, e2, e2 - b))
++      for q = b, e2 - 4, 4 do say(string.format("  colorvec +%02x %08x (f %g)", q - b, r32(q), B.i2f(r32(q)))) end
++    end
++  end
++end)
+diff --git a/scripts/recomp/rgon/lab_familiar_test.lua b/scripts/recomp/rgon/lab_familiar_test.lua
+new file mode 100644
+index 0000000..9f8de4d
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_familiar_test.lua
+@@ -0,0 +1,158 @@
++-- lab_familiar_test.lua (development only; ISAAC_RGON_LAB=lab_familiar_test.lua): EntityFamiliar:GetWeapon and
++-- Entity:CopyStatusEffects (api_familiar.lua). Logs "lab_familiar_test: PASS/FAIL .." and a DONE line.
++-- CopyStatusEffects is compared with the game's own copy (0x006a8a20, parent to child chain) run on a second pair.
++local T = ...
++local B = T.B
++local r32, ri32 = B.r32, B.ri32
++local mod = RegisterMod("rgon lab familiar test", 1)
++local npass, nfail = 0, 0
++local function check(name, ok, detail)
++  if ok then npass = npass + 1 else nfail = nfail + 1 end
++  B.log("lab_familiar_test: " .. (ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function try(name, f)
++  local ok, err = pcall(f)
++  if not ok then check(name, false, err) end
++end
++local FIELDS = { 0x218, 0x21c, 0x220, 0x224, 0x228, 0x22c, 0x230, 0x234, 0x2e8, 0x23c, 0x320, 0x324, 0x2f0, 0x2f4, 0x2f8,
++  0x300, 0x2fc, 0x304, 0x308, 0x30c, 0x3b4, 0x3b8 }
++local function snap(e)
++  local a, t = B.ptr(e), {}
++  for _, o in ipairs(FIELDS) do t[o] = r32(a + o) end
++  t.flags = r32(a + 0x168) & 0x21001fe0
++  t.flags2 = r32(a + 0x16c) & 0x015d8000
++  return t
++end
++local function same(a, b)
++  for k, v in pairs(a) do if b[k] ~= v then return false, string.format("%s %x vs %x", tostring(k), v, b[k] or -1) end end
++  return true
++end
++local function statuses(e, p)
++  local ref = EntityRef(p)
++  e:AddBurn(ref, 100, 1) e:AddPoison(ref, 100, 1) e:AddSlowing(ref, 100, 0.5, Color(1, 1, 1, 1, 0, 0, 0))
++  e:AddFear(ref, 100) e:AddFreeze(ref, 100) e:AddCharmed(ref, 100) e:AddConfusion(ref, 100, false)
++end
++local function ncolors(e) local a = B.ptr(e) return (r32(a + 0x1b0) - r32(a + 0x1ac)) // 0x3c end
++
++local held = {}
++mod:AddCallback(ModCallbacks.MC_INPUT_ACTION, function(_, ent, hook, action)
++  if held[action] and ent and ent.Type == 1 then
++    if hook == InputHook.IS_ACTION_PRESSED or hook == InputHook.IS_ACTION_TRIGGERED then return true end
++    if hook == InputHook.GET_ACTION_VALUE then return 1.0 end
++  end
++end)
++local frame = 0
++local fly = {}
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frame = frame + 1
++  local p = Isaac.GetPlayer(0)
++  if frame == 3 then
++    check("Implemented EntityFamiliar.GetWeapon", REPENTOGON.Implemented["EntityFamiliar.GetWeapon"] == true)
++    check("Implemented Entity.CopyStatusEffects", REPENTOGON.Implemented["Entity.CopyStatusEffects"] == true)
++    p:AddCollectible(CollectibleType.COLLECTIBLE_BROTHER_BOBBY, 0, false)
++    p:AddCollectible(CollectibleType.COLLECTIBLE_INCUBUS, 0, false)
++    p:AddCollectible(CollectibleType.COLLECTIBLE_TWISTED_PAIR, 0, false)
++    p:AddCollectible(CollectibleType.COLLECTIBLE_LITTLE_STEVEN, 0, false)
++    for i = 1, 8 do fly[i] = Isaac.Spawn(18, 0, 0, p.Position + Vector(60 + 20 * i, 0), Vector(0, 0), nil) end
++  end
++  if frame == 20 then
++    try("familiar weapons", function()
++      local seen = {}
++      for _, f in ipairs(Isaac.FindByType(3)) do
++        local fam = f:ToFamiliar()
++        local w = fam:GetWeapon()
++        seen[f.Variant] = true
++        if f.Variant == 80 or f.Variant == 235 then
++          check("variant " .. f.Variant .. " has a Weapon", w ~= nil)
++          if w then
++            check("variant " .. f.Variant .. " weapon type 1 (tears)", w:GetWeaponType() == 1, w:GetWeaponType())
++            check("variant " .. f.Variant .. " weapon owner is the familiar", w:GetOwner() ~= nil and w:GetOwner().Index == f.Index and w:GetOwner().InitSeed == f.InitSeed)
++            check("variant " .. f.Variant .. " max fire delay sensible", w:GetMaxFireDelay() > 0 and w:GetMaxFireDelay() < 100, w:GetMaxFireDelay())
++            check("variant " .. f.Variant .. " fire delay readable", type(w:GetFireDelay()) == "number")
++          end
++        elseif f.Variant == 1 or f.Variant == 44 then
++          check("variant " .. f.Variant .. " has no Weapon (nil)", w == nil, tostring(w))
++        end
++      end
++      check("saw Incubus, Twisted Pair, Bobby", seen[80] and seen[235] and seen[1])
++    end)
++    try("statuses", function()
++      local a, b, c = fly[1], fly[2], fly[3]
++      statuses(a, p)
++      check("source has shared colours", ncolors(a) > 0, ncolors(a))
++      b:SetFreezeCountdown(7)
++      a:CopyStatusEffects(b)
++      local sa, sb = snap(a), snap(b)
++      local ok, why = same(sa, sb)
++      check("explicit copy: every status field copied", ok, why)
++      check("explicit copy: target has the status flags", b:HasEntityFlags(EntityFlag.FLAG_BURN | EntityFlag.FLAG_POISON | EntityFlag.FLAG_FEAR))
++      check("explicit copy: shared colours added", ncolors(b) >= 1, ncolors(b))
++      -- overwrite false leaves a countdown the source does not have
++      c:SetFreezeCountdown(0) c:SetCharmedCountdown(9)
++      local z = fly[4]
++      z:AddBurn(EntityRef(p), 50, 1)
++      z:CopyStatusEffects(c)
++      check("non-overwrite: target keeps its own charm countdown", c:GetCharmedCountdown() == 9, c:GetCharmedCountdown())
++      check("non-overwrite: burn arrives", c:GetBurnCountdown() == z:GetBurnCountdown() and c:GetBurnCountdown() > 0, c:GetBurnCountdown())
++      -- overwrite true replaces
++      c:CopyStatusEffects(fly[5], false)
++      fly[5]:SetCharmedCountdown(3)
++      z:CopyStatusEffects(fly[5], true)
++      check("overwrite: target charm countdown replaced by 0", fly[5]:GetCharmedCountdown() == z:GetCharmedCountdown())
++      -- nil target with children, against the game's own function on a second pair
++      -- the game's own copy only acts on segmented bosses (its predicate at 0x006a8db0 switches on the type): Larry Jr. (19)
++      local function larry(x) local l = Isaac.Spawn(19, 0, 0, p.Position + Vector(x, 100), Vector(0, 0), nil) return l end
++      local d, e, g1, g2 = larry(-120), larry(-60), larry(0), larry(60)
++      statuses(d, p) statuses(g1, p)
++      d.Child = e g1.Child = g2
++      e:SetFreezeCountdown(0) g2:SetFreezeCountdown(0)
++      d:CopyStatusEffects(nil)
++      B.call(0x006a8a20, B.ptr(g1))
++      local ok2, why2 = same(snap(g2), snap(e))
++      check("nil target: the child gets what the game's own copy gives its child", ok2, why2)
++      check("game's own copy did copy something", g2:GetBurnCountdown() > 0 and e:GetBurnCountdown() > 0, g2:GetBurnCountdown() .. " / " .. e:GetBurnCountdown())
++      check("bad target errors", not pcall(function() a:CopyStatusEffects(5) end))
++      check("bad overwrite errors", not pcall(function() a:CopyStatusEffects(b, 5) end))
++    end)
++    try("boss cooldown", function()
++      local boss1 = Isaac.Spawn(20, 0, 0, p.Position + Vector(-100, 0), Vector(0, 0), nil)
++      local boss2 = Isaac.Spawn(20, 0, 0, p.Position + Vector(-100, 40), Vector(0, 0), nil)
++      boss1:SetBossStatusEffectCooldown(50)
++      boss1:CopyStatusEffects(boss2, true)
++      check("boss to boss: cooldown copied", boss2:GetBossStatusEffectCooldown() == 50, boss2:GetBossStatusEffectCooldown())
++      local plain = fly[8]
++      plain:SetBossStatusEffectCooldown(0)
++      boss1:CopyStatusEffects(plain, true)
++      check("boss to fly: cooldown not copied", plain:GetBossStatusEffectCooldown() == 0, plain:GetBossStatusEffectCooldown())
++    end)
++    try("TryAimAtMarkedTarget without a marked target", function()
++      local inc
++      for _, f in ipairs(Isaac.FindByType(3, 80)) do inc = f:ToFamiliar() end
++      local ok, t = inc:TryAimAtMarkedTarget()
++      check("no Marked: false and a table of three", ok == false and type(t) == "table" and t[1] ~= nil and type(t[2]) == "number" and t[3] ~= nil, tostring(ok))
++      check("no Marked: two arguments answer nil", inc:TryAimAtMarkedTarget(Vector(0, 0), -1) == nil)
++    end)
++    p:AddCollectible(CollectibleType.COLLECTIBLE_MARKED, 0, false)
++    held[ButtonAction.ACTION_SHOOTRIGHT] = true
++  end
++  if frame == 60 then
++    try("TryAimAtMarkedTarget with Marked", function()
++      local inc
++      for _, f in ipairs(Isaac.FindByType(3, 80)) do inc = f:ToFamiliar() end
++      local mt = p:GetMarkedTarget()
++      check("Marked target exists", mt ~= nil)
++      if mt then
++        local ok, t = inc:TryAimAtMarkedTarget()
++        check("Marked: true", ok == true, tostring(ok))
++        local want = (mt.Position - inc.Position):Normalized()
++        check("Marked: aim direction points at the target", (t[1] - want):Length() < 0.05, tostring(t[1]) .. " vs " .. tostring(want))
++        check("Marked: direction is 0..3", t[2] >= 0 and t[2] <= 3, t[2])
++        check("Marked: target position is a Vector", t[3] ~= nil, tostring(t[3]))
++        local pos = inc:TryAimAtMarkedTarget(Vector(0, 0), -1)
++        check("Marked: two arguments answer the target position", pos ~= nil, tostring(pos))
++      end
++    end)
++    held[ButtonAction.ACTION_SHOOTRIGHT] = nil
++    B.log(string.format("lab_familiar_test: DONE pass=%d fail=%d", npass, nfail))
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_ff_veil.lua b/scripts/recomp/rgon/lab_ff_veil.lua
 new file mode 100644
 index 0000000..7205632
@@ -10034,7 +10503,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..50a279b 100644
+index 4175f07..664903c 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -10092,7 +10561,7 @@ index 4175f07..50a279b 100644
    rearm = function() arm(nil) end,
  }
 -for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_hooks.lua" }) do
-+for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_shapes.lua", "api_state_getters.lua", "api_eid.lua", "api_hooks.lua" }) do
++for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_eid.lua", "api_hooks.lua" }) do
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)

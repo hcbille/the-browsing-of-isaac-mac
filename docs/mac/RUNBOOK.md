@@ -190,6 +190,20 @@ appears, plus mouse, pad, `fullscreen`, `window:WxH` tokens.
   anchor with `@`). Look at the screenshot yourself before believing a script did what it says.
 - **Clean exit**: an `ISAAC_MAC_RUN_FRAMES` or alarm exit skips the game's shutdown, so `options.ini` is not
   written. Send SIGTERM for a clean exit when that matters.
+- **Closing the window as the red button does**: script token `F:quit` (mac_script.c; works headless too) pushes WM_CLOSE, so
+  the game's own shutdown runs (`Isaac is shutting down...`, `delete N rooms.`, every mod's MC_PRE_MOD_UNLOAD, `main returned 0`).
+  Window close, not the menu's Exit, is what logs `[mac] quit requested`. Repro of the shutdown crash below:
+  `HEADLESS=1 FRESH=1 FRAMES=6000 LAB=lab_trapdoor.lua ISAAC_LAB_FLOORS=2 SCRIPT='until=Room 1.2(Start Room):enter,@1500:quit'`
+  with the 95 mods (quit in the first room does not crash: StageAPI saves only after a floor change).
+- **Shutdown crash in `lua_rawgeti` (fixed 2026-11-19)**: at shutdown the game's `LuaEngine::Shutdown` (0x0086e520) walks its mod
+  list (0xc7985c) and runs each mod's MC_PRE_MOD_UNLOAD (0x00870e00), which frees and nulls that node's mod LuaRef (node+0x50).
+  A mod that calls `Isaac.SaveModData` there (StageAPI) runs 0x008711f0, which walks the list from the head comparing each
+  node's LuaRef to the caller's mod table (0x00897540) with no null check; every node before the caller is already nulled, so
+  it reads a LuaRef at guest 0, calls `lua_rawgeti(L=0)`, and natively guest 0 is a readable page: Lua reads a null
+  `global_State` and faults at 0x40. The game has no guard, so it is probably a latent Windows bug too (the process is leaving
+  anyway). Fix: `host_lua.c` answers `lua_rawgeti/lua_compare/lua_settop` on a null `lua_State` with 0 and logs once
+  (`[isaac][lua] ... with a null lua_State`); the walk then skips the dead node. Evidence: `[isaac][lua] lua_rawgeti with a null lua_State`
+  in a quit run, then `main returned 0`.
 - **Labs** are test-only Lua files in `scripts/recomp/rgon/lab_*.lua`, never packed, loaded only with
   `ISAAC_RGON_LAB`: `lab_names` (dumps implemented names: the Layer measurement), `lab_trapdoor`,
   `lab_store` (Layer save), `lab_unlock` (mod achievements), `lab_scan`/`lab_vp`/`lab_menu` (offset probes),

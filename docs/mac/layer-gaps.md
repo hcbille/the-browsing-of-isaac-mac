@@ -674,6 +674,21 @@ skips the game's code, and without `s` the game's code runs and a `Collide` answ
 the colour `Player::UsePill` was called with is kept on a stack and added by the engine-runner wrapper. Lab:
 `lab_pickup_test.lua` (hearts with the 95 mods, every answer form on a coin, the pill colour; 29 PASS, was 11 FAIL).
 
+### Familiar weapon, status copy, marked-target aim (worker familiar)
+
+- `EntityFamiliar:GetWeapon()`: the Weapon pointer is at familiar +0xdc4 (REPENTOGON 0xdb0 + 0x14), found by scanning a familiar's words for a
+  pointer whose target's +4 (owner) is the familiar. Only Incubus (80), Twisted Pair (235) and variant 76 have one among 30 familiars tried;
+  the rest hold 0 and get nil, as in REPENTOGON. Epiphany's `attack_util.lua:74/81` no longer errors (it errored 4,680 times in one play).
+- `Entity:CopyStatusEffects(target = nil, overwrite = false)`: the game has its own copy (0x006a8a20, `ret`, parent to child chain, only for
+  segmented-boss types) with the exact field list and flag mask (0x015d8000:21001fe0) and the boss-cooldown test; all offsets agree with
+  `api_objects.lua`. Done in Lua from that list, plus the colour-params vector (+0x1ac, 0x3c-byte entries, shared priority-255 entries
+  are pushed, grown with the game's allocator). The lab runs the game's own function on one Larry Jr. pair and ours on another: same result.
+  Not like REPENTOGON: its non-overwrite flag merge ORs every differing bit (its two XORs cancel); here only the status bits move.
+- `EntityFamiliar:TryAimAtMarkedTarget(aim, direction, target)`: the next missing name behind `GetWeapon` in Epiphany (777 errors in a lab
+  run). Game function 0x006146e0 (`ret 0xc`; aim Vector*, int*, target Vector*; bool in al), REPENTOGON's two return shapes.
+- Lab `lab_familiar_test.lua`: 40 PASS 0 FAIL (`.scratch/familiar/lab.log`). Probe: `lab_familiar_probe.lua`. Census 663 functions (was 658),
+  callbacks 139, 9 mods shown; trap: same as base.
+
 ### Next batches (proposed)
 
 0. (done, B1: quad getters, Copy, Translate, Flip. B2: Capsule value type, Shape, FindInCapsule; left: Capsule:Collide and the game-made capsules. B3: pause/daily/prompt state, Delirium fields, GetDimension; left: the rest of GenericPrompt, selected elements, Delirium's other fields.)
@@ -684,9 +699,9 @@ the colour `Player::UsePill` was called with is kept on a stack and added by the
 3. (PocketItem done, batch 3) ProceduralItem (External Item Descriptions, 10 used names: GetItem, GetEffect, GetEffectCount,
    GetTargetItem, GetDamage, GetFireDelay, GetLuck, GetRange, GetShotSpeed, GetSpeed): the procedural item record is still to measure.
    Other names the user's mods use, with a unique signature match and a simple call (found by `.scratch/m8-census/mcand.py` over the batch 3
-   census): `Entity:CopyStatusEffects` (needs the colour-params vector and boss cooldown too, so not a quick one), `EntityPickup`
+   census): `Entity:CopyStatusEffects` (done, worker familiar), `EntityPickup`
    GetRandomPickupVelocity (static, ecx/edx), InitFlipState (REPENTOGON's wrapper does more than the game function), `EntityFamiliar`
-   GetRandomWisp, TryAimAtMarkedTarget, `Game.DevolveEnemy`. Field-only names to find with the diff probe: Room GetWaterAmount/SetWaterAmount,
+   GetRandomWisp, `Game.DevolveEnemy` (TryAimAtMarkedTarget done). Field-only names to find with the diff probe: Room GetWaterAmount/SetWaterAmount,
    GetLightningIntensity, Game IsRerun/IsErased, the Dizzy amount, EntityPlayer GetKeepersSackBonus, Immaculate/Cambion conception state.
 4. The L callbacks the mods use (96), grouped by hook site: grid (rock destroy, grid collision, trapdoor/door update), player
    (trigger death, revive, drop card/pill), HUD (hearts, history HUD), planetarium/devil, completion marks and shop purchase.

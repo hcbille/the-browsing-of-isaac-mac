@@ -17,6 +17,7 @@
  *                        TEXT has no ',' or ':'.
  *   F:fullscreen[:on|:off]  toggle (or set) fullscreen, as the shortcut does (mac_window.c)
  *   F:cmdctrl-f          press Cmd+Ctrl+F as an SDL event (with the modifiers set)
+ *   F:quit               close the window as the red button does (WM_CLOSE): the game's own shutdown runs
  *   F:window:WxH         resize the window (points; not while fullscreen)
  *   F:mousewin:X:Y       move the pointer to window point X,Y (SDL event; bars included)
  *   F:mouse:X:Y          move the pointer to game pixel X,Y (960x540); with
@@ -54,8 +55,9 @@ int isaac_mac_vpad_disconnect(int idx);
 void isaac_mac_vpad_button(int idx, int sdl_button, int down);
 void isaac_mac_vpad_axis(int idx, int sdl_axis, int value);
 void isaac_mac_input_pump_headless(void);
+void isaac_input_window_close(void);
 
-enum { K_KEY, K_MMOVE, K_MBTN, K_MWHEEL, K_PBTN, K_PAXIS, K_PCONN, K_PDISC, K_FS, K_WSIZE, K_MWIN, K_CCF };
+enum { K_KEY, K_MMOVE, K_MBTN, K_MWHEEL, K_PBTN, K_PAXIS, K_PCONN, K_PDISC, K_FS, K_WSIZE, K_MWIN, K_CCF, K_QUIT };
 typedef struct { int frame, rel, kind, a, b, c, d, done; } sev;   /* key: a=vk b=sc|ext<<8 c=down */
 #define MAX_EV 1024
 static sev g_ev[MAX_EV];
@@ -185,6 +187,7 @@ static void parse_token(char *tok) {
     const char *r = rest ? rest : "";
 
     if (!strcmp(what, "fullscreen")) { add(frame, rel, K_FS, !strcmp(r, "on") ? 1 : !strcmp(r, "off") ? 0 : -1, 0, 0, 0); return; }
+    if (!strcmp(what, "quit")) { add(frame, rel, K_QUIT, 0, 0, 0, 0); return; }
     if (!strcmp(what, "cmdctrl-f")) { add(frame, rel, K_CCF, 0, 0, 0, 0); return; }
     if (!strcmp(what, "window")) {
         int ww = 0, wh = 0;
@@ -301,6 +304,10 @@ static int run_event(sev *e, int32_t *out, int frame) {
         printf("[mac][script] frame %d: fullscreen %s\n", frame, e->a < 0 ? "toggle" : e->a ? "on" : "off");
         if (e->a < 0) isaac_mac_window_toggle_fullscreen("the script");
         else isaac_mac_window_set_fullscreen(e->a, "the script");
+        return 0;
+    case K_QUIT:
+        printf("[mac][script] frame %d: window close (WM_CLOSE)\n", frame);
+        isaac_input_window_close();
         return 0;
     case K_CCF: {
         printf("[mac][script] frame %d: Cmd+Ctrl+F (SDL event)\n", frame);
