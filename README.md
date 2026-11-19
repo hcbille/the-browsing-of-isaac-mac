@@ -1,4 +1,4 @@
-# the-browsing-of-isaac-mac
+# the-porting-of-isaac
 
 Work in progress: a native Apple Silicon build of *The Binding of Isaac:
 Repentance+*, built on [chiikabu/the-browsing-of-isaac](https://github.com/chiikabu/the-browsing-of-isaac),
