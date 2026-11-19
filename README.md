@@ -28,7 +28,7 @@ copy and never leaves your machine.
 
 ## Status
 
-Playable, work in progress. Details: `docs/mac/NEXT.md` and `docs/mac/RUNBOOK.md`.
+Playable, work in progress. Details: `docs/mac/RUNBOOK.md`.
 
 Working, on an M2 MacBook Air:
 
@@ -47,7 +47,7 @@ Working, on an M2 MacBook Air:
   Tarnished characters too) and Fiend Folio: RELOADED, whose items, enemies and characters
   now load in full. External Item Descriptions now sees REPENTOGON too: Bag of Crafting
   contents and output, TM Trainer's procedural items, transformation progress. The layer
-  decides per mod whether it can run. It has about 630 of REPENTOGON's 1,727 functions and
+  decides per mod whether it can run. It has about 650 of REPENTOGON's 1,727 functions and
   136 of its 380 callbacks, the ones the tested mods use first. Item settings such as
   `ChargeType` are writable, as with REPENTOGON. `scripts/mac/rgon_census.py` measures the
   rest.
@@ -90,7 +90,7 @@ game.
   [`0cd8f863f`](https://github.com/TeamREPENTOGON/REPENTOGON/commit/0cd8f863fe9947a8414d9018a700269603e629e6)
   (2026-11-09, version 1.1.3, its latest snapshot). That snapshot targets game v1.9.7.12;
   this build runs v1.9.7.17, which is why fields are re-measured.
-- **Progress:** about 630 of its 1,727 functions and 136 of its 380 callbacks, the ones
+- **Progress:** about 650 of its 1,727 functions and 136 of its 380 callbacks, the ones
   the tested mods use coming first. `scripts/mac/rgon_census.py` compares the layer
   against a REPENTOGON checkout, and `docs/mac/layer-gaps.md` has the details.
 - The layer tells each mod whether REPENTOGON is there, and only says yes when every

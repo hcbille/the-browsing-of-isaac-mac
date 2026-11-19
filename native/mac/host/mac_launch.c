@@ -1,8 +1,8 @@
 /* mac_launch.c -- how the Mac Build is started: command line, launch-settings.json,
  * and the few things a launch decides (Vanilla Launch, debug console, Lua debug).
  *
- * Contract: docs/mac/launcher.md ("Launch contract") and docs/mac/PROGRESS.md
- * ("Integration"). In short:
+ * Contract: docs/mac/launcher.md ("Launch contract" and "Game side").
+ * In short:
  *
  *   isaac-mac [--headless] [--launch-settings <json>] [--vanilla] [--debug-console]
  *             [--lua-debug] [--segs F] [--bundle D] [--layer-dir D] [--save-dir D]

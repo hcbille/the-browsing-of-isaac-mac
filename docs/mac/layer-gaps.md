@@ -231,7 +231,7 @@ Why these stay hidden: Custom Stage API needs engine-state writes the Layer cann
 
 **Browser Build.** The page packs the Layer with `rgon/pack.mjs` into a mod archive named `repentogon` (own files + `hook_slots.lua`, `gate_names.lua` + REPENTOGON's `enums_ex.lua` with its GPL-2.0 licence), installs it like any mod (IndexedDB), seeds it into the Guest file table at `mods/repentogon/`, and as it seeds every other enabled mod runs `createModScan().add(id, files)` and then writes `mods/repentogon/modscan.lua` (`seedMods` in `web/mods.mjs`, called from `boot_web.mjs`; `?modscan=0` disables, `?ISAAC_RGON=0` turns the Layer off). Only mods that name REPENTOGON in code are listed.
 
-## 6. M8 on the Mac Build (done: see PROGRESS.md "Integration")
+## 6. M8 on the Mac Build (done: see launcher.md "Game side")
 
 The Mac Build runs `host_rgon.c` unchanged (it is part of the Host), so the Layer works if `mods/repentogon/{rgon.lua, api_*.lua, hook_slots.lua, gate_names.lua, enums_ex.lua, modscan.lua}` is visible through the Host's file table and `ISAAC_RGON` is not 0. Needed:
 
@@ -527,8 +527,38 @@ callbacks, `RoomConfig.AddRooms`/virtual room sets) are not looked at. So Shown 
 Regression (95 mods, `lab_trapdoor`, floors 1 to 5, `.scratch/stageapi/trap.log`): 5 levels reached, no "failed" line, the one known `ERR:`
 (`! fired's_angels_and_statues`); StageAPI-dependent mods load and floors change as before.
 
+### Batch B1: render quads (`api_misc.lua`, 2026-11-19)
+
+`DestinationQuad` and `SourceQuad` were already in the Layer as value types, but only the class name was registered, so the census counted their
+methods missing. Now registered, each checked by `lab_quad_test.lua` (45 PASS, 0 FAIL): the four corner getters and setters, `Copy`,
+`Translate`, `Flip` (both classes) and `SourceQuad:IsUVSpace`. Two behaviours were wrong and are fixed: `Flip` with an argument left out means
+true (REPENTOGON's default: `q:Flip()` flips both axes; before, it did nothing), and `SourceQuad:Copy` kept no UV flag. `Flip`, `Translate` and
+the setters mutate and return nothing; `Copy` and the getters hand out new objects. Census: functions implemented 628 to 641; the REPENTOGON
+mods' missing names 216 to 208; gate lists lose Copy, the four getters and Translate. Regression run (95 mods, floors 1 to 5): same as before.
+Still not registered (work, but not checked against REPENTOGON's maths): Scale, Rotate, Shear, ApplyMatrix; ConvertToPixelSpace/UVSpace need an
+image. No screenshot: the Layer has no render path that consumes a quad (`Renderer`/`Image` are accepted, not supported), so a flipped quad
+cannot be drawn yet.
+
+### Batch B2: hit shapes (`api_shapes.lua`, 2026-11-19)
+
+`Capsule` (constructor and getters) is a Lua value type. `DebugRenderer.Get` and `Shape` (`Capsule`, `Circle`, `GetTimeout`, `SetTimeout`) are accepted, not supported: they record and draw nothing, so they are left out of `REPENTOGON.Implemented` (lint rule `rule_inert_not_implemented`).
+Checked by `lab_shape_test.lua` (43 PASS, 0 FAIL). Registered: `Capsule.Capsule`, `GetPosition`, `GetDirection`, `GetF1`, `GetF2`, `GetVec2`,
+`GetVec3` (and the new names `GetStartPoint`, `GetEndPoint`, `GetSize`, `GetSizeDifference`), and `Isaac.FindInCapsule`. The field meanings are read from how the mods use them, not measured in the
+game (a game capsule cannot be built from Lua here): `GetVec2`/`GetVec3` the two ends, `GetPosition` the middle, `GetDirection` the unit vector
+start to end (zero for a point), `GetF1` the radius, `GetF2` the half length. `Capsule(start, end, radius)` is exact by that reading;
+`Capsule(position, multiplier, rotation, size)` (radius `size * min(multiplier)`, half length `size * (max - min)`, rotation in degrees) is
+inferred: it matches the one four-argument caller (FiendFolio `palinsopia.lua:65`, `Capsule(pos, Vector.One, 0, rad)`, a circle) and is unchecked for
+non-uniform multipliers or rotation. `Isaac.FindInCapsule` does not call the game's `QueryCapsule`: it treats an entity as a circle of
+`Size * max(SizeMulti)` at its position (`FindInRadius` first), which is exact for round hitboxes. Left out: `Capsule:Collide` (the game's function
+also writes a hit location; its signature has to be matched in the executable), `Entity:GetCollisionCapsule`/`GetNullCapsule`/`GetDebugShape`
+(need the game's capsule builders, so an engine call). Census: functions implemented 641 to 654 (run with the other worker's tree, so some of
+the 13 may be theirs); constructors 3 to 4; gate lists lose `Capsule` (Epiphany, FiendFolio), `DebugRenderer`, `GetF1`, `GetF2`, `GetPosition`,
+`GetVec2`, `GetVec3` (FiendFolio). Regression run (95 mods, floors 1 to 5): same six floor changes and the same failed and `ERR:` lines.
+No screenshot: shapes are not drawn.
+
 ### Next batches (proposed)
 
+0. (done, B1: quad getters, Copy, Translate, Flip. B2: Capsule value type, Shape, FindInCapsule; left: Capsule:Collide and the game-made capsules.)
 1. (done, batch 2: see above) EntityPlayer weapon/laser fields, `Weapon`, EntityKnife. What is left of them: Weapon's virtual
    functions, the unmeasured player fields, hitbox parent knife (a hook).
 2. (done, batch 3, except `TryPlaceRoom`/`TryPlaceRoomAtDoor` and `MC_PRE_LEVEL_PLACE_ROOM`, which need the game's PlaceRoom: its

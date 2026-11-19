@@ -4270,6 +4270,54 @@ index 0000000..36b9c1c
 +    R.Implemented["Minimap." .. n] = true
 +  end
 +end
+diff --git a/scripts/recomp/rgon/api_misc.lua b/scripts/recomp/rgon/api_misc.lua
+index b34e4e1..7301240 100644
+--- a/scripts/recomp/rgon/api_misc.lua
++++ b/scripts/recomp/rgon/api_misc.lua
+@@ -246,7 +246,11 @@ do
+     function Q:SetTopRight(v) self._tr = vec_arg(v, 1, "SetTopRight") end
+     function Q:SetBottomLeft(v) self._bl = vec_arg(v, 1, "SetBottomLeft") end
+     function Q:SetBottomRight(v) self._br = vec_arg(v, 1, "SetBottomRight") end
+-    function Q:Copy() return new(self:GetTopLeft(), self:GetTopRight(), self:GetBottomLeft(), self:GetBottomRight()) end
++    function Q:Copy()
++      local c = new(self:GetTopLeft(), self:GetTopRight(), self:GetBottomLeft(), self:GetBottomRight())
++      c._uv = self._uv
++      return c
++    end
+     local function each(self, f)
+       self._tl, self._tr, self._bl, self._br = f(self._tl), f(self._tr), f(self._bl), f(self._br)
+     end
+@@ -286,9 +290,11 @@ do
+         return Vector(a.X + m[1][1] * x + m[1][2] * y + m[1][3], a.Y + m[2][1] * x + m[2][2] * y + m[2][3])
+       end)
+     end
++    -- Flip mutates and returns nothing. An argument left out means true (REPENTOGON's
++    -- default), so q:Flip() flips both axes and q:Flip(false, true) only the vertical one.
+     function Q:Flip(flip_x, flip_y)
+-      if flip_x then self._tl, self._tr, self._bl, self._br = self._tr, self._tl, self._br, self._bl end
+-      if flip_y then self._tl, self._tr, self._bl, self._br = self._bl, self._br, self._tl, self._tr end
++      if flip_x == nil or flip_x then self._tl, self._tr, self._bl, self._br = self._tr, self._tl, self._br, self._bl end
++      if flip_y == nil or flip_y then self._tl, self._tr, self._bl, self._br = self._bl, self._br, self._tl, self._tr end
+     end
+     if extra then extra(Q) end
+     local static_side = {}
+@@ -306,11 +312,16 @@ do
+       end }))
+       R.Implemented[name] = true
+     end
++    for _, m in ipairs({ "GetTopLeft", "GetTopRight", "GetBottomLeft", "GetBottomRight", "SetTopLeft", "SetTopRight",
++      "SetBottomLeft", "SetBottomRight", "Copy", "Translate", "Flip" }) do
++      R.Implemented[name .. "." .. m] = true
++    end
+   end
+   quad("DestinationQuad")
+   quad("SourceQuad", function(Q)
+     -- a source quad is in pixels unless it was converted to the 0..1 space of the image
+     function Q:IsUVSpace() return self._uv == true end
++    R.Implemented["SourceQuad.IsUVSpace"] = true
+   end)
+ end
+ 
 diff --git a/scripts/recomp/rgon/api_more.lua b/scripts/recomp/rgon/api_more.lua
 index 468ce51..a7ce9b1 100644
 --- a/scripts/recomp/rgon/api_more.lua
@@ -4358,6 +4406,153 @@ index 0000000..a7e598c
 +  else
 +    B.log("api_pocket_item: no EntityPlayer class; GetPocketItem is left as the game has it")
 +  end
++end
+diff --git a/scripts/recomp/rgon/api_shapes.lua b/scripts/recomp/rgon/api_shapes.lua
+new file mode 100644
+index 0000000..d759683
+--- /dev/null
++++ b/scripts/recomp/rgon/api_shapes.lua
+@@ -0,0 +1,141 @@
++-- api_shapes.lua -- census batch B2: Capsule, Shape, DebugRenderer.Get, Isaac.FindInCapsule.
++--
++-- Capsule is a value the game keeps as a struct (its REPENTOGON layout: position, start, end, direction, radius,
++-- half length). The layer builds it in Lua, so a capsule a mod makes with Capsule(...) carries what the mod put in
++-- and hands the same numbers back. The capsules the game itself makes (Entity:GetCollisionCapsule, GetNullCapsule)
++-- need the game's own functions and are not here.
++--
++-- What each field means is read from how the mods use the getters, not measured in the game (there is no way to
++-- build a game capsule from Lua here): GetVec2/GetVec3 are the two ends of the spine, GetPosition is the middle,
++-- GetDirection the unit vector from start to end, GetF1 the radius and GetF2 the half length (the distance from
++-- the middle to either end).
++--   Capsule(start, finish, radius)          spine start to finish
++--   Capsule(position, multiplier, rotation, size)   an entity's hitbox: radius size * the smaller multiplier, half
++--                                           length size * the difference of the two, spine along the longer one,
++--                                           turned by rotation degrees. Inferred, not measured: it matches the one
++--                                           four-argument caller (FiendFolio palinsopia.lua:65, Capsule(pos, Vector.One,
++--                                           0, rad), a circle); a non-uniform multiplier or a rotation is unchecked.
++--
++-- Shape / DebugRenderer.Get(index, unk): the debug drawing of the game. The object is here, with its timeout and the
++-- last shape given, and draws nothing (like Beam). They are stand-ins, left out of REPENTOGON.Implemented;
++-- Isaac.FindInCapsule is the one consumer that works.
++
++local T = ...
++local B, R, static = T.B, T.R, T.static
++local type, error, setmetatable, rawget, rawset, tostring, ipairs = type, error, setmetatable, rawget, rawset, tostring, ipairs
++local sqrt, min, max, cos, sin, rad = math.sqrt, math.min, math.max, math.cos, math.sin, math.rad
++local unsupported = T.unsupported or function() end
++
++local function num(v, n, what)
++  if type(v) ~= "number" then error("bad argument #" .. n .. " to '" .. what .. "' (number expected, got " .. type(v) .. ")", 3) end
++  return v
++end
++local function vec(v, n, what)
++  if type(v) ~= "userdata" or v.X == nil then error("bad argument #" .. n .. " to '" .. what .. "' (Vector expected, got " .. type(v) .. ")", 3) end
++  return v
++end
++local function V(x, y) return Vector(x, y) end
++
++local Cap = {}
++Cap.__index = Cap
++Cap.__type = "Capsule"
++Cap.__tostring = function(c)
++  return string.format("Capsule[(%g, %g) (%g, %g) r=%g]", c._sx, c._sy, c._ex, c._ey, c._f1)
++end
++
++local function make(sx, sy, ex, ey, radius)
++  local dx, dy = ex - sx, ey - sy
++  local len = sqrt(dx * dx + dy * dy)
++  local ux, uy = 0, 0
++  if len > 0 then ux, uy = dx / len, dy / len end
++  return setmetatable({ _sx = sx, _sy = sy, _ex = ex, _ey = ey, _ux = ux, _uy = uy, _f1 = radius, _f2 = len / 2 }, Cap)
++end
++
++function Cap:GetPosition() return V((self._sx + self._ex) / 2, (self._sy + self._ey) / 2) end
++function Cap:GetStartPoint() return V(self._sx, self._sy) end
++function Cap:GetEndPoint() return V(self._ex, self._ey) end
++function Cap:GetDirection() return V(self._ux, self._uy) end
++function Cap:GetSize() return self._f1 end
++function Cap:GetSizeDifference() return self._f2 end
++Cap.GetVec2, Cap.GetVec3, Cap.GetF1, Cap.GetF2 = Cap.GetStartPoint, Cap.GetEndPoint, Cap.GetSize, Cap.GetSizeDifference
++
++if rawget(_G, "Capsule") == nil then
++  rawset(_G, "Capsule", setmetatable({}, { __call = function(_, a, b, c, d)
++    vec(a, 1, "Capsule")
++    vec(b, 2, "Capsule")
++    num(c, 3, "Capsule")
++    if d == nil then
++      return make(a.X, a.Y, b.X, b.Y, c)
++    end
++    num(d, 4, "Capsule")
++    -- (position, multiplier, rotation, size)
++    local lo, hi = min(b.X, b.Y), max(b.X, b.Y)
++    local half = d * (hi - lo)
++    local angle = rad(c + (b.X >= b.Y and 0 or 90))
++    local ux, uy = cos(angle), sin(angle)
++    return make(a.X - ux * half, a.Y - uy * half, a.X + ux * half, a.Y + uy * half, d * lo)
++  end }))
++  R.Implemented["Capsule"] = true
++  R.Implemented["Capsule.Capsule"] = true
++  for _, m in ipairs({ "GetPosition", "GetStartPoint", "GetEndPoint", "GetDirection", "GetSize", "GetSizeDifference",
++    "GetVec2", "GetVec3", "GetF1", "GetF2" }) do
++    R.Implemented["Capsule." .. m] = true
++  end
++end
++
++-- distance from point (px, py) to the segment of a capsule's spine
++local function spine_distance(c, px, py)
++  local dx, dy = c._ex - c._sx, c._ey - c._sy
++  local len2 = dx * dx + dy * dy
++  local t = 0
++  if len2 > 0 then t = max(0, min(1, ((px - c._sx) * dx + (py - c._sy) * dy) / len2)) end
++  local qx, qy = c._sx + dx * t - px, c._sy + dy * t - py
++  return sqrt(qx * qx + qy * qy)
++end
++
++-- Isaac.FindInCapsule(capsule, partitions): the entities of the room whose hitbox touches the capsule. The game's
++-- own query (EntityList:QueryCapsule) is not called; an entity counts as a circle of Size * the larger SizeMulti
++-- about its position, which is exact for the round hitboxes most entities have.
++static(Isaac, "Isaac", "FindInCapsule", function(capsule, partitions)
++  if getmetatable(capsule) ~= Cap then error("bad argument #1 to 'FindInCapsule' (Capsule expected, got " .. type(capsule) .. ")", 2) end
++  local mid = capsule:GetPosition()
++  local reach = capsule._f2 + capsule._f1 + 200
++  local found = partitions == nil and Isaac.FindInRadius(mid, reach) or Isaac.FindInRadius(mid, reach, partitions)
++  local out = {}
++  for _, e in ipairs(found) do
++    local m = e.SizeMulti
++    local r = e.Size * (m and max(m.X, m.Y) or 1)
++    if spine_distance(capsule, e.Position.X, e.Position.Y) <= capsule._f1 + r then out[#out + 1] = e end
++  end
++  return out
++end)
++
++-- Shape: what DebugRenderer.Get hands out. Timeout is kept; Capsule and Circle remember what was asked and draw nothing.
++-- Accepted, not supported: a mod's calls do not error, but none of these names is in REPENTOGON.Implemented.
++-- inert: Shape DebugRenderer
++if rawget(_G, "DebugRenderer") == nil then
++  local Sh = {}
++  Sh.__index = Sh
++  Sh.__type = "Shape"
++  local note = "debug shapes are not drawn"
++  function Sh:GetTimeout() return self._timeout end
++  function Sh:SetTimeout(t) self._timeout = math.tointeger(t) or error("bad argument #1 to 'SetTimeout' (number expected, got " .. type(t) .. ")", 2) end
++  function Sh:Capsule(capsule)
++    if getmetatable(capsule) ~= Cap then error("bad argument #1 to 'Capsule' (Capsule expected, got " .. type(capsule) .. ")", 2) end
++    self._last = { kind = "capsule", capsule = capsule }
++    unsupported("Shape:Capsule", note)
++  end
++  function Sh:Circle(position, size)
++    vec(position, 1, "Circle")
++    num(size, 2, "Circle")
++    self._last = { kind = "circle", position = V(position.X, position.Y), size = size }
++    unsupported("Shape:Circle", note)
++  end
++  local shapes = {}
++  rawset(_G, "DebugRenderer", { Get = function(index, unk)
++    num(index, 1, "Get")
++    local s = shapes[index]
++    if not s then s = setmetatable({ _timeout = 0 }, Sh) shapes[index] = s end
++    return s
++  end })
 +end
 diff --git a/scripts/recomp/rgon/api_sprite.lua b/scripts/recomp/rgon/api_sprite.lua
 index 806bce2..51b6b16 100644
@@ -7138,6 +7333,78 @@ index 0000000..9f72e04
 +  end)
 +  if not ok then check("lab", false, err) end
 +end)
+diff --git a/scripts/recomp/rgon/lab_quad_test.lua b/scripts/recomp/rgon/lab_quad_test.lua
+new file mode 100644
+index 0000000..c54f610
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_quad_test.lua
+@@ -0,0 +1,66 @@
++-- lab_quad_test.lua (development only; ISAAC_RGON_LAB=lab_quad_test.lua, census batch B1): DestinationQuad and SourceQuad
++-- getters, setters, Copy, Translate, Flip. Logs "lab_quad_test: PASS/FAIL ..", then a final count line.
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab quad test", 1)
++local pass, fail = 0, 0
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log("lab_quad_test: " .. (ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function is(v, x, y) return type(v) == "userdata" and v.X == x and v.Y == y end
++-- corners as "tl tr bl br" in one string
++local function corners(q)
++  local function p(v) return string.format("(%g,%g)", v.X, v.Y) end
++  return p(q:GetTopLeft()) .. p(q:GetTopRight()) .. p(q:GetBottomLeft()) .. p(q:GetBottomRight())
++end
++local done = false
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  if done then return end
++  done = true
++  for _, cls in ipairs({ "DestinationQuad", "SourceQuad" }) do
++    local C = _G[cls]
++    for _, m in ipairs({ "GetTopLeft", "GetTopRight", "GetBottomLeft", "GetBottomRight", "SetTopLeft", "Copy", "Translate", "Flip" }) do
++      check("Implemented " .. cls .. "." .. m, REPENTOGON.Implemented[cls .. "." .. m] == true)
++    end
++    local function fresh() return C.NewFromBounds(Vector(0, 0), Vector(10, 20)) end
++    local q = fresh()
++    check(cls .. " getters", is(q:GetTopLeft(), 0, 0) and is(q:GetTopRight(), 10, 0) and is(q:GetBottomLeft(), 0, 20) and is(q:GetBottomRight(), 10, 20), corners(q))
++    -- a getter hands out a copy
++    local v = q:GetTopLeft()
++    v.X = 99
++    check(cls .. " getter is a copy", is(q:GetTopLeft(), 0, 0))
++    -- Copy is independent of the original
++    local c = q:Copy()
++    check(cls .. " Copy has the same corners", corners(c) == corners(q), corners(c))
++    c:Translate(Vector(5, 5))
++    c:SetTopLeft(Vector(-1, -1))
++    check(cls .. " Copy is independent", corners(q) == "(0,0)(10,0)(0,20)(10,20)", corners(q))
++    check(cls .. " Copy of a copy moved", corners(c) == "(-1,-1)(15,5)(5,25)(15,25)", corners(c))
++    -- Translate mutates, returns nothing
++    local q2 = fresh()
++    local r = q2:Translate(Vector(3, -4))
++    check(cls .. " Translate", r == nil and corners(q2) == "(3,-4)(13,-4)(3,16)(13,16)", corners(q2))
++    check(cls .. " Translate with a non-Vector errors", not pcall(q2.Translate, q2, 5))
++    -- Flip: no arguments flips both axes
++    local f = fresh()
++    r = f:Flip()
++    check(cls .. " Flip() both axes", r == nil and corners(f) == "(10,20)(0,20)(10,0)(0,0)", corners(f))
++    f = fresh(); f:Flip(true, false)
++    check(cls .. " Flip(true,false) horizontal", corners(f) == "(10,0)(0,0)(10,20)(0,20)", corners(f))
++    f = fresh(); f:Flip(false, true)
++    check(cls .. " Flip(false,true) vertical", corners(f) == "(0,20)(10,20)(0,0)(10,0)", corners(f))
++    f = fresh(); f:Flip(false, false)
++    check(cls .. " Flip(false,false) nothing", corners(f) == "(0,0)(10,0)(0,20)(10,20)", corners(f))
++    f = fresh(); f:Flip(true)
++    check(cls .. " Flip(true) y defaults to true", corners(f) == "(10,20)(0,20)(10,0)(0,0)", corners(f))
++    f = fresh(); f:Flip(); f:Flip()
++    check(cls .. " Flip twice is identity", corners(f) == "(0,0)(10,0)(0,20)(10,20)", corners(f))
++    -- Flip then Copy
++    f = fresh(); f:Flip(true, false)
++    check(cls .. " Copy after Flip", corners(f:Copy()) == corners(f))
++  end
++  local s = SourceQuad.NewFromBounds(Vector(0, 0), Vector(1, 1))
++  check("SourceQuad Copy keeps the UV flag", s:Copy():IsUVSpace() == s:IsUVSpace())
++  B.log(string.format("lab_quad_test: DONE %d PASS %d FAIL", pass, fail))
++end)
 diff --git a/scripts/recomp/rgon/lab_scan.lua b/scripts/recomp/rgon/lab_scan.lua
 new file mode 100644
 index 0000000..a7f121f
@@ -7182,6 +7449,102 @@ index 0000000..a7f121f
 +  done_game = true
 +  local g = r32(0x00c7169c)
 +  scan("manager", g, g + 0x24000)
++end)
+diff --git a/scripts/recomp/rgon/lab_shape_test.lua b/scripts/recomp/rgon/lab_shape_test.lua
+new file mode 100644
+index 0000000..af06d89
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_shape_test.lua
+@@ -0,0 +1,90 @@
++-- lab_shape_test.lua (development only; ISAAC_RGON_LAB=lab_shape_test.lua, census batch B2): Capsule constructor and
++-- getters, Shape (DebugRenderer.Get), Isaac.FindInCapsule. Logs "lab_shape_test: PASS/FAIL ..", then a final count line.
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab shape test", 1)
++local pass, fail = 0, 0
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log("lab_shape_test: " .. (ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function near(a, b) return math.abs(a - b) < 1e-4 end
++local function is(v, x, y) return type(v) == "userdata" and near(v.X, x) and near(v.Y, y) end
++local function has(list, ent)
++  for _, e in ipairs(list) do if GetPtrHash(e) == GetPtrHash(ent) then return true end end
++  return false
++end
++local done = false
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  if done then return end
++  done = true
++  for _, n in ipairs({ "Capsule", "Capsule.Capsule", "Capsule.GetPosition", "Capsule.GetDirection", "Capsule.GetF1", "Capsule.GetF2",
++    "Capsule.GetVec2", "Capsule.GetVec3", "Isaac.FindInCapsule" }) do
++    check("Implemented " .. n, REPENTOGON.Implemented[n] == true)
++  end
++  for _, n in ipairs({ "Shape", "Shape.Capsule", "Shape.Circle", "Shape.GetTimeout", "Shape.SetTimeout", "DebugRenderer", "DebugRenderer.Get" }) do
++    check("stand-in not Implemented " .. n, REPENTOGON.Implemented[n] == nil)
++  end
++
++  -- three-argument form: start, end, radius
++  local c = Capsule(Vector(0, 0), Vector(100, 0), 10)
++  check("ctor3 position", is(c:GetPosition(), 50, 0))
++  check("ctor3 start GetVec2", is(c:GetVec2(), 0, 0))
++  check("ctor3 end GetVec3", is(c:GetVec3(), 100, 0))
++  check("ctor3 direction", is(c:GetDirection(), 1, 0))
++  check("ctor3 GetF1 radius", c:GetF1() == 10)
++  check("ctor3 GetF2 half length", c:GetF2() == 50)
++  check("ctor3 GetStartPoint/GetEndPoint/GetSize/GetSizeDifference", is(c:GetStartPoint(), 0, 0) and is(c:GetEndPoint(), 100, 0) and c:GetSize() == 10 and c:GetSizeDifference() == 50)
++  local d = Capsule(Vector(0, 30), Vector(40, 0), 5)
++  check("ctor3 diagonal", is(d:GetPosition(), 20, 15) and is(d:GetDirection(), 0.8, -0.6) and near(d:GetF2(), 25))
++  local p = Capsule(Vector(7, 7), Vector(7, 7), 12)
++  check("ctor3 point capsule", is(p:GetPosition(), 7, 7) and p:GetF2() == 0 and p:GetF1() == 12 and is(p:GetDirection(), 0, 0))
++  -- getters hand out copies
++  local v = c:GetPosition()
++  v.X = 999
++  check("getter is a copy", is(c:GetPosition(), 50, 0))
++  -- the capsule does not follow the vectors it was made from
++  local s = Vector(0, 0)
++  local c2 = Capsule(s, Vector(10, 0), 1)
++  s.X = 500
++  check("ctor copies its vectors", is(c2:GetVec2(), 0, 0))
++
++  -- four-argument form: position, multiplier, rotation, size
++  local h = Capsule(Vector(10, 10), Vector(2, 1), 0, 5)
++  check("ctor4 stretched in x", near(h:GetF1(), 5) and near(h:GetF2(), 5) and is(h:GetVec2(), 5, 10) and is(h:GetVec3(), 15, 10) and is(h:GetPosition(), 10, 10) and is(h:GetDirection(), 1, 0))
++  local r = Capsule(Vector(10, 10), Vector(2, 1), 90, 5)
++  check("ctor4 rotated 90", is(r:GetVec2(), 10, 5) and is(r:GetVec3(), 10, 15) and is(r:GetDirection(), 0, 1))
++  local round = Capsule(Vector(0, 0), Vector(1, 1), 0, 8)
++  check("ctor4 round", round:GetF1() == 8 and round:GetF2() == 0)
++
++  -- bad arguments
++  check("ctor with a number for a Vector errors", not pcall(Capsule, 1, Vector(0, 0), 1))
++  check("ctor without a radius errors", not pcall(Capsule, Vector(0, 0), Vector(1, 1)))
++  check("FindInCapsule with a non-Capsule errors", not pcall(Isaac.FindInCapsule, Vector(0, 0)))
++
++  -- Shape
++  local sh = DebugRenderer.Get(1234, true)
++  check("Shape timeout starts at 0", sh:GetTimeout() == 0)
++  sh:SetTimeout(45)
++  check("Shape SetTimeout/GetTimeout", sh:GetTimeout() == 45 and DebugRenderer.Get(1234, false):GetTimeout() == 45)
++  check("Shape:Capsule accepts a capsule", pcall(sh.Capsule, sh, c))
++  check("Shape:Circle accepts a position and size", pcall(sh.Circle, sh, Vector(1, 1), 4))
++  check("Shape:Capsule with a Vector errors", not pcall(sh.Capsule, sh, Vector(0, 0)))
++  check("Shape:Circle without a size errors", not pcall(sh.Circle, sh, Vector(1, 1)))
++
++  -- FindInCapsule against the player
++  local pl = Isaac.GetPlayer(0)
++  local pos = pl.Position
++  local over = Capsule(pos - Vector(50, 0), pos + Vector(50, 0), 10)
++  check("FindInCapsule finds the player under the capsule", has(Isaac.FindInCapsule(over), pl))
++  local clip = Capsule(pos + Vector(pl.Size + 5, 0), pos + Vector(pl.Size + 60, 0), 5)
++  check("FindInCapsule finds the player by its edge", has(Isaac.FindInCapsule(clip), pl), pl.Size)
++  local away = Capsule(pos + Vector(300, 0), pos + Vector(400, 0), 10)
++  check("FindInCapsule misses the player when the capsule is away", not has(Isaac.FindInCapsule(away), pl))
++  local off = Capsule(pos + Vector(pl.Size + 40, 0), pos + Vector(pl.Size + 140, 0), 10)
++  check("FindInCapsule misses a capsule that stops short", not has(Isaac.FindInCapsule(off), pl))
++  check("FindInCapsule with a partition that has no player", not has(Isaac.FindInCapsule(over, EntityPartition.ENEMY), pl))
++  check("FindInCapsule with the player partition", has(Isaac.FindInCapsule(over, EntityPartition.PLAYER), pl))
++
++  B.log(string.format("lab_shape_test: DONE %d PASS %d FAIL", pass, fail))
 +end)
 diff --git a/scripts/recomp/rgon/lab_stageapi_boss.lua b/scripts/recomp/rgon/lab_stageapi_boss.lua
 new file mode 100644
@@ -7903,7 +8266,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..c4cda3d 100644
+index 4175f07..b67a3ae 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -7966,7 +8329,7 @@ index 4175f07..c4cda3d 100644
    rearm = function() arm(nil) end,
  }
 -for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_hooks.lua" }) do
-+for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_eid.lua", "api_hooks.lua" }) do
++for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_shapes.lua", "api_eid.lua", "api_hooks.lua" }) do
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)

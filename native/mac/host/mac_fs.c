@@ -4,7 +4,7 @@
  * set up by scripts/recomp/lift/boot_integration.mjs or the page). Here they
  * read the game folder (g_mac_instance_dir) and write saves to
  * g_mac_save_dir, with the same path rules as the Node driver. Three more things
- * live here (docs/mac/PROGRESS.md, "Integration"):
+ * live here (docs/mac/launcher.md, "Game side"):
  *
  *  - Mods. The mods folder (g_mac_mods_dir, a real directory) is seeded into the
  *    Guest's file table lazily under both roots the game scans (mods/ and

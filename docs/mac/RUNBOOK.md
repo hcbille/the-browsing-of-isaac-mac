@@ -20,7 +20,8 @@ folder next to it (`<toolchain>/env.sh`), `<game>` the Windows depot of the game
 | M11 app + `build.sh` | Draft: light stages tested, signed app opens; heavy stages never run from scratch; two follow-ups open |
 | M12 publish | Per milestone; README not updated |
 
-Status table with evidence: top of `PROGRESS.md`. Uncommitted work at any moment: `git status`.
+Working status (what runs now, the plan, open questions) lives in the git-ignored `notes/` folder of the work
+checkout (`notes/current.md`, `notes/NEXT.md`, `notes/PROGRESS.md`). Uncommitted work at any moment: `git status`.
 
 ## 2. Ground rules that don't bend
 
@@ -155,7 +156,7 @@ appears, plus mouse, pad, `fullscreen`, `window:WxH` tokens.
 - If `gamestate1.dat` exists, Enter picks Continue, not New Run. `scripts/mac/fresh.sh <support>` moves it aside.
 - **Debug console**: grave (`` ` ``) opens it during a run (not on the title screen); **Escape closes it**.
   Pressing grave again only types a backtick, and every later key then goes into the console as text.
-- **Window sizes (adapt is the default scale mode)**: the game lays itself out for the window (see PROGRESS.md "Full-screen
+- **Window sizes (adapt is the default scale mode)**: the game lays itself out for the window (see window.md "Full-screen
   adapt"). Check a size with `ISAAC_MAC_SCRIPT='until=Room 1.2(Start Room):enter,@60:window:1280x800,@200:fullscreen:on'`
   and `ISAAC_MAC_SHOT=@150:<png>,...`; the log shows `Viewport: WxH` (the game's own layout) and `[mac][window] adapt:` lines.
   `ISAAC_MAC_SCALE=integer|fill` gives the M5 modes. Full screen over the notch: add
@@ -272,6 +273,10 @@ at `b986dd8` (an absolute path outside the upstream repo, removed afterwards) re
 delete `apply.sh`.
 
 ## 10. How to work (lessons from the first two sessions)
+
+- **Every correction caught in code becomes a lint rule** in `scripts/mac/lint.py`. The rule's message says what to
+  do instead. The same commit removes every existing copy of the mistake. Run `python3 scripts/mac/lint.py` before
+  every commit and before every publish; `--list` prints the rules with the mistake each one came from.
 
 - **Small tasks with a concrete finish line.** "Grow the Layer" ran for hours; "make Epiphany's menu sprite
   load, shown by a screenshot" took one pass. Every task names its files, its check and its evidence.

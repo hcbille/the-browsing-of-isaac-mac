@@ -249,7 +249,7 @@ Flags (`isaac-mac`, all optional): `--launch-settings <json>`, `--vanilla`, `--d
   (`type(io)` is `"table"`; without the flag it is `nil`).
 - **Window scaling (M5, `mac_window.c`)**: launch-settings key `"scale_mode"`: `"adapt"` (default; the game is told the
   window's size and lays itself out: whole-number pixel size chosen by the game, padding by the game, see
-  PROGRESS.md "Full-screen adapt"), `"integer"` (the largest
+  window.md, "Full-screen adapt"), `"integer"` (the largest
   whole multiple of the game's 960x540 that fits the window, nearest filter, black bars) or `"fill"` (largest
   aspect-preserving size, linear filter, bars on the short axis). Flag `--scale adapt|integer|fill` overrides it, then the
   environment (`REPENTANCE_MAC_SCALE`, `ISAAC_MAC_SCALE`). Read at launch, so a Launcher setting takes effect at the
