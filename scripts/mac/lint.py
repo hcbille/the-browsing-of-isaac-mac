@@ -158,7 +158,23 @@ def rule_flip_default(fs):
                              'never the bare name')
 
 
-RULES = [rule_global_pointer_plus_offset, rule_flip_default, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes]
+def rule_const_table_fallback(fs):
+    """A luabridge class's const table (what `const Entity*` arguments, such as MC_PRE_ENTITY_SPAWN's spawner,
+    carry) may hang only off the class table (2026-11-19: Entity:ToDelirium was nil on that spawner, so Fiend Folio's
+    callback failed)."""
+    for f in fs:
+        if not f.endswith('.lua'):
+            continue
+        t = text_of(f)
+        if t is None:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            if re.search(r'return\s+rawget\(mt,\s*"__class"\),\s*rawget\(mt,\s*"__const"\)\s*end', line):
+                yield (f, n, 'the const table can hang off the class table only: return `cls, rawget(mt, "__const") or '
+                             'rawget(cls, "__const")` so methods added with method() also reach const objects')
+
+
+RULES = [rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes]
 
 
 def main():

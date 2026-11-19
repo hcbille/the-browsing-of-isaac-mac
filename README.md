@@ -46,11 +46,13 @@ Working, on an M2 MacBook Air:
 - REPENTOGON-using mods through upstream's compatibility layer, including Epiphany (its
   Tarnished characters too) and Fiend Folio: RELOADED, whose items, enemies and characters
   now load in full. External Item Descriptions now sees REPENTOGON too: Bag of Crafting
-  contents and output, TM Trainer's procedural items, transformation progress. The layer
-  decides per mod whether it can run. It has about 660 of REPENTOGON's 1,727 functions and
-  139 of its 380 callbacks, the ones the tested mods use first. Item settings such as
-  `ChargeType` are writable, as with REPENTOGON. `scripts/mac/rgon_census.py` measures the
-  rest.
+  contents and output, TM Trainer's procedural items, transformation progress. Custom
+  Stage API and Unique Items API see REPENTOGON as well; StageAPI's custom floors (its own
+  and Fiend Folio's) work with it. Only REPENTOGON's console autocompletion is missing,
+  since the game's own console has none. The layer decides per mod whether it can run.
+  It has about 660 of REPENTOGON's 1,727 functions and 139 of its 380 callbacks, the
+  ones the tested mods use first. Item settings such as `ChargeType` are writable, as
+  with REPENTOGON. `scripts/mac/rgon_census.py` measures the rest.
 - One pinned game version. The recompilation only works with one exact `isaac-ng.exe`
   (Repentance+ 1.9.7.17, Steam build 22878971). `scripts/mac/fetch-game.sh` downloads
   exactly that build of the base game and every DLC from Steam, and `build.sh` refuses any
@@ -67,10 +69,9 @@ Not done yet:
   with a real Steam client.
 - Mod status effects declared without an id (some of Epiphany's and Fiend Folio's) do
   nothing yet. They used to freeze the game on a room change; that's fixed.
-- More REPENTOGON coverage: most missing callbacks need new hooks in the game. StageAPI
-  has most of its REPENTOGON names now (room water, backdrops, the boss-pick callback),
-  and REPENTOGON's room lookup by stage, type and variant, but still runs without
-  REPENTOGON until its remaining REPENTOGON branches work.
+- More REPENTOGON coverage: most missing callbacks need new hooks in the game.
+- Floor music is missing in some setups (the game reports no track for the stage); the
+  cause is being looked into.
 - A from-scratch build check.
 - A rare Lua garbage-collector crash, seen once and not reproducible since. Debug switches
   for it are built in and off by default (`docs/mac/RUNBOOK.md`).

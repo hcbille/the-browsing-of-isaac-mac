@@ -567,6 +567,14 @@ named factors, a write reaches the layer on a fresh read, invalid factor and `Fl
 failed or `ERR:` line against the plain run. Survey of the other StageAPI branches: `notes/a3-stageapi.md`: only `RoomTransition.StartBossIntro`
 (inert, opt-in `UseRepentogonBossIntro` only) and `MC_CONSOLE_AUTOCOMPLETE` (held) are not real; most branches are not reached by a vanilla floor run.
 
+**Decision (user, 2026-11-19): `MC_CONSOLE_AUTOCOMPLETE` is ignored by the gate, and StageAPI is shown REPENTOGON.** Only
+REPENTOGON's own ImGui console fires it, and the game's console has no completion to hook, so it stays unregistered (registering it
+would be a name that never fires). `rgon.lua`'s `GATE_NOT_REQUIRED` lists it: a mod using it is not counted as lacking it, and
+loses only console completion (StageAPI's commands still run through `MC_EXECUTE_CMD`). StageAPI's REPENTOGON branches were checked
+first with `ISAAC_RGON_ALLOW=stageapi15_1348031964`: the 95-mod `lab_trapdoor` run through floors 1 to 5 shows nothing new, and
+`lab_stageapi_floors.lua` enters Catacombs, Fiend Folio's Lab, Stony Level and MorbusReal (24 PASS, screenshots). Only names that
+come from REPENTOGON's own windows belong in `GATE_NOT_REQUIRED`; a game-side callback that is merely missing never does.
+
 ### Batch B2: hit shapes (`api_shapes.lua`, 2026-11-19)
 
 `Capsule` (constructor and getters) is a Lua value type. `DebugRenderer.Get` and `Shape` (`Capsule`, `Circle`, `GetTimeout`, `SetTimeout`) are accepted, not supported: they record and draw nothing, so they are left out of `REPENTOGON.Implemented` (lint rule `rule_inert_not_implemented`).

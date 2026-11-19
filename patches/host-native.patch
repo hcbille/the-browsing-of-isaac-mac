@@ -8218,6 +8218,146 @@ index 0000000..d411b3d
 +    end
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_stageapi_floors.lua b/scripts/recomp/rgon/lab_stageapi_floors.lua
+new file mode 100644
+index 0000000..c7564d2
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_stageapi_floors.lua
+@@ -0,0 +1,134 @@
++-- lab_stageapi_floors.lua (development only; ISAAC_RGON_LAB=lab_stageapi_floors.lua, StageAPI chunk A3b)
++-- Enters Custom Stage API's custom floors one after the other with StageAPI's own API
++-- (StageAPI.GotoCustomStage(StageAPI.CustomStages[name]), what its `cstage <name>` console command does) and logs
++-- StageAPI's own view of each floor plus the room's backdrop state. Needs the mods Custom Stage API (and, for "Lab",
++-- "Stony Level", Fiend Folio) loaded; a name that is not registered is skipped with a log line.
++-- ISAAC_LAB_STAGES = comma list (default "Catacombs,Lab,Stony Level"). ISAAC_LAB_HOLD = updates to stay on each floor
++-- (default 240), so ISAAC_MAC_SHOT frames can be matched to the "lab_stageapi_floors: HOLD" lines.
++-- After each arrival it also runs the exercise() hook below on the new floor (water/rail/save-state calls StageAPI
++-- itself makes), logging PASS/FAIL lines, and ends with a DONE line.
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab stageapi floors", 1)
++local list = {}
++for name in string.gmatch(B.env("ISAAC_LAB_STAGES") or "Catacombs,Lab,Stony Level", "[^,]+") do list[#list + 1] = name end
++local hold = tonumber(B.env("ISAAC_LAB_HOLD") or "") or 240
++local idx, state, wait, upd = 0, "boot", 0, 0
++local pass, fail = 0, 0
++local function say(s) B.log("lab_stageapi_floors: u" .. upd .. " f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  say((ok and "PASS " or "FAIL ") .. name .. (detail and (" " .. tostring(detail)) or ""))
++end
++
++local function view(tag)
++  local level, room = Game():GetLevel(), Game():GetRoom()
++  local cs = StageAPI and StageAPI.CurrentStage
++  say(string.format("%s: level stage %d type %d name '%s' | StageAPI.CurrentStage=%s InNewStage=%s display='%s' | room type %d backdrop %d water %.2f clear=%s idx %d",
++    tag, level:GetStage(), level:GetStageType(), level:GetName(),
++    tostring(cs and cs.Name), tostring(StageAPI and StageAPI.InNewStage and StageAPI.InNewStage() and true or false),
++    tostring(StageAPI and StageAPI.GetCurrentStageDisplayName and StageAPI.GetCurrentStageDisplayName()),
++    room:GetType(), room:GetBackdropType(), room:GetWaterAmount(), tostring(room:IsClear()), level:GetCurrentRoomIndex()))
++  if StageAPI and StageAPI.GetCurrentRoom then
++    local cr = StageAPI.GetCurrentRoom()
++    say(string.format("%s: StageAPI.GetCurrentRoom()=%s RoomGfx=%s", tag, tostring(cr and (cr.Layout and cr.Layout.Name or "no layout") or nil),
++      tostring(cr and cr.RoomGfx ~= nil)))
++  end
++end
++
++local function exercise(name)
++  local room = Game():GetRoom()
++  -- Room-level names StageAPI calls under `if REPENTOGON` (roomHandler.lua water currents/amount, rails)
++  local ok, err = pcall(function() room:SetWaterCurrent(Vector(-1, 0)) end)
++  check(name .. " Room:SetWaterCurrent", ok, err)
++  if ok then
++    local v = room:GetWaterCurrent()
++    check(name .. " GetWaterCurrent == (-1,0)", math.abs(v.X + 1) < 0.01 and math.abs(v.Y) < 0.01, tostring(v))
++  end
++  ok, err = pcall(function() room:SetWaterAmount(0) end)
++  check(name .. " Room:SetWaterAmount(0)", ok, err)
++  -- RoomDescriptor save-state clearing (extrarooms.lua:628)
++  local desc = Game():GetLevel():GetCurrentRoomDesc()
++  ok, err = pcall(function()
++    desc:GetEntitiesSaveState():Clear()
++    desc:GetGridEntitiesSaveState():Clear()
++    desc:GetDecoSaveState():Clear()
++  end)
++  check(name .. " RoomDescriptor save-state Clear x3", ok, err)
++end
++
++-- music: logged at every room/floor change and every 60 updates (MusicManager answers, Options.MusicVolume, the floor)
++local function music(tag)
++  local mm = MusicManager()
++  local function try(f) local ok, v = pcall(f) return ok and tostring(v) or ("ERR " .. tostring(v)) end
++  say(string.format("MUSIC %s: current=%s queue=%s enabled=%s volume=%s Options.MusicVolume=%s paused=%s | floor '%s' cstage=%s allow=%s",
++    tag, try(function() return mm:GetCurrentMusicID() end), try(function() return mm:GetQueuedMusicID() end),
++    try(function() return mm:IsEnabled() end), try(function() return mm:GetVolume() end),
++    try(function() return Options.MusicVolume end), try(function() return mm:IsPaused() end),
++    Game():GetLevel():GetName(), Game():GetLevel():GetStageType(), tostring(StageAPI and StageAPI.CurrentStage and StageAPI.CurrentStage.Name),
++    try(function() return StageAPI.CurrentStage and StageAPI.CurrentStage:GetPlayingMusic() end),
++    try(function() return mm:IsLayerEnabled() end),
++    tostring(B.env("ISAAC_RGON_ALLOW") ~= nil and B.env("ISAAC_RGON_ALLOW") ~= "")))
++end
++mod:AddCallback(ModCallbacks.MC_POST_NEW_LEVEL, function()
++  if StageAPI then view("NEW LEVEL") end
++  music("NEW LEVEL")
++end)
++mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function()
++  if StageAPI then view("NEW ROOM") end
++  music("NEW ROOM")
++end)
++mod:AddCallback(ModCallbacks.MC_PRE_MUSIC_PLAY, function(_, id, vol)
++  say("MUSIC PRE_MUSIC_PLAY id=" .. tostring(id) .. " vol=" .. tostring(vol))
++end)
++
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  upd = upd + 1
++  if upd % 60 == 0 and upd <= (tonumber(B.env("ISAAC_LAB_MUSIC_UPD") or "") or 700) then music("tick") end
++  local level = Game():GetLevel()
++  if state == "boot" then
++    if StageAPI and StageAPI.CustomStages and level:GetCurrentRoomIndex() == level:GetStartingRoomIndex() then
++      wait = wait + 1
++      if wait == 1 then
++        local names = {}
++        for k in pairs(StageAPI.CustomStages) do names[#names + 1] = k end
++        table.sort(names)
++        say("registered custom stages (" .. #names .. "): " .. table.concat(names, " | "))
++        say("REPENTOGON global is " .. tostring(REPENTOGON ~= nil))
++        view("START")
++      end
++      if wait >= 60 then state, wait = "next", 0 end
++    end
++  elseif state == "next" then
++    idx = idx + 1
++    if idx > #list then
++      say(string.format("DONE %d PASS %d FAIL", pass, fail))
++      state = "end"
++      return
++    end
++    local name = list[idx]
++    local stage = StageAPI.CustomStages[name]
++    if not stage then
++      say("SKIP '" .. name .. "': not registered")
++      return
++    end
++    say("GotoCustomStage('" .. name .. "')")
++    local ok, err = pcall(StageAPI.GotoCustomStage, stage)
++    check("GotoCustomStage " .. name, ok, err)
++    state, wait = "arriving", 0
++  elseif state == "arriving" then
++    wait = wait + 1
++    if StageAPI.CurrentStage and StageAPI.CurrentStage.Name == list[idx] and level:GetCurrentRoomIndex() == level:GetStartingRoomIndex() and wait > 20 then
++      check("arrived on " .. list[idx], true)
++      state, wait = "hold", 0
++    elseif wait > 600 then
++      check("arrived on " .. list[idx], false, "StageAPI.CurrentStage=" .. tostring(StageAPI.CurrentStage and StageAPI.CurrentStage.Name))
++      state, wait = "next", 0
++    end
++  elseif state == "hold" then
++    wait = wait + 1
++    if wait == 30 then view("HOLD") exercise(list[idx]) end
++    if wait == 100 or wait == 200 then say("HOLD " .. wait) end
++    if wait >= hold then state, wait = "next", 0 end
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_stageapi_probe.lua b/scripts/recomp/rgon/lab_stageapi_probe.lua
 new file mode 100644
 index 0000000..73b6858
@@ -9252,7 +9392,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..4906aac 100644
+index 4175f07..50a279b 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -9278,17 +9418,22 @@ index 4175f07..4906aac 100644
  -- and a class the game registers inside a namespace table has its static table there
  local INSIDE = { ActiveItemDesc = "PlayerTypes" }
  local function class_tables(name)
-@@ -97,7 +103,8 @@ local function class_tables(name)
+@@ -97,7 +103,13 @@ local function class_tables(name)
      static = type(ns) == "table" and rawget(ns, name) or nil
    end
    local mt = type(static) == "table" and getmetatable(static)
 -  if mt then return rawget(mt, "__class"), rawget(mt, "__const") end
 +  -- a global of constants (ItemConfig.TAG_*) may carry a metatable that is not a luabridge class: then the sample object answers
-+  if mt and rawget(mt, "__class") then return rawget(mt, "__class"), rawget(mt, "__const") end
++  if mt and rawget(mt, "__class") then
++    local cls = rawget(mt, "__class")
++    -- the static table's metatable names the class table; the const table (what a `const Entity*` argument such as
++    -- MC_PRE_ENTITY_SPAWN's spawner carries) hangs off the class table when the static's metatable does not name it
++    return cls, rawget(mt, "__const") or rawget(cls, "__const")
++  end
    local make = SAMPLE[name]
    local sample = make and make()
    local omt = sample and getmetatable(sample)
-@@ -459,6 +466,7 @@ do
+@@ -459,6 +471,7 @@ do
    function L:SetWrapSMode(m) w32(at(self) + LS.wrapS, m) end
    function L:GetWrapTMode() return r32(at(self) + LS.wrapT) end
    function L:SetWrapTMode(m) w32(at(self) + LS.wrapT, m) end
@@ -9296,7 +9441,7 @@ index 4175f07..4906aac 100644
    function L:GetFlipX() return r8(at(self) + LS.flipX) ~= 0 end
    function L:SetFlipX(v) w8(at(self) + LS.flipX, v and 1 or 0) end
    function L:GetFlipY() return r8(at(self) + LS.flipY) ~= 0 end
-@@ -605,10 +613,10 @@ end
+@@ -605,10 +618,10 @@ end
  local T = {
    B = B, R = R, VA = VA, CLASS = CLASS, SLOT = SLOT, HOOKS = HOOKS, listening = listening,
    method = method, static = static, property = property, wrap = wrap, this = this, vt_ptr = vt_ptr,
@@ -9309,7 +9454,30 @@ index 4175f07..4906aac 100644
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)
-@@ -907,6 +915,16 @@ if ALLOW ~= true and B.env("ISAAC_RGON_AUTO") ~= "0" then
+@@ -817,6 +830,13 @@ do
+     for name in extra:gmatch("[^,]+") do ALLOW[name:lower()] = true end
+   end
+ end
++-- Names the gate does not require: they come only from REPENTOGON's own windows, which this build has no
++-- counterpart of, so they can never fire here. They stay unregistered (a mod asking for one gets the
++-- "not implemented" log line and loses only that feature); they just don't keep a mod from being shown.
++-- Decided with the user, 2026-11-19 (Custom Stage API: only console completion is lost).
++local GATE_NOT_REQUIRED = {
++  MC_CONSOLE_AUTOCOMPLETE = true, -- fired by REPENTOGON's ImGui console only; the game's console has no completion
++}
+ -- what the names a mod uses come to: how many are REPENTOGON's, and which of those the layer lacks
+ local function gate_weigh(names, FN, GL, HAVE, HAVECLASS)
+   local used, missing = 0, {}
+@@ -831,7 +851,7 @@ local function gate_weigh(names, FN, GL, HAVE, HAVECLASS)
+       local id = rawget(ModCallbacks, name)
+       if type(id) == "number" and id >= 1000 then
+         used = used + 1
+-        if not R.Implemented[id] then missing[#missing + 1] = name end
++        if not R.Implemented[id] and not GATE_NOT_REQUIRED[name] then missing[#missing + 1] = name end
+       end
+     end
+   end
+@@ -907,6 +927,16 @@ if ALLOW ~= true and B.env("ISAAC_RGON_AUTO") ~= "0" then
      log("gate: no scan of the installed mods (modscan.lua): REPENTOGON is shown to the mods of the layer's own list only")
    end
  end
