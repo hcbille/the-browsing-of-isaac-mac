@@ -179,9 +179,9 @@ def rule_image_render_not_registered(fs):
         for n, line in enumerate(t.splitlines(), 1):
             if re.match(r'\s*--', line):
                 continue
-            if re.search(r'Implemented\[\s*"(Image\.RenderWithShader|Beam\.Render)"\s*\]\s*=\s*true', line):
-                yield (f, n, 'Image:RenderWithShader and Beam:Render have no real route (no shader program / BeamRenderer here), so they are not '
-                             'registered in REPENTOGON.Implemented; register one only when it draws what REPENTOGON draws')
+            if re.search(r'Implemented\[\s*"(Image\.RenderWithShader)"\s*\]\s*=\s*true', line):
+                yield (f, n, 'Image:RenderWithShader has no real route (no shader program here), so it is not '
+                             'registered in REPENTOGON.Implemented; register it only when it draws what REPENTOGON draws')
 
 
 def rule_layer_setsize_is_scale(fs):
@@ -312,6 +312,23 @@ def rule_lua_vararg_middle(fs):
                 yield (f, n, '`cond and false or x` always gives x: write an if/else that assigns each branch')
 
 
+def rule_lua_mixed_table_index(fs):
+    """A Lua table constructor that mixes `[n] = v` with bare values numbers the bare ones from 1, not from n+1
+    (2026-11-20: a 41-entry character map written as `[0] = 21, 22, 23, ...` and `[21] = 0, 1, 2, ...` paired Judas, Keeper
+    and others with the wrong characters; lab_entity_config caught it)."""
+    for f in fs:
+        if not f.endswith('.lua'):
+            continue
+        t = text_of(f)
+        if t is None:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            code = line.split('--')[0]
+            if re.search(r'\[-?\d+\]\s*=\s*[-\w.]+\s*,\s*-?\d+\s*[,}]', code):
+                yield (f, n, 'a bare value after `[n] = v` in a table constructor is stored at index 1, 2, ... (not n+1): '
+                             'give every entry its own `[key] = value`')
+
+
 def rule_room_transition_stand_in(fs):
     """RoomTransition is the game's own object, made once in api_extra.lua (2026-11-19: a stand-in
     `RT.StartBossIntro` here said "no boss intro is started" while api_extra's real one existed; StageAPI hit a nil
@@ -437,6 +454,30 @@ def rule_backlog_class_alias(fs):
     ):
         if needle not in t:
             yield (f, 0, msg + ' (missing `%s`)' % needle)
+
+
+def rule_census_false_positives(fs):
+    """The census and backlog tools must not count what is not REPENTOGON's as missing (wave 8 census-fix: 41 "used by mods" names
+    were mods' own functions, six names were doc-heading artifacts, ColorModifier's fields and the EntitiesSaveState getters were done)."""
+    checks = {
+        'scripts/mac/rgon_census.py': (
+            ('EXCLUDED = {', 'a name that is not REPENTOGON API (doc-heading artifact, documented-only) goes into the EXCLUDED table with its reason, not into the missing list'),
+            ('VALUE_TYPE_FIELDS', 'fields of a value type the Layer has (ColorModifier.R) are not missing class variables: list them in VALUE_TYPE_FIELDS'),
+            ('LIVE_CLASS_ALIAS', 'a class the docs and the Layer name differently (EntitiesSaveState / EntitySaveState) goes into LIVE_CLASS_ALIAS'),
+            ('defined_names(', 'a name a mod defines itself (function X:Name, X.Name = function, Name = ...) is not a use of REPENTOGON\'s: subtract defined_names() per mod, as mods.mjs scanLua does'),
+        ),
+        'scripts/mac/rgon_backlog.py': (
+            ('rc.EXCLUDED', 'skip the census tool\'s EXCLUDED names in the backlog too'),
+            ('mod_defined', 'suppress an unnarrowed use of a name the mod defines itself, as the census tool does'),
+        ),
+    }
+    for f, rows in checks.items():
+        if f not in fs:
+            continue
+        t = text_of(f) or ''
+        for needle, msg in rows:
+            if needle not in t:
+                yield (f, 0, msg + ' (missing `%s`)' % needle)
 
 
 def rule_new_class_names_flagged(fs):
@@ -747,6 +788,23 @@ def rule_misc_b_methods_in_lab(fs):
                        'entity\'s hit points (a spikes entity hurting a Gaper), not by a poop or rock state')
 
 
+def rule_data_values_names_in_lab(fs):
+    """Every name api_data_values.lua registers (T.static on Isaac, R.Implemented, the `install` getters, the EntityDesc methods) is
+    named in lab_data_values.lua's Implemented list (wave 8, worker data-values: the ItemConfigCard properties were first installed
+    through T.property, which found no class and registered nothing; only the lab's Implemented check showed it)."""
+    src = text_of(RGON + '/api_data_values.lua')
+    lab = text_of(RGON + '/lab_data_values.lua')
+    if src is None or lab is None:
+        return
+    names = set('Isaac.' + n for n in re.findall(r'T\.static\(Isaac, "Isaac", "(\w+)"', src))
+    names |= set('ItemConfigCard.' + n for n in re.findall(r'install\("(\w+)"', src))
+    names |= set('EntityDesc.' + n for n in re.findall(r'function D:(\w+)\(', src))
+    names |= set(re.findall(r'R\.Implemented\["([\w.]+)"\] = true', src))
+    for n in sorted(names):
+        if '"%s"' % n not in lab:
+            yield (RGON + '/lab_data_values.lua', 0, 'add "%s" to the Implemented list of names() and a check that calls it, or leave it out of api_data_values.lua' % n)
+
+
 def rule_scan_global_assignment(fs):
     """A mod's own global (`Dump = include(...)` in Epiphany) defines that name: the mod scan must not count `Dump(` as
     REPENTOGON's Vertex:Dump (2026-11-20). Both scan implementations carry the rule, and the scanner version moves."""
@@ -784,6 +842,37 @@ def rule_locate_names_in_lab(fs):
                'the removed player: the game leaves it dangling')
 
 
+def rule_familiar_pickup_names_in_lab(fs):
+    """Every name api_familiar_pickup.lua registers is named in lab_familiar_pickup.lua, and GridEntityRock.SpawnDrops passes the game's fifth stack word (wave 8, worker familiar-pickup: REPENTOGON's signature has four stack words after ecx/edx, but all three callers of 0x0071b410 in v1.9.7.17 push five, the last an Entity* source; a call with four reads one word past the caller's pushes)."""
+    src = text_of(RGON + '/api_familiar_pickup.lua')
+    lab = text_of(RGON + '/lab_familiar_pickup.lua')
+    if src is None or lab is None:
+        return
+    names = set(re.findall(r'method\("(\w+)", "(\w+)"', src))
+    names |= set(re.findall(r'static\(\w+, "(\w+)", "(\w+)"', src))
+    for cls, name in sorted(names):
+        if '"%s.%s"' % (cls, name) not in lab:
+            yield (RGON + '/lab_familiar_pickup.lua', 0, 'add "%s.%s" to the Implemented list of names() and a check that calls it (getter by read-back, '
+                   'setter by effect, action by the game\'s reaction), or leave the name out of api_familiar_pickup.lua' % (cls, name))
+    if 'call(0x0071b410' in src and 'backdrop & 0xffffffff, 0)' not in src:
+        yield (RGON + '/api_familiar_pickup.lua', 0, 'call GridEntityRock SpawnDrops (0x0071b410) with five stack words (variant, seed, unk, backdrop, source Entity* or 0): '
+               'this build\'s function reads a fifth that REPENTOGON\'s signature does not list')
+def rule_player_calls_names_in_lab(fs):
+    """Every name api_player_calls.lua registers is named in lab_player_calls.lua, and a std::string argument is built with make_stdstr (wave 8, worker player-calls: the game's costume-animation functions take a std::string reference, so a Lua string or a bare char pointer reads garbage)."""
+    src = text_of(RGON + '/api_player_calls.lua')
+    lab = text_of(RGON + '/lab_player_calls.lua')
+    if src is None or lab is None:
+        return
+    for cls, name in sorted(set(re.findall(r'method\("(\w+)", "(\w+)"', src))):
+        if '"%s.%s"' % (cls, name) not in lab:
+            yield (RGON + '/lab_player_calls.lua', 0, 'add "%s.%s" to NAMES and a check that calls it (getter by read-back, setter by effect, '
+                   'action by the game\'s reaction), or leave the name out of api_player_calls.lua' % (cls, name))
+    for m in re.finditer(r'call\(0x007(?:59f50|ad680),[^\n]*', src):
+        if 'make_stdstr' not in src[:m.start()].rsplit('method(', 1)[-1]:
+            yield (RGON + '/api_player_calls.lua', 0, 'PlayCollectibleAnim and IsCollectibleAnimFinished take a std::string reference: build it with make_stdstr(name) '
+                   'and pass that address, never the Lua string')
+
+
 def rule_console_box_drawn_in_console_hook(fs):
     """The console's suggestion box is drawn from the hook after Console::Render (wave 7, worker console): a draw from a callback inside Game::Render is covered by the console, and a draw from a hook after Game::Render or Manager::Render returns is never shown (measured: Sprite and Font calls ran without error and nothing reached the frame)."""
     src = text_of(RGON + '/api_hooks.lua')
@@ -794,8 +883,61 @@ def rule_console_box_drawn_in_console_hook(fs):
                'draw the console box from on("Console::Render", ...): a draw after Game::Render or Manager::Render returns is not shown on the screen')
 
 
-RULES = [rule_scan_global_assignment, rule_add_cache_flags_one_arg, rule_type_of_callback_result, rule_stdstring_read, rule_orphan_starts_packed, rule_hurt_func_source, rule_item_name_is_a_key, rule_insn_hook_giant_entry, rule_pgrep_game_by_name, rule_tears_methods_in_lab, rule_cacheflag_literals, rule_health_field_offsets, rule_web_host_mem_base, rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_lab_prints_done, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part, rule_host_string_to_guest, rule_ctor_implemented_name, rule_backlog_class_alias, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_host_math_header, rule_image_render_not_registered, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_misc_b_methods_in_lab, rule_layer_setsize_is_scale, rule_locate_names_in_lab, rule_console_box_drawn_in_console_hook]
+def rule_free_only_own_string_buffers(fs):
+    """A std::string buffer is freed with B.free only when the Layer allocated it (2026-11-20, stage-config-modhot: the old path of an unloaded RoomSet already pointed at a freed block, and freeing it logged "double free"). Keep a table of the buffers the writer made (api_stage_config.lua's `mine`) and free only those; leave the game's own buffers alone."""
+    for f in fs:
+        if not (f.startswith(RGON + '/api_') and f.endswith('.lua')):
+            continue
+        src = text_of(f) or ''
+        if 'set_stdstr' not in src and 'stdstr' not in src:
+            continue
+        for i, ln in enumerate(src.split('\n'), 1):
+            if re.search(r'B\.free\(\s*old', ln) and 'mine[' not in src:
+                yield (f, i, 'free a string buffer only if this writer allocated it: keep a `mine` table of its own allocations and check mine[old] before B.free')
+def rule_console_game_lines_whitelisted(fs):
+    """The game's own console suggestion strings (console + 0x74, six std::strings) keep what the last list left in them: for a command the game has no list for ('restart ', 'kill ') they still hold the command list of the empty line (wave 8, worker console2: Tab on 'restart ' put 'restart spawn' in the line). Read them only for a command in the GAME_ARGS table."""
+    src = text_of(RGON + '/api_console.lua')
+    if src is None or 'GAME_LINES' not in src:
+        return
+    if 'GAME_ARGS[' not in src:
+        yield (RGON + '/api_console.lua', 0, 'before reading the six suggestion strings of the game\'s console, check the typed command against GAME_ARGS '
+               '(the commands the game lists arguments for): for any other command the strings are stale; use the XML tables (extra_entries) for those')
 
+
+def rule_lua_keyword_table_key(fs):
+    """A Lua keyword used as a bare table key (`{ goto = true }`) is a syntax error that stops the whole Layer file from loading, with only 'did not load' in the game log (wave 8, worker console2: api_console.lua lost every feature). Write the key as ["goto"]."""
+    for f in fs:
+        if not (f.startswith(RGON + '/') and f.endswith('.lua')):
+            continue
+        t = text_of(f)
+        if t is None:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            code = line.split('--')[0]
+            m = re.search(r'[{,]\s*(goto|end|and|or|not|if|then|else|elseif|for|while|do|in|local|function|repeat|until|return|break|nil|true|false)\s*=[^=]', code)
+            if m:
+                yield (f, n, 'the Lua keyword "%s" cannot be a bare table key: write ["%s"] = ...' % (m.group(1), m.group(1)))
+
+
+
+
+def rule_misnamed_collectible_enums(fs):
+    """Lab code uses the game's enum names (2026-11-20, player-map: COLLECTIBLE_BLOOD_LUST and COLLECTIBLE_CHARM_OF_THE_VAMPIRE
+    are nil, so AddCollectible(nil) silently did nothing and a probe saw no change). The real names are COLLECTIBLE_BLOODY_LUST
+    and COLLECTIBLE_CHARM_VAMPIRE; print CollectibleType[name] for a new item name before relying on it."""
+    bad = re.compile(r'COLLECTIBLE_(BLOOD_LUST|CHARM_OF_THE_VAMPIRE)\b')
+    for f in fs:
+        if not (f.startswith('scripts/recomp/rgon/') and f.endswith('.lua')):
+            continue
+        for i, line in enumerate((text_of(f) or '').splitlines(), 1):
+            if bad.search(line):
+                yield (f, i, 'misnamed enum: use COLLECTIBLE_BLOODY_LUST / COLLECTIBLE_CHARM_VAMPIRE (the other spellings are nil); '
+                       'check a new item name with print(CollectibleType[name]) first')
+
+
+
+
+RULES = [rule_home_paths, rule_layer_files_loaded, rule_frame_line_prefix, rule_part_loads_part, rule_lab_prints_done, rule_inert_not_implemented, rule_ctor_implemented_name, rule_host_math_header, rule_image_render_not_registered, rule_layer_setsize_is_scale, rule_hurt_func_source, rule_global_pointer_plus_offset, rule_status_files_in_notes, rule_flip_default, rule_const_table_fallback, rule_lua_vararg_middle, rule_lua_mixed_table_index, rule_room_transition_stand_in, rule_roomconfig_both_tables, rule_orphan_starts_packed, rule_fast_setjmp, rule_gate_class_aware, rule_backlog_narrowing, rule_backlog_class_alias, rule_census_false_positives, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_entity_methods_in_lab, rule_tears_methods_in_lab, rule_read_of_call_result, rule_type_of_callback_result, rule_item_name_is_a_key, rule_conception_pairing, rule_health_field_offsets, rule_cacheflag_literals, rule_lua_format_options, rule_host_string_to_guest, rule_pgrep_game_by_name, rule_web_host_mem_base, rule_insn_hook_giant_entry, rule_stdstring_read, rule_add_cache_flags_one_arg, rule_misc_b_methods_in_lab, rule_data_values_names_in_lab, rule_scan_global_assignment, rule_locate_names_in_lab, rule_familiar_pickup_names_in_lab, rule_player_calls_names_in_lab, rule_console_box_drawn_in_console_hook, rule_free_only_own_string_buffers, rule_console_game_lines_whitelisted, rule_lua_keyword_table_key, rule_misnamed_collectible_enums]
 
 def main():
     if '--list' in sys.argv:

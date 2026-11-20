@@ -48,7 +48,7 @@ import rgon_census as rc  # noqa: E402  (reuse its REPENTOGON-reading code)
 # REPENTOGON's C++ names a few metatables differently from its documentation: the registration `Metatables::ITEM, "Item"` is the class the
 # documentation calls ItemConfig_Item (the Layer's ItemConfigItem). Without the alias, ItemConfigItem.AddCustomTag counted as implemented
 # and "Item.AddCustomTag" as missing (wave 5: Item showed 2 missing names that were done).
-CLASS_ALIAS = {'Item': 'ItemConfig_Item'}
+CLASS_ALIAS = {'Item': 'ItemConfig_Item', 'EntitiesSaveState': 'EntitySaveState'}
 
 
 def norm(c):
@@ -482,8 +482,8 @@ def main():
     for (nc, n), e in pairs.items():
         if e['kind'] == 'mod' and norm(n) == nc:
             continue   # a "Modified Constructors" entry (RNG(), Font()): the class name, not a method
-        if (nc, n) in NOT_A_MOD_USE:
-            continue
+        if (nc, n) in NOT_A_MOD_USE or e['cls'] + '.' + n in rc.EXCLUDED:
+            continue   # not REPENTOGON API (rgon_census.EXCLUDED)
         by_name[n].append(e)
 
     impl, impl_ids, exists = rc.parse_layer_logs(a.implemented)
@@ -496,6 +496,8 @@ def main():
             inert_comments.update(m.group(1).replace(',', ' ').split())
 
     def pair_status(nc, name):
+        if name in rc.VALUE_TYPE_FIELDS.get(display.get(nc, nc), ()) and nc + '.' + nc in exists_n:
+            return 'implemented'   # a field of a value type the Layer has (ColorModifier.R)
         chain, c = [nc], nc
         while c in PARENT:
             c = norm(PARENT[c])
@@ -537,6 +539,12 @@ def main():
     suppressed = collections.Counter()
     name_re = re.compile(r'([:.])[ \t]*([A-Za-z_]\w*)')
     for label, d in mods:
+        mod_defined = set()   # names the mod defines itself (function X:Name, X.Name = function, global Name =): not REPENTOGON's
+        for f in lua_files(d):
+            try:
+                mod_defined |= rc.defined_names(rc.strip_lua_text(rc.read(f)))
+            except OSError:
+                pass
         for f in lua_files(d):
             rel = os.path.relpath(f, d)
             raw = rc.read(f)
@@ -642,6 +650,10 @@ def main():
                     cands = sel
                     is_narrowed = True
                 else:
+                    if name in mod_defined:
+                        # the receiver's class is unknown and the mod defines the name itself: its own function, not REPENTOGON's
+                        suppressed['receiver class unknown and the mod defines the name itself (function X:Name, X.Name = function, Name = ...)'] += 1
+                        continue
                     is_narrowed, reason = False, 'superset of %d class(es)' % len(cands)
                 uses.append({'mod': label, 'file': rel, 'line': line_of(p), 'name': name, 'recv': recv,
                              'classes': sorted({e['cls'] for e in cands}), 'narrowed': is_narrowed, 'reason': reason,

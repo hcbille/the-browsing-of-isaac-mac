@@ -61,6 +61,27 @@ CLASS_EFFORT = {
 }
 
 
+# REPENTOGON names that are not REPENTOGON API, kept out of "missing" and counted apart as "excluded" ("Class.Name": reason).
+# Each is a documentation artifact or a name that no REPENTOGON mod can call. Add a row only with the reason checked in
+# REPENTOGON's docs and C++ (wave 8 census-fix; audits chunk2-4).
+EXCLUDED = {
+    'Pathfinder.Find': 'doc heading "Find Grid Path" cut at the space by the parser; the real name FindGridPath is the game\'s own method',
+    'Pathfinder.Move': 'doc headings "Move Randomly" / "Move Randomly Axis Aligned" / "Move Randomly Boss" cut at the space; those are the game\'s own methods',
+    'Point.Beam': 'a "Beam" constructor heading inside renderer/Point.md; Beam is its own class (the Point constructor is Point.Point)',
+    'Vector.FromAngle': 'the game\'s own static Vector.FromAngle; REPENTOGON documents an instance method of that name that vanilla mods never mean',
+    'ItemConfig.IsValidTrinket': 'documented only: REPENTOGON has the registration commented out (LuaItemConfig.cpp), so no mod can call it',
+    'Options.KeyMasterDealChance': 'documented only: no registration anywhere in REPENTOGON\'s C++',
+}
+# Fields of a value type the Layer has (api_gaps.lua): the live log lists only the constructor (Class.Class), a field
+# lives on the object. Counted as implemented only while the log shows the type's constructor.
+VALUE_TYPE_FIELDS = {
+    'ColorModifier': {'A', 'B', 'G', 'R', 'Brightness', 'Contrast'},
+}
+# A class REPENTOGON's docs name one way and the Layer names another (compared with underscores removed). The census
+# log lists the Layer's class; a documented name counts when the Layer's class has it.
+LIVE_CLASS_ALIAS = {'EntitiesSaveState': 'EntitySaveState'}
+
+
 def read(p):
     with io.open(p, encoding='utf-8', errors='replace') as f:
         return f.read()
@@ -241,14 +262,57 @@ def estimate_effort(cands, vanilla):
 ID = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 
 
+# A name a mod defines itself is not a use of REPENTOGON's: the same shapes as scripts/recomp/web/mods.mjs (SCAN_DEFINED,
+# SCAN_ASSIGNED, assignedAt) and native/mac/launcher/Sources/ModScan.swift: `function X:Name(`, `function X.Name(`,
+# `X.Name = function`, and a global `Name = ...` at the start of a statement.
+DEFINED = re.compile(r'\bfunction\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*[.:]\s*)*([A-Za-z_][A-Za-z0-9_]*)\s*\(|[.:]\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*function\b')
+ASSIGNED = re.compile(r'(?<![A-Za-z0-9_.:])([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)')
+
+
+def assigned_at(code, at):
+    k = at - 1
+    while k >= 0 and code[k].isspace():
+        k -= 1
+    if k < 0:
+        return True
+    ch = code[k]
+    if ch in ';)]}"\'':
+        return True
+    if not (ch.isalnum() or ch == '_'):
+        return False
+    b = k
+    while b >= 0 and (code[b].isalnum() or code[b] == '_'):
+        b -= 1
+    return code[b + 1:k + 1] not in ('local', 'for')
+
+
+def defined_names(code):
+    out = set()
+    for m in DEFINED.finditer(code):
+        out.add(m.group(1) or m.group(2))
+    for m in ASSIGNED.finditer(code):
+        if assigned_at(code, m.start()):
+            out.add(m.group(1))
+    return out
+
+
+def strip_lua_text(text):
+    """comments and single-line strings out (a `Name = 1` inside a string is not a definition)"""
+    text = re.sub(r'--\[(=*)\[.*?\]\1\]', ' ', text, flags=re.S)
+    text = re.sub(r'--[^\n]*', ' ', text)
+    text = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', text)
+    text = re.sub(r"'(?:\\.|[^'\\\n])*'", "''", text)
+    return text
+
+
 def mods_usage(mods_dir):
-    """-> (names_by_mod {mod: set of identifiers}, repentogon_mods set)"""
-    out, rg = {}, set()
+    """-> (names_by_mod {mod: set of identifiers}, repentogon_mods set, defined_by_mod {mod: set of names the mod defines})"""
+    out, rg, defd = {}, set(), {}
     for mod in sorted(os.listdir(mods_dir)):
         d = os.path.join(mods_dir, mod)
         if not os.path.isdir(d):
             continue
-        ids = set()
+        ids, dn = set(), set()
         for f in walk(d, '.lua'):
             try:
                 text = read(f)
@@ -257,10 +321,12 @@ def mods_usage(mods_dir):
             text = re.sub(r'--\[(=*)\[.*?\]\1\]', ' ', text, flags=re.S)
             text = re.sub(r'--[^\n]*', ' ', text)
             ids.update(ID.findall(text))
+            dn |= defined_names(strip_lua_text(text))
         out[mod] = ids
+        defd[mod] = dn
         if 'REPENTOGON' in ids:
             rg.add(mod)
-    return out, rg
+    return out, rg, defd
 
 
 # ---------------------------------------------------------------- main
@@ -298,23 +364,34 @@ def main():
     exists_n = {norm_class(k.split('.')[0]) + '.' + k.split('.', 1)[1] for k in exists if '.' in k}
     vanilla = {k.split('.', 1)[1].lower().lstrip('_') for k in exists if '.' in k and k.split('.', 1)[1] not in gate_only}
 
-    mods, rg_mods = ({}, set())
+    mods, rg_mods, mod_defined = ({}, set(), {})
     if a.mods:
-        mods, rg_mods = mods_usage(a.mods)
+        mods, rg_mods, mod_defined = mods_usage(a.mods)
     users = defaultdict(set)
+    self_defined = defaultdict(set)    # name -> mods that define it themselves (not counted as users)
     if mods:
         for mod, ids in mods.items():
             for d in docs:
                 if d['name'] in ids and d['name'] in gate_only:
-                    users[d['name']].add(mod)
+                    if d['name'] in mod_defined.get(mod, ()):
+                        self_defined[d['name']].add(mod)
+                    else:
+                        users[d['name']].add(mod)
 
     rows = []
     for d in docs:
         key = d['cls'] + '.' + d['name']
         nk = norm_class(d['cls']) + '.' + d['name']
-        if nk in impl_n:
+        live = LIVE_CLASS_ALIAS.get(d['cls'], d['cls'])
+        lk = norm_class(live) + '.' + d['name']
+        note = None
+        if key in EXCLUDED:
+            st, note = 'excluded', EXCLUDED[key]
+        elif nk in impl_n or lk in impl_n:
             st = 'implemented'
-        elif nk in exists_n:
+        elif d['name'] in VALUE_TYPE_FIELDS.get(d['cls'], ()) and norm_class(d['cls']) + '.' + norm_class(d['cls']) in exists_n:
+            st, note = 'implemented', 'field of the value type %s the Layer has (api_gaps.lua)' % d['cls']
+        elif nk in exists_n or lk in exists_n:
             st = 'inert' if d['name'] in gate_only else 'game'
         else:
             st = 'missing'
@@ -328,6 +405,11 @@ def main():
         u = sorted(users.get(d['name'], ()))
         rows.append({'name': key, 'kind': d['kind'], 'status': st, 'effort': eff, 'why': why,
                      'mods_any': u, 'mods_rgon': [m for m in u if m in rg_mods]})
+        if note:
+            rows[-1]['note'] = note
+        sd = sorted(self_defined.get(d['name'], ()))
+        if sd and st in ('missing', 'inert'):
+            rows[-1]['mods_defining_it_themselves'] = sd
 
     # names in the C++ registrations that no doc page lists (bare names, not classes)
     doc_bare = {d['name'] for d in docs}
@@ -355,7 +437,7 @@ def main():
         c = Counter(r['status'] for r in rs)
         e = Counter(r['effort'] for r in rs if r['status'] == 'missing')
         return {'total': len(rs), 'implemented': c['implemented'], 'inert': c['inert'], 'game': c['game'],
-                'missing': c['missing'], 'missing_S': e['S'], 'missing_M': e['M'], 'missing_L': e['L'],
+                'missing': c['missing'], 'excluded': c['excluded'], 'missing_S': e['S'], 'missing_M': e['M'], 'missing_L': e['L'],
                 'missing_used_by_rgon_mods': sum(1 for r in rs if r['status'] in ('missing', 'inert') and r['mods_rgon']),
                 'missing_used_by_any_mod': sum(1 for r in rs if r['status'] in ('missing', 'inert') and r['mods_any'])}
 
@@ -377,8 +459,8 @@ def main():
         t = summary[key]
         w('%-14s %6d %6d %6d %6d %6d | %4d %4d %4d | %d / %d\n' % (label, t['total'], t['implemented'], t['inert'], t['game'], t['missing'],
                                                               t['missing_S'], t['missing_M'], t['missing_L'], t['missing_used_by_rgon_mods'], t['missing_used_by_any_mod']))
-    w('(modified vanilla entries not counted: %d; C++ registered names with no doc entry and REPENTOGON-only: %d; mods naming REPENTOGON: %d)\n'
-      % (modified, len(undocumented), len(rg_mods)))
+    w('(excluded, not REPENTOGON API: %d; modified vanilla entries not counted: %d; C++ registered names with no doc entry and REPENTOGON-only: %d; mods naming REPENTOGON: %d)\n'
+      % (summary['functions']['excluded'] + summary['variables']['excluded'] + summary['constructors']['excluded'], modified, len(undocumented), len(rg_mods)))
 
     if a.list != 'none':
         w('\n')
