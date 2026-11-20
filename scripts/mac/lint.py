@@ -747,7 +747,54 @@ def rule_misc_b_methods_in_lab(fs):
                        'entity\'s hit points (a spikes entity hurting a Gaper), not by a poop or rock state')
 
 
-RULES = [rule_add_cache_flags_one_arg, rule_type_of_callback_result, rule_stdstring_read, rule_orphan_starts_packed, rule_hurt_func_source, rule_item_name_is_a_key, rule_insn_hook_giant_entry, rule_pgrep_game_by_name, rule_tears_methods_in_lab, rule_cacheflag_literals, rule_health_field_offsets, rule_web_host_mem_base, rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_lab_prints_done, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part, rule_host_string_to_guest, rule_ctor_implemented_name, rule_backlog_class_alias, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_host_math_header, rule_image_render_not_registered, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_misc_b_methods_in_lab, rule_layer_setsize_is_scale]
+def rule_scan_global_assignment(fs):
+    """A mod's own global (`Dump = include(...)` in Epiphany) defines that name: the mod scan must not count `Dump(` as
+    REPENTOGON's Vertex:Dump (2026-11-20). Both scan implementations carry the rule, and the scanner version moves."""
+    checks = [
+        ('scripts/recomp/web/mods.mjs', ('SCAN_ASSIGNED', 'assignedAt('),
+         'scanLua must add a global `Name = ...` at statement start to `defined` (SCAN_ASSIGNED, assignedAt), so the mod\'s '
+         'own global is not listed as a REPENTOGON name'),
+        ('native/mac/launcher/Sources/ModScan.swift', ('SCAN_ASSIGNED', 'assignedAt('),
+         'ModScan.scanLua must add a global `Name = ...` at statement start to `defined` exactly like mods.mjs scanLua '
+         '(Tests/run.sh compares the two), and bump scannerVersion when the scan changes'),
+    ]
+    for f, needles, msg in checks:
+        if f not in fs:
+            continue
+        t = text_of(f) or ''
+        for needle in needles:
+            if needle not in t:
+                yield (f, 0, '%s (missing `%s`)' % (msg, needle))
+
+
+def rule_locate_names_in_lab(fs):
+    """Every name api_locate.lua registers is named in lab_locate.lua, and PlayerManager.RemoveCoPlayer clears the other player's twin link (wave 7, worker locate: the game's RemoveCoPlayer frees the player but leaves the twin pointer at +0x1e68 of the other player dangling, which the lab's first run caught as GetOtherTwin answering freed memory)."""
+    src = text_of(RGON + '/api_locate.lua')
+    lab = text_of(RGON + '/lab_locate.lua')
+    if src is None or lab is None:
+        return
+    names = set(re.findall(r'method\("(\w+)", "(\w+)"', src))
+    names |= set(re.findall(r'T\.static\(\w+, "(\w+)", "(\w+)"', src))
+    for cls, name in sorted(names):
+        if '"%s.%s"' % (cls, name) not in lab:
+            yield (RGON + '/lab_locate.lua', 0, 'add "%s.%s" to the Implemented list of run() and a check that calls it (getter by read-back, '
+                   'setter by effect, action by the game\'s reaction), or leave the name out of api_locate.lua' % (cls, name))
+    if 'RemoveCoPlayer' in src and '0x1e68' not in src.split('RemoveCoPlayer", function')[-1]:
+        yield (RGON + '/api_locate.lua', 0, 'after the game\'s RemoveCoPlayer, write 0 over every remaining player\'s twin link (+0x1e68) that still holds '
+               'the removed player: the game leaves it dangling')
+
+
+def rule_console_box_drawn_in_console_hook(fs):
+    """The console's suggestion box is drawn from the hook after Console::Render (wave 7, worker console): a draw from a callback inside Game::Render is covered by the console, and a draw from a hook after Game::Render or Manager::Render returns is never shown (measured: Sprite and Font calls ran without error and nothing reached the frame)."""
+    src = text_of(RGON + '/api_hooks.lua')
+    if src is None:
+        return
+    for m in re.finditer(r'on\("(Game|Manager)::Render",[^\n]*\n[^\n]*console_draw', src):
+        yield (RGON + '/api_hooks.lua', src[:m.start()].count('\n') + 1,
+               'draw the console box from on("Console::Render", ...): a draw after Game::Render or Manager::Render returns is not shown on the screen')
+
+
+RULES = [rule_scan_global_assignment, rule_add_cache_flags_one_arg, rule_type_of_callback_result, rule_stdstring_read, rule_orphan_starts_packed, rule_hurt_func_source, rule_item_name_is_a_key, rule_insn_hook_giant_entry, rule_pgrep_game_by_name, rule_tears_methods_in_lab, rule_cacheflag_literals, rule_health_field_offsets, rule_web_host_mem_base, rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_lab_prints_done, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part, rule_host_string_to_guest, rule_ctor_implemented_name, rule_backlog_class_alias, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_host_math_header, rule_image_render_not_registered, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_misc_b_methods_in_lab, rule_layer_setsize_is_scale, rule_locate_names_in_lab, rule_console_box_drawn_in_console_hook]
 
 
 def main():

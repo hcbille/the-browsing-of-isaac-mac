@@ -173,6 +173,9 @@ do {
     check(rows["quits-in-subfile"]?.quits == 0, "fixtures: a quit guard outside the top-level main.lua is not a quit")
     check(rows["comments-then-code"]?.yields == 4, "fixtures: yields")
     check(rows["defined"]?.names.contains("GetPlayerIndex") == false && rows["defined"]?.names.contains("Thing.REPENTOGON") == true, "fixtures: names the mod defines itself are dropped")
+    check(rows["defined"]?.names.contains("Dump") == false && rows["defined"]?.names.contains("go.Dump") == true
+          && rows["defined"]?.names.isSuperset(of: ["Kept", "Field", "Loc", "Own"]) == true,
+          "fixtures: a global `Dump = include(..)` defines Dump; table fields, locals and `a.Own =` do not")
     check(rows["receivers"]?.names.isSuperset(of: ["AddCollectibleCycle.player", "GetBackdrop!GetRoom", "GetBagOfCraftingContent!GetPlayer",
           "AddSomething.Isaac", "Dump!rep", "ChainLightning", "GetBaseHP!ToNPC", "Copy.nm", "Cycle"]) == true
           && rows["receivers"]?.names.contains("AddBaited") == false && rows["receivers"]?.names.contains("AddBaited.other") == false,

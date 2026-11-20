@@ -10,7 +10,7 @@ import Foundation
 /// Contract: docs/mac/launcher.md "Mod scan".
 enum ModScan {
     /// Bump when the scanning rules change: it invalidates every cached row.
-    static let scannerVersion = 2
+    static let scannerVersion = 3
     static let namesMax = 20000
     static let layerFolder = "repentogon"
 
@@ -126,6 +126,21 @@ enum ModScan {
         if p + lit.count > a.count { return false }
         for k in 0..<lit.count where a[p + k] != lit[k] { return false }
         return true
+    }
+
+    /// A statement starts at `at` (the start of a name followed by `=`): after nothing, `;`, a closing `)` `]` `}` or
+    /// quote, or a word that is not `local`/`for`. A table field (`{ Name = 1`, `, Name = 1`) does not. See mods.mjs.
+    static func assignedAt(_ code: U, _ at: Int) -> Bool {
+        var k = at - 1
+        while k >= 0 && isSpace(code[k]) { k -= 1 }
+        if k < 0 { return true }
+        let ch = code[k]
+        if ch == c(";") || ch == c(")") || ch == c("]") || ch == c("}") || ch == c("\"") || ch == c("'") { return true }
+        guard isWord(ch) else { return false }
+        var b = k
+        while b >= 0 && isWord(code[b]) { b -= 1 }
+        let w = str(code, b + 1, k + 1)
+        return w != "local" && w != "for"
     }
 
     /// What the code shows of a call's receiver (`receiverHint` in mods.mjs): ".id" for `id:Name(`, "!callee" for
@@ -257,6 +272,16 @@ enum ModScan {
                             f.defined.insert(str(code, st, en)); p = q + 8; continue
                         }
                     }
+                }
+            }
+            // SCAN_ASSIGNED: a global `Name = ...` at the start of a statement defines Name (mods.mjs assignedAt)
+            if isIdStart(ch) && (p == 0 || (!isWord(code[p - 1]) && code[p - 1] != dot && code[p - 1] != colon)) {
+                var q = p + 1
+                while q < n && isWord(code[q]) { q += 1 }
+                let en = q
+                while q < n && isSpace(code[q]) { q += 1 }
+                if q < n && code[q] == c("=") && (q + 1 == n || code[q + 1] != c("=")) && assignedAt(code, p) {
+                    f.defined.insert(str(code, p, en))
                 }
             }
             p += 1

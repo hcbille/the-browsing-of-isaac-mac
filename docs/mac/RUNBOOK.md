@@ -216,6 +216,7 @@ appears, plus mouse, pad, `fullscreen`, `window:WxH` tokens.
   listings use a parent→children index, so the boot takes about 10 s. If boot is slow again, run
   `sample <pid> 5` during it before guessing. The steps print as `[mac][boot] status:` lines, which the
   Launcher shows (docs/mac/launcher.md).
+- **The debug console in memory (worker console, wave 7).** Needs `DBG=true` in run.sh (`debug_console`). Game object word 0x00c71678: console state +0x68d78 (2 open), input line std::string +0x68d94, cursor pointer +0x68e80; keys typed into it come from the game's char callback 0x00686730, so a lab can type with script tokens (`@40:grave,@70:z,...`; avoid l and c in a lab with mods, they open Mod Config and Dead Sea Scrolls). Console::Render is 0x0068c2e0 (hook slot 292); what is drawn from there lives in a 480 x 270 space. A Layer draw is shown only from a hook inside Game::Render: after it returns, nothing reaches the frame.
 - **`gridspawn 9000` spawns a trapdoor** (`17` does not: the console takes room-editor ids). It lands on a
   random free tile, so walking to it blind doesn't work.
 - **Floor changes**: use the lab, not walking. `ISAAC_RGON_LAB=lab_trapdoor.lua` (copy it into the staged
@@ -320,6 +321,12 @@ means the cloud guard failed. Never run it against the real client without `ISAA
   APFS clone (nothing is copied until a file changes). Run `apply_wrap_patches` and `apply_insn_hooks` from `lift_patches.py` on the clone, `cp -Rp output/mac
   <out>`, then `build_native.py --out <out> --lift-dir .scratch/<task>/gu` (about 40 s with a new `host_rgon.c`). The shared binary and lift stay untouched.
   `toolchain/env.sh` is in the workspace folder, one level above the work repo. For a syntax check of a Layer file build `luac` from `tools/lua-5.3.3`.
+- **Instruction hooks can edit registers (worker engine-names, wave 7).** `B.reg(name, value)` inside an INSN handler writes the lifted function's
+  register before the instruction runs: a `test al, 1` hook ORs a bit into eax, a `mov ecx, [eax]` hook points eax at a harmless address. That replaces
+  REPENTOGON's byte patches (Camera clamp, hooks 307/308) without a redirect target. In a git worktree `hook_table.py` needs `tools` and `output`
+  (symlinks to the main checkout, never committed) and `.scratch/rgon/vtables.json`; its reg/sig rows fail without the old binding dumps, so add rows
+  to `lift_patches.py` and `hook_slots.lua` by hand and patch the lift clone (`apply_wrap_patches` and `apply_insn_hooks` take about 10 minutes on a
+  clone). Water in a lab: room water amount is a float at room +0x7240 (the render pass at 0x0080fc62 reads it), not `FXParams.UseWaterV2`.
 - **A TRAP "indirect call to 0x... resolves to neither a host shim nor a lifted function. It is inside the image" is a lift gap (worker liftgap,
   2026-11-19).** The callee exists in the exe but is not in `output/recomp/lift/starts_union.txt`. Diagnose: `grep -c 0x<va> starts_union.txt`;
   `python3 scripts/recomp/lift/orphan_starts.py` (report: which test drops it); `sqlite3 output/decomp/*/index/pe-index.sqlite "select va,mn,ops from insn
