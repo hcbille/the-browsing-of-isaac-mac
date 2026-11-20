@@ -791,7 +791,7 @@ index f083c69..5b5b9b0 100644
   * without marking the object for finalization: lapi.c lua_setmetatable's
   * LUA_TUSERDATA case less its luaC_checkfinalizer call (the index is read as
 diff --git a/scripts/recomp/host/src/host_rgon.c b/scripts/recomp/host/src/host_rgon.c
-index 25bd680..d5023cf 100644
+index 25bd680..e2770fb 100644
 --- a/scripts/recomp/host/src/host_rgon.c
 +++ b/scripts/recomp/host/src/host_rgon.c
 @@ -35,11 +35,13 @@
@@ -1375,13 +1375,15 @@ index 25bd680..d5023cf 100644
      {NULL, NULL},
  };
  
-@@ -442,6 +902,16 @@ void isaac_rgon_push_bridge(lua_State *L) {
+@@ -442,6 +902,18 @@ void isaac_rgon_push_bridge(lua_State *L) {
      /* round 110: this engine runs instruction hooks (lift_patches.py
       * RGON_INSN_HOOKS) and has reg(); a layer asks before it defines one */
      lua_pushinteger(L, 1); lua_setfield(L, -2, "INSN");
 +    /* round 124: call() answers a fourth value (XMM0's low float), and hook slot 179 (Entity::GetWaterClipInfo) is wrapped */
 +    lua_pushinteger(L, 1); lua_setfield(L, -2, "XMM0RET");
 +    lua_pushinteger(L, 1); lua_setfield(L, -2, "WATERCLIP");
++    /* wave 10 (cb-entity): xmm() is valid in a function hook's after handler (the float result of a hooked function is xmm0) */
++    lua_pushinteger(L, 1); lua_setfield(L, -2, "XMMPOST");
 +    /* wave 7 (engine-names): slots 300-306 wrap the grid classes' GetWaterClipInfo, 307-308 are the camera clamp instruction hooks */
 +    lua_pushinteger(L, 1); lua_setfield(L, -2, "ENGNAMES");
 +#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
@@ -1392,6 +1394,24 @@ index 25bd680..d5023cf 100644
      /* round 103: Lua's own os library, for the layer to hand mods the four
       * functions of it REPENTOGON gives them (date, time, clock, difftime). The
       * game opens seven libraries by name and os is not one of them, so there
+@@ -579,6 +1051,9 @@ void isaac_rgon_hook_post(int slot, CpuState *restrict s, rgon_frame *f) {
+         ++g_hook_calls;
+         isaac_lua_host_enter(here, s->ESP);
+         const int top = lua_gettop(L);
++        /* wave 10 (cb-entity): xmm() works in an after handler too, so a float result (xmm0) can be read and replaced */
++        CpuState *const outer = g_hook_cpu;
++        g_hook_cpu = s;
+         lua_rawgeti(L, LUA_REGISTRYINDEX, g_post[slot]);
+         lua_pushinteger(L, (lua_Integer)f->ecx);
+         lua_pushinteger(L, (lua_Integer)f->esp);
+@@ -587,6 +1062,7 @@ void isaac_rgon_hook_post(int slot, CpuState *restrict s, rgon_frame *f) {
+         if (lua_pcall(L, 4, 1, 0) != LUA_OK) hook_error(L, slot, "after");
+         else if (!lua_isnil(L, top + 1)) s->EAX = word_arg(L, top + 1);
+         lua_settop(L, top);
++        g_hook_cpu = outer;
+         isaac_lua_host_leave(here);
+     }
+     if (f->ref != LUA_NOREF) { luaL_unref(L, LUA_REGISTRYINDEX, f->ref); f->ref = LUA_NOREF; }
 diff --git a/scripts/recomp/host/src/host_shims_crt.c b/scripts/recomp/host/src/host_shims_crt.c
 index ee93d31..a10c303 100644
 --- a/scripts/recomp/host/src/host_shims_crt.c
@@ -2230,7 +2250,7 @@ index 6aa6b68..133df95 100644
        > ISAAC_GUARD_VA) {
      printf("  FAIL shim tokens overrun the guard\n");
 diff --git a/scripts/recomp/lift/lift_patches.py b/scripts/recomp/lift/lift_patches.py
-index 659f7ce..a61b9ba 100644
+index 659f7ce..f2bd194 100644
 --- a/scripts/recomp/lift/lift_patches.py
 +++ b/scripts/recomp/lift/lift_patches.py
 @@ -1339,7 +1339,7 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
@@ -2242,7 +2262,7 @@ index 659f7ce..a61b9ba 100644
      (22, 0x007ebca0, "Room::SpawnGridEntity"),    # ret 0x14; reg Room.SpawnGridEntity; sig Room::SpawnGridEntity
      (23, 0x00709db0, "GridEntity::Init"),    # ret 0x4; sig GridEntity::Init
      (24, 0x0082f1c0, "RoomTransition::StartBossIntro"),    # ret 0x8; sig RoomTransition::StartBossIntro
-@@ -1419,6 +1419,103 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
+@@ -1419,6 +1419,113 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
      (98, 0x004199d0, "Room::RenderEntityPass_004199d0"),    # ret 0x8; asm
      (99, 0x008151e0, "Room::GetShopItemPrice"),    # ret 0x10; asm
      (169, 0x0094d500, "Menu_Character::UpdateRotations"),    # ret 0x0; sig Menu_Character::UpdateRotations
@@ -2337,16 +2357,26 @@ index 659f7ce..a61b9ba 100644
 +    (334, 0x009adbb0, "LevelGenerator::Generate"),    # ret 0x1c; asm (worker cb-level)
 +    (335, 0x007eeeb0, "Room::save_entity"),    # ret 0xc; asm (worker cb-level)
 +    (336, 0x007ef420, "Room::restore_entity"),    # ret 0x8; asm (worker cb-level)
++    (360, 0x006b2fa0, "Entity::SetColor"),    # ret 0x14; asm (worker cb-entity)
++    (361, 0x006a89f0, "Entity::GetStatusEffectTarget"),    # ret 0x0; asm (worker cb-entity)
++    (362, 0x0060dae0, "Entity_Familiar::CanCharm"),    # ret 0x0; asm (worker cb-entity)
++    (363, 0x006be840, "Entity_NPC::GetPlayerTarget"),    # ret 0x0; asm (worker cb-entity)
++    (364, 0x0060dc40, "Entity_Familiar::GetMultiplier"),    # ret 0x0; asm (worker cb-entity)
 +    (338, 0x00815ae0, "Room::ShopRestockFull"),    # ret 0x0; asm (worker cb-pocket)
 +    (339, 0x008158a0, "Room::ShopRestockPartial"),    # ret 0x0; asm (worker cb-pocket)
 +    (340, 0x00736ba0, "ItemPool::ForceAddPillEffect"),    # ret 0x4; asm (worker cb-pocket)
 +    (341, 0x006e8380, "Entity_Pickup::GetCoinValue"),    # ret 0x0; asm (worker cb-pocket)
 +    (342, 0x007ea1a0, "Room::TriggerEffectRemoved"),    # ret 0x8; asm (worker cb-pocket)
 +    (343, 0x00832850, "RoomTransition::Render"),    # ret 0x0; asm (worker cb-pocket)
++    (377, 0x0098dba0, "Minimap::Update"),    # ret 0x0; asm (worker cb-hud)
++    (378, 0x0098e4d0, "Minimap::Render"),    # ret 0x0; asm (worker cb-hud)
++    (379, 0x00848d20, "PlayerHUD::RenderInventory"),    # ret 0x4; asm (worker cb-hud)
++    (380, 0x0084a3e0, "PlayerHUD::RenderSpellQueue"),    # ret 0x4; asm (worker cb-hud)
++    (381, 0x00849510, "PlayerHUD::RenderCraftingTable"),    # ret 0x4; asm (worker cb-hud)
      (100, 0x006a93a0, "Entity::Init"),    # ret 0x10; sig Init; vtable 0x00b6730c slot 1
      (101, 0x00755470, "Entity_Player::Init"),    # ret 0x10; vtable 0x00b6bdd0 slot 1
      (102, 0x006b8b20, "Entity_NPC::Init"),    # ret 0x10; vtable 0x00b67468 slot 1
-@@ -1523,7 +1620,7 @@ if len({_s for _s, _, _ in RGON_HOOKS}) != len(RGON_HOOKS) or len({_v for _, _v,
+@@ -1523,7 +1630,7 @@ if len({_s for _s, _, _ in RGON_HOOKS}) != len(RGON_HOOKS) or len({_v for _, _v,
  # reaches it: spill, set the trampoline's next block, return.
  #
  # Each entry: (slot, function VA, instruction VA, name, (redirect targets...)).
@@ -2355,7 +2385,7 @@ index 659f7ce..a61b9ba 100644
  # The table is checked by scripts/recomp/rgon/tools/hook_table.py, which prints
  # it (`--write`); edit it there. A build error, never a silent skip: the
  # function not in exactly one TU, the marker not exactly once in it, a target
-@@ -1539,8 +1636,64 @@ RGON_INSN_HOOKS: list[tuple[int, int, int, str, tuple[int, ...]]] = [
+@@ -1539,8 +1646,64 @@ RGON_INSN_HOOKS: list[tuple[int, int, int, str, tuple[int, ...]]] = [
      (167, 0x00676be0, 0x006770c2, "Entity_Tear::Collision_00676be0@ParasiteSplit", ()),    # 0x006770c2  mov eax, dword ptr [ebp - 0x64]
      (168, 0x00676be0, 0x00677498, "Entity_Tear::Collision_00676be0@BoneSplit", ()),    # 0x00677498  mov eax, dword ptr [ebp - 0x60]
      (170, 0x008f8860, 0x008f89c4, "ModManager::RenderCharacterPortrait_008f8860@Frame", ()),    # 0x008f89c4  mov edx, dword ptr [edi + 0x138]
@@ -2421,7 +2451,7 @@ index 659f7ce..a61b9ba 100644
  INSN_REGS = ("EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI")
  _RE_INSN_BLOCK = re.compile(
      r"^[ \t]*/\* LIFT-PATCH insn 0x([0-9a-f]{8}) slot (\d+) begin[^\n]*\n.*?"
-@@ -1715,6 +1868,19 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
+@@ -1715,6 +1878,19 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
          spans = _fn_spans(t, fva)
          if not spans:
              raise SystemExit("insn hook %s: %s has no body in %s" % (what, name, tu.name))
@@ -3712,6 +3742,177 @@ index 5391065..79b14e5 100644
  -- false ends the run; tables are merged into one answer, and the values a table
  -- names are what the functions after it are handed (`keys`: name -> argument)
  local function merge_or_false(keys)
+diff --git a/scripts/recomp/rgon/api_cb_entity.lua b/scripts/recomp/rgon/api_cb_entity.lua
+new file mode 100644
+index 0000000..c22aadb
+--- /dev/null
++++ b/scripts/recomp/rgon/api_cb_entity.lua
+@@ -0,0 +1,165 @@
++-- api_cb_entity.lua -- entity, status effect, familiar and NPC callbacks (worker cb-entity, wave 10; hook slots 360-364,
++-- tools/hook_table.py, hook_slots.lua). Every address was read off this exe (the notes sit in hook_table.py).
++--   1486 MC_PRE_ENTITY_SET_COLOR / 1487 MC_POST_ENTITY_SET_COLOR  Entity::SetColor 0x006b2fa0 (slot 360, a virtual function):
++--        (entity, color, duration, priority, fadeOut, share), param = entity type. PRE: false cancels the colour (no POST), a Color
++--        replaces it (POST sees the replacement).
++--   1485 MC_GET_STATUS_EFFECT_TARGET   Entity::GetStatusEffectTarget 0x006a89f0 (slot 361): (entity), param = entity type, an Entity
++--        answer replaces the target. Only the calls of that function: the game inlines the lookup in some places (REPENTOGON patches
++--        those one by one), they are not covered.
++--   1473 MC_PRE_FAMILIAR_CAN_CHARM     Entity_Familiar::CanCharm 0x0060dae0 (slot 362): (familiar), param = variant, false answers "cannot".
++--   1222 MC_NPC_PICK_TARGET            Entity_NPC::GetPlayerTarget 0x006be840 (slot 363): (npc, currentTarget), param = NPC type, an Entity
++--        answer replaces the target.
++--   1225 MC_EVALUATE_FAMILIAR_MULTIPLIER  Entity_Familiar::GetMultiplier 0x0060dc40 (slot 364): (familiar, multiplier, player), param =
++--        variant, a number above 0 replaces the multiplier (the result is in xmm0; the after handler reads and writes it, host_rgon.c's
++--        XMMPOST). REPENTOGON caches the answer per familiar until InvalidateCachedMultiplier(); this runs on every call.
++--   1175 / 1176 familiar grid collision are wired in api_hooks.lua's grid collision table (no hook of their own).
++-- A callback that asks the game the same question again (GetPlayerTarget inside MC_NPC_PICK_TARGET) is not run a second time.
++local T = ...
++local B, wrap = T.B, T.wrap
++local r8, r32, ri32, w32, rf32, ptr, log = B.r8, B.r32, B.ri32, B.w32, B.rf32, B.ptr, B.log
++local M = ModCallbacks
++local function run(...) return T.run(...) end
++
++local SLOTS
++do
++  local chunk = B.load("hook_slots.lua")
++  if not chunk then return end
++  SLOTS = chunk()
++end
++if B.HOOKS < 400 then log("api_cb_entity: this engine has " .. B.HOOKS .. " hook slots; the callbacks here need a newer one") return end
++if not T.define or not T.wants then log("api_cb_entity: api_hooks.lua's helpers are missing") return end
++local wants = T.wants
++
++local function slot_of(name)
++  local s = SLOTS[name]
++  if type(s) ~= "table" then log("api_cb_entity: no hook slot for " .. name) return nil end
++  return s[1]
++end
++
++local E_TYPE, E_VARIANT = 0x28, 0x2c
++local function typed_entity(a)
++  if a == 0 then return nil end
++  local t = r32(a + E_TYPE)
++  local cls = t == 1 and "EntityPlayer" or t == 2 and "EntityTear" or t == 3 and "EntityFamiliar" or t == 4 and "EntityBomb"
++    or t == 5 and "EntityPickup" or t == 9 and "EntityProjectile" or (t >= 10 and t < 1000) and "EntityNPC" or nil
++  return wrap(cls or "Entity", a)
++end
++local function is_entity(v)
++  return type(v) == "userdata" and ptr(v) ~= 0 and v.Type ~= nil and v.Variant ~= nil
++end
++
++-- 1486 / 1487 ------------------------------------------------------------------------------------------------------------
++do
++  local PRE, POST = M.MC_PRE_ENTITY_SET_COLOR, M.MC_POST_ENTITY_SET_COLOR
++  local slot = (PRE and POST) and slot_of("Entity::SetColor")
++  if slot then
++    -- a Color is eleven floats: tint RGBA, colorize RGBA, offset RGB
++    local function make_color(a)
++      local f = {}
++      for i = 1, 11 do f[i] = rf32(a + (i - 1) * 4) end
++      local c = Color(f[1], f[2], f[3], f[4], f[9], f[10], f[11])
++      c:SetColorize(f[5], f[6], f[7], f[8])
++      return c
++    end
++    local function is_color(v)
++      return type(v) == "userdata" and ptr(v) ~= 0 and v.R ~= nil and v.RO ~= nil and v.SetColorize ~= nil
++    end
++    T.define(slot, { PRE, POST }, function(self, esp)
++      local t = r32(self + E_TYPE)
++      local want_pre, want_post = wants(PRE, t), wants(POST, t)
++      if not (want_pre or want_post) then return false end
++      local at = r32(esp + 4)
++      if at == 0 then return false end
++      local ent = typed_entity(self)
++      local color = make_color(at)
++      local duration, priority, fade, share = ri32(esp + 8), ri32(esp + 12), r8(esp + 16) ~= 0, r8(esp + 20) ~= 0
++      if want_pre then
++        local res = run(PRE, t, ent, color, duration, priority, fade, share)
++        if res == false then return true, 0, 0x14 end
++        if is_color(res) then
++          color = res
++          w32(esp + 4, ptr(res))
++        end
++      end
++      return { t, ent, color, duration, priority, fade, share }
++    end, function(self, esp, eax, k)
++      if k and wants(POST, k[1]) then run(POST, k[1], k[2], k[3], k[4], k[5], k[6], k[7]) end
++    end)
++  end
++end
++
++-- 1485 -------------------------------------------------------------------------------------------------------------------
++do
++  local ID = M.MC_GET_STATUS_EFFECT_TARGET
++  local slot = ID and slot_of("Entity::GetStatusEffectTarget")
++  if slot then
++    local busy = false
++    T.define(slot, { ID }, function(self)
++      if busy or not wants(ID, r32(self + E_TYPE)) then return false end
++      return {}
++    end, function(self, esp, eax, k)
++      if not k then return end
++      busy = true
++      local ok, res = pcall(run, ID, r32(self + E_TYPE), typed_entity(self))
++      busy = false
++      if ok and is_entity(res) then return ptr(res) end
++    end)
++  end
++end
++
++-- 1473 -------------------------------------------------------------------------------------------------------------------
++do
++  local ID = M.MC_PRE_FAMILIAR_CAN_CHARM
++  local slot = ID and slot_of("Entity_Familiar::CanCharm")
++  if slot then
++    local busy = false
++    T.define(slot, { ID }, function(self)
++      local var = r32(self + E_VARIANT)
++      if busy or not wants(ID, var) then return false end
++      busy = true
++      local ok, res = pcall(run, ID, var, wrap("EntityFamiliar", self))
++      busy = false
++      if ok and res == false then return true, 0, 0 end
++      return false
++    end, nil)
++  end
++end
++
++-- 1222 -------------------------------------------------------------------------------------------------------------------
++do
++  local ID = M.MC_NPC_PICK_TARGET
++  local slot = ID and slot_of("Entity_NPC::GetPlayerTarget")
++  if slot then
++    local busy = false
++    T.define(slot, { ID }, function(self)
++      if busy or not wants(ID, r32(self + E_TYPE)) then return false end
++      return {}
++    end, function(self, esp, eax, k)
++      if not k then return end
++      busy = true
++      local ok, res = pcall(run, ID, r32(self + E_TYPE), wrap("EntityNPC", self), typed_entity(eax))
++      busy = false
++      if ok and is_entity(res) then return ptr(res) end
++    end)
++  end
++end
++
++-- 1225 -------------------------------------------------------------------------------------------------------------------
++do
++  local ID = M.MC_EVALUATE_FAMILIAR_MULTIPLIER
++  local slot = ID and B.XMMPOST and slot_of("Entity_Familiar::GetMultiplier")
++  if slot then
++    local PLAYER = 0x410         -- the familiar's player: the multiplier code reads it from [this+0x410]
++    local busy = false
++    T.define(slot, { ID }, function(self)
++      if busy or not wants(ID, r32(self + E_VARIANT)) then return false end
++      return {}
++    end, function(self, esp, eax, k)
++      if not k then return end
++      busy = true
++      local ok, res = pcall(run, ID, r32(self + E_VARIANT), wrap("EntityFamiliar", self), B.xmm(0), typed_entity(r32(self + PLAYER)))
++      busy = false
++      if ok and type(res) == "number" and res > 0 then B.xmm(0, res) end
++    end)
++  end
++end
 diff --git a/scripts/recomp/rgon/api_cb_grid_one.lua b/scripts/recomp/rgon/api_cb_grid_one.lua
 new file mode 100644
 index 0000000..ba4535f
@@ -3879,9 +4080,107 @@ index 0000000..ba4535f
 +    { M.MC_PRE_GRID_ENTITY_TELEPORTER_RENDER, M.MC_POST_GRID_ENTITY_TELEPORTER_RENDER, GT.GRID_TELEPORTER },
 +  })
 +end
+diff --git a/scripts/recomp/rgon/api_cb_hud.lua b/scripts/recomp/rgon/api_cb_hud.lua
+new file mode 100644
+index 0000000..d09d89b
+--- /dev/null
++++ b/scripts/recomp/rgon/api_cb_hud.lua
+@@ -0,0 +1,92 @@
++-- api_cb_hud.lua -- engine-hook callbacks of worker cb-hud (tools/hook_table.py rows 377-381, hook_slots.lua): the minimap and the
++-- PlayerHUD's special elements.
++--   1477 MC_PRE_MINIMAP_UPDATE / 1478 MC_POST_MINIMAP_UPDATE: Minimap::Update 0x0098dba0 (slot 377), thiscall, no arguments, plain ret.
++--   1479 MC_PRE_MINIMAP_RENDER / 1480 MC_POST_MINIMAP_RENDER: Minimap::Render 0x0098e4d0 (slot 378), the same shape.
++--     No argument, no param; REPENTOGON's PRE callbacks cannot cancel either, so an answer is ignored.
++--   1293/1294 MC_PRE/POST_PLAYERHUD_RENDER_INVENTORY    PlayerHUD::RenderInventory   0x00848d20 (slot 379, Tainted Isaac)
++--   1295/1296 MC_PRE/POST_PLAYERHUD_RENDER_POOP_SPELL_QUEUE  PlayerHUD::RenderSpellQueue 0x0084a3e0 (slot 380, Tainted ???)
++--   1297/1298 MC_PRE/POST_PLAYERHUD_RENDER_CRAFTING_TABLE    PlayerHUD::RenderCraftingTable 0x00849510 (slot 381, Bag of Crafting)
++--     Each is (Vector* pos) on the stack, `ret 4`, the scale in xmm2, `this` the player's PlayerHUD slot ([this] = the player).
++--     Callbacks (player, position, scale), no param. PRE: false skips the drawing (and the POST), a Vector draws at that position
++--     (put back afterwards); POST (player, position, scale) after it.
++-- Each is proven by lab_cb_hud.lua.
++local T = ...
++local B = T.B
++local r32, w32, rf32, wf32, ptr, log = B.r32, B.w32, B.rf32, B.wf32, B.ptr, B.log
++local M = ModCallbacks
++-- the Layer stages REPENTOGON's enums_ex.lua from an older snapshot that may not name these (REPENTOGON's own numbers)
++for name, id in pairs({ MC_PRE_PLAYERHUD_RENDER_INVENTORY = 1293, MC_POST_PLAYERHUD_RENDER_INVENTORY = 1294,
++  MC_PRE_PLAYERHUD_RENDER_POOP_SPELL_QUEUE = 1295, MC_POST_PLAYERHUD_RENDER_POOP_SPELL_QUEUE = 1296,
++  MC_PRE_PLAYERHUD_RENDER_CRAFTING_TABLE = 1297, MC_POST_PLAYERHUD_RENDER_CRAFTING_TABLE = 1298 }) do
++  if M[name] == nil then M[name] = id end
++end
++local function run(...) return T.run(...) end
++
++local SLOTS
++do
++  local chunk = B.load("hook_slots.lua")
++  if not chunk then return end
++  SLOTS = chunk()
++end
++if B.HOOKS < 382 then log("api_cb_hud: this engine has " .. B.HOOKS .. " hook slots; the callbacks here need a newer one") return end
++if not T.define or not T.wants or not B.xmm then log("api_cb_hud: api_hooks.lua's helpers are missing") return end
++local wants = T.wants
++
++local function slot_of(name)
++  local s = SLOTS[name]
++  if type(s) ~= "table" then log("api_cb_hud: no hook slot for " .. name) return nil end
++  return s[1]
++end
++
++-- minimap ---------------------------------------------------------------------------------------------------------------
++for _, e in ipairs({
++  { "Minimap::Update", M.MC_PRE_MINIMAP_UPDATE, M.MC_POST_MINIMAP_UPDATE },
++  { "Minimap::Render", M.MC_PRE_MINIMAP_RENDER, M.MC_POST_MINIMAP_RENDER },
++}) do
++  local PRE, POST = e[2], e[3]
++  local slot = PRE and POST and slot_of(e[1])
++  if slot then
++    T.define(slot, { PRE, POST }, function()
++      if wants(PRE, nil) then run(PRE, nil) end
++      return wants(POST, nil) and {} or false
++    end, function(self, esp, eax, k)
++      if k then run(POST, nil) end
++    end)
++  end
++end
++
++-- PlayerHUD special elements ----------------------------------------------------------------------------------------------
++for _, e in ipairs({
++  { "PlayerHUD::RenderInventory", M.MC_PRE_PLAYERHUD_RENDER_INVENTORY, M.MC_POST_PLAYERHUD_RENDER_INVENTORY },
++  { "PlayerHUD::RenderSpellQueue", M.MC_PRE_PLAYERHUD_RENDER_POOP_SPELL_QUEUE, M.MC_POST_PLAYERHUD_RENDER_POOP_SPELL_QUEUE },
++  { "PlayerHUD::RenderCraftingTable", M.MC_PRE_PLAYERHUD_RENDER_CRAFTING_TABLE, M.MC_POST_PLAYERHUD_RENDER_CRAFTING_TABLE },
++}) do
++  local PRE, POST = e[2], e[3]
++  local slot = PRE and POST and slot_of(e[1])
++  if slot then
++    T.define(slot, { PRE, POST }, function(self, esp)
++      if not (wants(PRE, nil) or wants(POST, nil)) then return false end
++      local at = r32(esp + 4)
++      if at == 0 then return false end
++      local player = T.wrap("EntityPlayer", r32(self))
++      if not player then return false end
++      local scale = B.xmm(2)
++      local pos = Vector(rf32(at), rf32(at + 4))
++      local keep
++      if wants(PRE, nil) then
++        local res = run(PRE, nil, player, Vector(pos.X, pos.Y), scale)
++        if res == false then return true, 0, 4 end
++        if type(res) == "userdata" and res.X ~= nil then
++          keep = { at, r32(at), r32(at + 4) }
++          wf32(at, res.X) wf32(at + 4, res.Y)
++          pos = Vector(res.X, res.Y)
++        end
++      end
++      return { player, pos, scale, keep }
++    end, function(self, esp, eax, k)
++      if not k then return end
++      if k[4] then w32(k[4][1], k[4][2]) w32(k[4][1] + 4, k[4][3]) end
++      if wants(POST, nil) then run(POST, nil, k[1], k[2], k[3]) end
++    end)
++  end
++end
 diff --git a/scripts/recomp/rgon/api_cb_level.lua b/scripts/recomp/rgon/api_cb_level.lua
 new file mode 100644
-index 0000000..d6986e9
+index 0000000..037fea4
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_cb_level.lua
 @@ -0,0 +1,253 @@
@@ -3943,12 +4242,12 @@ index 0000000..d6986e9
 +local function room_desc(a) return a ~= 0 and wrap("RoomDescriptor", a) or nil end
 +
 +------------------------------------------------------------------------------
-+-- LevelGenerator (only handed to MC_POST_LEVEL_LAYOUT_GENERATED): rooms vector [+0x364] of 0x50-byte LevelGeneratorRooms, dead end and
++-- LevelGenerator (only handed to MC_POST_LEVEL_LAYOUT_GENERATED): rooms vector [+0x364] of 0x48-byte LevelGeneratorRooms (measured: 10 rooms = 720 bytes, sane records only at 0x48), dead end and
 +-- non dead end generation indexes (vectors of int) at +0x370 and +0x37c
 +------------------------------------------------------------------------------
 +local new_lg
 +do
-+  local ROOMS, DEAD, NONDEAD, STRIDE = 0x364, 0x370, 0x37c, 0x50
++  local ROOMS, DEAD, NONDEAD, STRIDE = 0x364, 0x370, 0x37c, 0x48
 +  local function at(self, what)
 +    local p = type(self) == "userdata" and ptr(self) or 0
 +    if p == 0 then error("rgon: LevelGenerator:" .. what .. " called without its object (use ':')", 3) end
@@ -8629,10 +8928,10 @@ index 0000000..1bfe19c
 +end
 diff --git a/scripts/recomp/rgon/api_gfx.lua b/scripts/recomp/rgon/api_gfx.lua
 new file mode 100644
-index 0000000..33cce16
+index 0000000..05f24da
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_gfx.lua
-@@ -0,0 +1,409 @@
+@@ -0,0 +1,408 @@
 +-- api_gfx.lua -- Image, Renderer.CreateImage / LoadImage / RenderToImage, SourceQuad conversions and the
 +-- spritesheet functions of Sprite and LayerState (wave 5, worker gfx).
 +--
@@ -8740,8 +9039,7 @@ index 0000000..33cce16
 +function Image:GetWidth() return image_arg(0, "GetWidth", self)._w end
 +function Image:GetHeight() return image_arg(0, "GetHeight", self)._h end
 +function Image:GetName() return image_arg(0, "GetName", self)._name end
-+function Image:GetPaddedWidth() return self._w end
-+function Image:GetPaddedHeight() return self._h end
++-- GetPaddedWidth / GetPaddedHeight: api_image_render.lua (the engine pads to a power of two, measured)
 +
 +-- RGBA bytes, row by row, of the region (x, y, width, height); pixels outside the image read as transparent
 +function Image:GetTexelRegion(x, y, w, h)
@@ -9251,7 +9549,7 @@ index 0000000..60c92d3
 +  end
 +end
 diff --git a/scripts/recomp/rgon/api_hooks.lua b/scripts/recomp/rgon/api_hooks.lua
-index 92f9c5b..1a9a696 100644
+index 92f9c5b..0ebb6be 100644
 --- a/scripts/recomp/rgon/api_hooks.lua
 +++ b/scripts/recomp/rgon/api_hooks.lua
 @@ -179,12 +179,23 @@ local CLASSES = {
@@ -9913,9 +10211,9 @@ index 92f9c5b..1a9a696 100644
 +    -- the hooks sit on each class's test (tools/hook_table.py slots 215-219) and an ignored collision gets the answer "none".
 +    -- An entity checks one cell many times a frame: the answer is kept per (entity, cell) until the next frame, as REPENTOGON does.
 +    local COLL = {
-+      -- familiars (type 3: 1175/1176) are not wired: a Brother Bobby pushed into a rock at 8 px/frame passed it with no call (the
-+      -- familiar's grid collision class is none), so no collision exists to report and the names stay out of Implemented
-+      [1] = { 1171, 1172, "EntityPlayer" }, [2] = { 1173, 1174, "EntityTear" },
++      -- familiars (type 3: 1175/1176) report a collision only while their GridCollisionClass is not NONE (most vanilla familiars
++      -- have none: a Brother Bobby pushed into a rock passes it with no call; lab_cb_entity sets the class to GROUND and checks)
++      [1] = { 1171, 1172, "EntityPlayer" }, [2] = { 1173, 1174, "EntityTear" }, [3] = { 1175, 1176, "EntityFamiliar" },
 +      [4] = { 1177, 1178, "EntityBomb" }, [5] = { 1179, 1180, "EntityPickup" }, [9] = { 1181, 1182, "EntityProjectile" },
 +    }
 +    local NPC_COLL = { 1183, 1184, "EntityNPC" }
@@ -10785,6 +11083,164 @@ index 0000000..92bf2ed
 +    end)
 +  end
 +end
+diff --git a/scripts/recomp/rgon/api_image_render.lua b/scripts/recomp/rgon/api_image_render.lua
+new file mode 100644
+index 0000000..6759e44
+--- /dev/null
++++ b/scripts/recomp/rgon/api_image_render.lua
+@@ -0,0 +1,152 @@
++-- api_image_render.lua -- wave 10, worker image-render: Renderer.GetPixelationAmount, DebugRenderer.Get and the Shape class
++-- (GetTimeout, SetTimeout, Capsule, Circle). Written against REPENTOGON's behaviour (LuaRender.cpp, LuaShape.cpp,
++-- LuaDebugRenderer.cpp); no C++ copied. Every address and offset below was read in THIS executable (v1.9.7.17) and is read back
++-- by lab_image_render.lua.
++--
++--   Renderer.GetPixelationAmount
++--       the float global at 0x00c79a4c. Game::Render (0x0080f200) writes it near its start (a countdown at game + 0x269e0 over
++--       game + 0x269e4 divided by 15, or 1.0 when no such effect runs) and writes 0 at its end; the ColorOffset shader setup
++--       (0x00683060) reads it as the "PixelationAmount" uniform. It is therefore only meaningful while the game renders (a render
++--       callback); between frames it is 0.
++--   DebugRenderer.Get(index = -1, unk = false) -> Shape
++--       DebugRenderer::Get 0x0042eb10 (thiscall, ecx = game + 0x6772c, stack (index, unk), `ret 8`): finds the node of that index in
++--       the renderer's list or makes one (index -1 always makes a new one) and answers the Shape inside it. REPENTOGON's signature
++--       matches this function once, and its three callers (Entity's debug shape 0x006b5f10 among them) pass the same ecx.
++--   Shape (the object inside the node): +0 the index, +4 the timeout (frames; a fresh shape starts at 5), +8 / +0xc the begin and
++--       end of a vector of 16-bit vertex indices, +0x20 / +0x24 the begin and end of a vector of Vectors (the vertices).
++--       Shape:Capsule(capsule)  0x0042eef0 (ecx = the shape, one stack word, `ret 4`, answers the shape): appends the capsule's
++--           position, direction and size words and the indices that draw it.
++--       Shape:Circle(position, size)  0x0042ede0 (ecx = the shape, one stack word = Vector*, the size in xmm2, `ret 4`).
++--       The game draws the shapes of its list while its debug word (game + 0x26544) has bit 5 set (console `debug 6`).
++local T = ...
++local B, R = T.B, T.R
++local r32, ri32, rf32, w32, wf32, call, log = B.r32, B.ri32, B.rf32, B.w32, B.wf32, B.call, B.log
++local type, error, setmetatable, getmetatable, rawget, rawset, ipairs = type, error, setmetatable, getmetatable, rawget, rawset, ipairs
++local mathtype = math.type
++
++local GAME_PTR = 0x00c71678
++
++local function argerr(n, fname, want, v)
++  error("bad argument #" .. n .. " to '" .. fname .. "' (" .. want .. " expected, got " .. (v == nil and "no value" or type(v)) .. ")", 3)
++end
++
++------------------------------------------------------------------------------
++-- Renderer.GetPixelationAmount
++------------------------------------------------------------------------------
++local Rn = rawget(_G, "Renderer")
++if type(Rn) == "table" then
++  Rn.GetPixelationAmount = function() return rf32(0x00c79a4c) end
++  R.Implemented["Renderer.GetPixelationAmount"] = true
++else
++  log("api_image_render: no Renderer table; GetPixelationAmount is left out")
++end
++
++------------------------------------------------------------------------------
++-- Image:GetPaddedWidth / GetPaddedHeight
++------------------------------------------------------------------------------
++-- The engine's image object (the room backdrop's floor and wall buffers, read in this build: vtable 0x00ba0328, width at +0x10,
++-- height at +0x14, padded width at +0x18, padded height at +0x1c) holds 780 x 468 pixels in a 1024 x 512 texture: the padded
++-- size is the next power of two. An Image of the Layer has no engine texture behind it, so it answers what the engine
++-- would: the next power of two of its size (0 stays 0).
++if type(Rn) == "table" and Rn.CreateImage then
++  local ok, probe = pcall(Rn.CreateImage, 1, 1, "rgon_padded")
++  local mt = ok and getmetatable(probe)
++  local Image = type(mt) == "table" and mt.__index
++  if type(Image) == "table" then
++    local function pot(n)
++      if n <= 0 then return 0 end
++      local p = 1
++      while p < n do p = p << 1 end
++      return p
++    end
++    T.image_padded = pot
++    Image.GetPaddedWidth = function(self)
++      if type(self) ~= "table" or self._w == nil then error("rgon: Image:GetPaddedWidth called without its object (use ':')", 2) end
++      return pot(self._w)
++    end
++    Image.GetPaddedHeight = function(self)
++      if type(self) ~= "table" or self._h == nil then error("rgon: Image:GetPaddedHeight called without its object (use ':')", 2) end
++      return pot(self._h)
++    end
++    R.Implemented["Image.GetPaddedWidth"] = true
++    R.Implemented["Image.GetPaddedHeight"] = true
++  else
++    log("api_image_render: the Image class was not found; GetPaddedWidth/Height are left out")
++  end
++end
++
++------------------------------------------------------------------------------
++-- DebugRenderer.Get and Shape
++------------------------------------------------------------------------------
++local GET, CAPSULE, CIRCLE = 0x0042eb10, 0x0042eef0, 0x0042ede0
++local DEBUG_RENDERER = 0x6772c
++
++local Shape = { __type = "Shape", __name = "Shape" }
++Shape.__index = Shape
++Shape.__tostring = function(s) return string.format("Shape(%08x)", s.address) end
++local shapes = setmetatable({}, { __mode = "v" })
++local function shape_at(a)
++  local s = shapes[a]
++  if not s then
++    s = setmetatable({ address = a }, Shape)
++    shapes[a] = s
++  end
++  return s
++end
++local function self_shape(s, what)
++  if type(s) ~= "table" or getmetatable(s) ~= Shape then error("rgon: Shape:" .. what .. " called without its object (use ':')", 3) end
++  return s.address
++end
++
++function Shape:GetTimeout() return ri32(self_shape(self, "GetTimeout") + 4) end
++function Shape:SetTimeout(t)
++  local a = self_shape(self, "SetTimeout")
++  if mathtype(t) ~= "integer" then
++    if type(t) == "number" and t == t // 1 then t = math.tointeger(t) else argerr(1, "SetTimeout", "number", t) end
++  end
++  w32(a + 4, t & 0xffffffff)
++end
++function Shape:Circle(position, size)
++  local a = self_shape(self, "Circle")
++  if type(position) ~= "userdata" or position.X == nil then argerr(1, "Circle", "Vector", position) end
++  if type(size) ~= "number" then argerr(2, "Circle", "number", size) end
++  local v = Vector(position.X, position.Y)
++  call(CIRCLE, { ecx = a, xmm2 = size + 0.0 }, B.ptr(v))
++end
++function Shape:Capsule(capsule)
++  local a = self_shape(self, "Capsule")
++  if type(capsule) ~= "table" or capsule.GetSizeDifference == nil then argerr(1, "Capsule", "Capsule", capsule) end
++  local c = B.alloc(0x28)
++  local p, s, e, d = capsule:GetPosition(), capsule:GetStartPoint(), capsule:GetEndPoint(), capsule:GetDirection()
++  local words = { p.X, p.Y, s.X, s.Y, e.X, e.Y, d.X, d.Y, capsule:GetSize(), capsule:GetSizeDifference() }
++  for i, v in ipairs(words) do wf32(c + 4 * (i - 1), v) end
++  call(CAPSULE, { ecx = a }, c)
++  B.free(c)
++end
++R.Implemented["Shape.GetTimeout"] = true
++R.Implemented["Shape.SetTimeout"] = true
++R.Implemented["Shape.Circle"] = true
++R.Implemented["Shape.Capsule"] = true
++T.shape_at = shape_at
++
++local function get_shape(index, unk)
++  local g = r32(GAME_PTR)
++  if g == 0 then error("rgon: DebugRenderer.Get used with no game", 3) end
++  local a = call(GET, { ecx = g + DEBUG_RENDERER }, index & 0xffffffff, unk and 1 or 0) & 0xffffffff
++  if a == 0 then return nil end
++  return shape_at(a)
++end
++local DR = rawget(_G, "DebugRenderer")
++if type(DR) ~= "table" then
++  DR = {}
++  rawset(_G, "DebugRenderer", DR)
++end
++DR.Get = function(index, unk)
++  if index == nil then index = -1 end
++  if mathtype(index) ~= "integer" then
++    if type(index) == "number" and index == index // 1 then index = math.tointeger(index) else argerr(1, "Get", "number", index) end
++  end
++  if unk ~= nil and type(unk) ~= "boolean" then argerr(2, "Get", "boolean", unk) end
++  return get_shape(index, unk == true)
++end
++R.Implemented["DebugRenderer.Get"] = true
 diff --git a/scripts/recomp/rgon/api_innate.lua b/scripts/recomp/rgon/api_innate.lua
 index 578d441..53cea75 100644
 --- a/scripts/recomp/rgon/api_innate.lua
@@ -11676,6 +12132,146 @@ index 0000000..ba15c4c
 +    return out
 +  end)
 +end
+diff --git a/scripts/recomp/rgon/api_level_itempool_misc.lua b/scripts/recomp/rgon/api_level_itempool_misc.lua
+new file mode 100644
+index 0000000..30eb382
+--- /dev/null
++++ b/scripts/recomp/rgon/api_level_itempool_misc.lua
+@@ -0,0 +1,134 @@
++-- api_level_itempool_misc.lua -- wave 10, worker level-itempool-misc: Level:PlaceRoom and ItemPool:AddTemporaryCollectible /
++-- RemoveTemporaryCollectible. Written against REPENTOGON's behaviour (LuaLevelGeneratorEntry.cpp, LuaItemPool.cpp); no C++ copied.
++-- Every address and offset below was found in THIS executable (v1.9.7.17) and read back by lab_level_itempool_misc.lua.
++--
++--   Level:PlaceRoom(entry, config, seed) -> boolean: Game::PlaceRoom 0x00738ab0 (ecx = the Game, five stack words: the
++--     LevelGeneratorEntry's buffer, the RoomConfigRoom, the seed, 0, 0; `ret 0x14`; bool in AL), the function Level:TryPlaceRoom
++--     (api_rooms_more.lua) already calls. Like REPENTOGON's it checks nothing about the cell and makes no doors.
++--   ItemPool: pool data (ItemPool::GetPool 0x00732c70, `ret 4`) = { float total weight, vector<PoolItem> +4/+8/+0xc }, a PoolItem 0x18
++--     bytes { id, initialWeight, weight, decreaseBy, removeOn, byte isUnlocked } (api_pickup_more.lua measured both). A temporary
++--     collectible is an entry added to that live vector and not remembered for the next run (the game rebuilds its pools at every run
++--     start); a removal only takes out an entry that was added temporarily, the last one that matches.
++local T = ...
++local B, R, method, this = T.B, T.R, T.method, T.this
++local ptr, r32, ri32, rf32, w32, wf32, call, log = B.ptr, B.r32, B.ri32, B.rf32, B.w32, B.wf32, B.call, B.log
++local type, error, pairs, ipairs, pcall = type, error, pairs, ipairs, pcall
++local mathtype = math.type
++
++local function argerr(n, fname, want, got)
++  error("bad argument #" .. n .. " to '" .. fname .. "' (" .. want .. " expected, got " .. (got == nil and "no value" or type(got)) .. ")", 3)
++end
++local function int_arg(v, n, fname)
++  if mathtype(v) == "integer" then return v end
++  if type(v) == "number" and v == v // 1 then return math.tointeger(v) end
++  argerr(n, fname, "number", v)
++end
++
++------------------------------------------------------------------------------
++-- Level:PlaceRoom
++------------------------------------------------------------------------------
++do
++  local PLACE_ROOM = 0x00738ab0
++  method("Level", "PlaceRoom", function(self, entry, config, seed)
++    this(self, "PlaceRoom")
++    if type(entry) ~= "userdata" or ptr(entry) == 0 or entry.SetColIdx == nil then argerr(1, "PlaceRoom", "LevelGeneratorEntry", entry) end
++    if type(config) ~= "userdata" or ptr(config) == 0 then argerr(2, "PlaceRoom", "RoomConfigRoom", config) end
++    seed = int_arg(seed, 3, "PlaceRoom")
++    return (call(PLACE_ROOM, { ecx = ptr(Game()) }, ptr(entry), ptr(config), seed & 0xffffffff, 0, 0) & 0xff) ~= 0
++  end)
++end
++
++------------------------------------------------------------------------------
++-- ItemPool:AddTemporaryCollectible / RemoveTemporaryCollectible
++------------------------------------------------------------------------------
++do
++  local POOL_AT, NUM_POOLS, ENTRY = 0x00732c70, 31, 0x18
++  local TEMP = {}   -- { poolType, id, weight, dec, rem } of every entry added and not yet removed
++  local function field(t, name)
++    for k, v in pairs(t) do if type(k) == "string" and k:lower() == name then return v end end
++  end
++  local function parse(t, fname)
++    local id = field(t, "itemid")
++    if id == nil then
++      local name = field(t, "name")
++      if type(name) == "string" then id = Isaac.GetItemIdByName(name) end
++    end
++    if mathtype(id) ~= "integer" or id <= 0 or Isaac.GetItemConfig():GetCollectible(id) == nil then
++      log("ItemPool." .. fname .. ": skipped an entry with no valid collectible (" .. tostring(id) .. ")")
++      return nil
++    end
++    local function num(name, d) local v = field(t, name) return type(v) == "number" and v or d end
++    return { id = id, weight = num("weight", 1.0), dec = num("decreaseby", 0.5), rem = num("removeon", 0.1) }
++  end
++  local function entries(items, fname)
++    if type(items) ~= "table" then argerr(2, fname, "table", items) end
++    local list = items[1] ~= nil and items or { items }
++    local out = {}
++    for _, t in ipairs(list) do
++      local it = type(t) == "table" and parse(t, fname)
++      if it then out[#out + 1] = it end
++    end
++    return out
++  end
++  local function data_of(pool, idx, fname)
++    idx = int_arg(idx, 1, fname)
++    if idx < 0 or idx >= NUM_POOLS then argerr(1, fname, "a valid ItemPoolType", idx) end
++    return call(POOL_AT, pool, idx), idx
++  end
++  local function in_game(fname)
++    if r32(0x00c71678) == 0 then error("Cannot " .. fname .. " while not in game", 3) end
++  end
++  local function near(a, b) return math.abs(a - b) < 0.0001 end
++
++  method("ItemPool", "AddTemporaryCollectible", function(self, poolType, items)
++    local pool = this(self, "AddTemporaryCollectible")
++    local data, idx = data_of(pool, poolType, "AddTemporaryCollectible")
++    in_game("add a temporary item")
++    for _, it in ipairs(entries(items, "AddTemporaryCollectible")) do
++      local first, last, cap = r32(data + 4), r32(data + 8), r32(data + 0xc)
++      local n = (last - first) // ENTRY
++      if last + ENTRY > cap then
++        local ncap = (n + 1) * ENTRY + ENTRY * 8
++        local buf = B.alloc(ncap)
++        for i = 0, n * 6 - 1 do w32(buf + 4 * i, r32(first + 4 * i)) end
++        if first ~= 0 then B.free(first) end
++        first = buf
++        w32(data + 4, buf) w32(data + 0xc, buf + ncap)
++      end
++      local e = first + n * ENTRY
++      local cfg = Isaac.GetItemConfig():GetCollectible(it.id)
++      local ok, avail = pcall(cfg.IsAvailable, cfg)
++      w32(e, it.id & 0xffffffff) wf32(e + 4, it.weight) wf32(e + 8, it.weight) wf32(e + 12, it.dec) wf32(e + 16, it.rem)
++      w32(e + 20, (not ok or avail ~= false) and 1 or 0)
++      w32(data + 8, e + ENTRY)
++      wf32(data, rf32(data) + it.weight)
++      TEMP[#TEMP + 1] = { idx, it.id, it.weight, it.dec, it.rem }
++    end
++  end)
++
++  method("ItemPool", "RemoveTemporaryCollectible", function(self, poolType, items)
++    local pool = this(self, "RemoveTemporaryCollectible")
++    local data, idx = data_of(pool, poolType, "RemoveTemporaryCollectible")
++    in_game("remove a temporary item")
++    for _, it in ipairs(entries(items, "RemoveTemporaryCollectible")) do
++      for k = #TEMP, 1, -1 do
++        local t = TEMP[k]
++        if t[1] == idx and t[2] == it.id and near(t[3], it.weight) and near(t[4], it.dec) and near(t[5], it.rem) then
++          local first, last = r32(data + 4), r32(data + 8)
++          for e = last - ENTRY, first, -ENTRY do
++            if ri32(e) == it.id and near(rf32(e + 4), it.weight) and near(rf32(e + 12), it.dec) and near(rf32(e + 16), it.rem) then
++              for a = e, last - ENTRY - 4, 4 do w32(a, r32(a + ENTRY)) end
++              w32(data + 8, last - ENTRY)
++              wf32(data, rf32(data) - it.weight)
++              break
++            end
++          end
++          table.remove(TEMP, k)
++          break
++        end
++      end
++    end
++  end)
++  -- the pools are rebuilt at every run start: nothing added before it is still in them
++  T.listen(ModCallbacks.MC_POST_GAME_STARTED, function() TEMP = {} end, -math.huge)
++end
 diff --git a/scripts/recomp/rgon/api_locate.lua b/scripts/recomp/rgon/api_locate.lua
 new file mode 100644
 index 0000000..dff2879
@@ -12226,6 +12822,103 @@ index 0000000..cc5d9f3
 +  end
 +  if rawget(_G, "MainMenu") == nil or rawget(_G, "MainMenu") == false then rawset(_G, "MainMenu", MMN) end
 +  implemented("MainMenu", { "GetGameMenuSprite", "GetContinueWidgetSprite", "GetSelectedElement", "SetSelectedElement" })
++end
+diff --git a/scripts/recomp/rgon/api_menus_more.lua b/scripts/recomp/rgon/api_menus_more.lua
+new file mode 100644
+index 0000000..5e0efd4
+--- /dev/null
++++ b/scripts/recomp/rgon/api_menus_more.lua
+@@ -0,0 +1,91 @@
++-- api_menus_more.lua -- wave 10, worker menus-c: more menu names, each proven by the game's own reaction (lab_menus_more.lua).
++-- Written against REPENTOGON's behaviour (LuaModsMenu.cpp, LuaCustomChallengeMenu.cpp); no C++ copied. Menus sit in the menu manager
++-- ([0x00c72a20]) at the bases api_menus_rest.lua measured.
++--   ModsMenu (base 0xd96c): selected index +0 (the game's Down/Up moved it 0 -> 1 -> 2 -> 1), a pointer into the mod list +0x128 that moves
++--     by 4 bytes per element, and +0x124 = 1 once the list was edited (Enter on a mod). The Lua side counts from 1, as REPENTOGON's.
++--   CustomChallengeMenu (base 0xd848): selected index +0 (Up moved it 46 -> 45).
++-- Names the game did not react to (DailyChallengeMenu, KeyConfigMenu, ControllerSelectMenu) stay unregistered; see layer-gaps.md.
++local T = ...
++local B, R = T.B, T.R
++local r32, ri32, w32 = B.r32, B.ri32, B.w32
++local type, error, rawget, rawset = type, error, rawget, rawset
++local mathtype = math.type
++
++local MM_PTR = 0x00c72a20
++local function int_arg(v, n, what)
++  if mathtype(v) == "float" and v == math.floor(v) then v = math.tointeger(v) end
++  if mathtype(v) ~= "integer" then error("bad argument #" .. n .. " to '" .. what .. "' (number expected, got " .. (v == nil and "no value" or type(v)) .. ")", 3) end
++  return v
++end
++local function manager(what)
++  local mm = r32(MM_PTR)
++  if mm == 0 then error(what .. ": the main menu does not exist (it is only there outside a run's first frames)", 3) end
++  return mm
++end
++local function put(cls, name, fn)
++  local t = rawget(_G, cls)
++  if type(t) ~= "table" then t = {} rawset(_G, cls, t) end
++  if rawget(t, name) == nil then
++    t[name] = fn
++    R.Implemented[cls .. "." .. name] = true
++  end
++end
++
++-- ModsMenu
++do
++  local BASE = 0xd96c
++  put("ModsMenu", "GetSelectedElement", function() return ri32(manager("ModsMenu.GetSelectedElement") + BASE) + 1 end)
++  -- the mod list is an array of 4-byte entries: the pointer at +0x128 is the array start + 4 * index (measured, lab_menus_more.lua: 0x..7c,
++  -- 0x..80, 0x..84, 0x..88 for the indexes 0 to 3, and Down at the last one wraps to 0). The array's start and end are found in the game's
++  -- manager once, as the two consecutive words (start, start + 4 * count) that hold the start the menu points at.
++  local count_cache
++  local function mod_count(base)
++    if count_cache then return count_cache end
++    local start = r32(base + 0x128) - 4 * ri32(base)
++    local man = r32(0x00c7169c)
++    if man == 0 then return nil end
++    for o = 0x29800, 0x2b000, 4 do
++      if r32(man + o) == start then
++        local e = r32(man + o + 4)
++        if e > start and (e - start) % 4 == 0 and e - start < 4 * 4096 then count_cache = (e - start) // 4 return count_cache end
++      end
++    end
++    return nil
++  end
++  put("ModsMenu", "SetSelectedElement", function(v)
++    v = int_arg(v, 1, "SetSelectedElement")
++    local base = manager("ModsMenu.SetSelectedElement") + BASE
++    local n = v - 1
++    local count = mod_count(base)
++    if count and n >= count then n = count - 1 end
++    if n < 0 then n = 0 end
++    local start = r32(base + 0x128) - 4 * ri32(base)
++    w32(base, n)
++    w32(base + 0x128, start + 4 * n)
++  end)
++  put("ModsMenu", "WasListEdited", function() return ri32(manager("ModsMenu.WasListEdited") + BASE + 0x124) == 1 end)
++end
++
++-- CustomChallengeMenu
++do
++  local BASE = 0xd848
++  put("CustomChallengeMenu", "GetSelectedChallengeID", function() return ri32(manager("CustomChallengeMenu.GetSelectedChallengeID") + BASE) end)
++  put("CustomChallengeMenu", "SetSelectedChallengeID", function(v)
++    v = int_arg(v, 1, "SetSelectedChallengeID")
++    w32(manager("CustomChallengeMenu.SetSelectedChallengeID") + BASE, v & 0xffffffff)
++  end)
++end
++
++-- PauseMenu.GetMyStuffSprite: the pause screen's "my stuff" sprite (PauseScreen_MyStuff.anm2) is at game+0x23a74+0xb3c in this build
++-- (found by listing the sprites of the open pause screen, lab_menus_more.lua run mode; REPENTOGON's +0x368 holds Death Screen.anm2 here).
++-- The sprite is only there once the pause screen has been opened, so the self pointers are checked: nil before that.
++do
++  local PAUSE = 0x23a74
++  put("PauseMenu", "GetMyStuffSprite", function()
++    local g = r32(0x00c71678)
++    if g == 0 then error("PauseMenu.GetMyStuffSprite: there is no game yet", 2) end
++    local a = g + PAUSE + 0xb3c
++    if r32(a + 0x30) ~= a or r32(a + 0x50) ~= a then return nil end
++    return T.wrap("Sprite", a)
++  end)
 +end
 diff --git a/scripts/recomp/rgon/api_menus_rest.lua b/scripts/recomp/rgon/api_menus_rest.lua
 new file mode 100644
@@ -13782,6 +14475,190 @@ index 0000000..509414c
 +    log("api_npc_blood: no RoomDescriptor table; CreateGroup / GetGroupByName left out")
 +  end
 +end
+diff --git a/scripts/recomp/rgon/api_npc_entity_misc.lua b/scripts/recomp/rgon/api_npc_entity_misc.lua
+new file mode 100644
+index 0000000..7489bf8
+--- /dev/null
++++ b/scripts/recomp/rgon/api_npc_entity_misc.lua
+@@ -0,0 +1,178 @@
++-- api_npc_entity_misc.lua -- wave 10, worker npc-entity-misc: EntityNPC GetHitList, GetFireplaceLoot, GetShopkeeperLoot; Entity
++-- GetKnockbackDirection, SetKnockbackDirection, SpawnWaterImpactEffects; EntityEffect.CreateLootPreview; EntityPickup.CanReroll.
++-- Written against REPENTOGON's behaviour (LuaEntityNPC.cpp, LuaEntity.cpp, LuaEntityEffect.cpp, LuaEntityPickup.cpp, LuaLootList.cpp);
++-- every address and offset below was read in THIS executable (v1.9.7.17) and is exercised by lab_npc_entity_misc.lua.
++--
++-- Entity (offsets from the entity)
++--   0x308  knockback direction, two floats (REPENTOGON's .12 offset, the same). Entity::AddKnockback 0x006b7a80 (`ret 0x10`: ref,
++--          Vector* direction, duration, takeDamage) writes the duration to +0x2f8 and the direction to +0x308/+0x30c (the root of a
++--          parent chain; a heavy target, +0x37c above a threshold, gets the direction scaled by 1/sqrt(mass)); Entity::Copy 0x006a8a20
++--          copies both words. The lab calls AddKnockback and reads the words back.
++-- EntityNPC (offsets from the NPC)
++--   0xf00  hit list: a sorted std::vector<uint> (begin +0xf00, end +0xf04, capacity +0xf08) of Entity::GetHitListIndex values
++--          (0x006b62b0, plain `ret`). The NPC initialiser 0x006b8b20 empties it (end = begin), a charging enemy's collision code
++--          (0x006cdfb3) checks it with the sorted lookup 0x00431640 (thiscall, `ret 4`) and inserts the other entity with 0x00431620
++--          (thiscall, `ret 4`, the entity pointer) so one rush hits each entity once. The lab inserts through 0x00431620.
++-- EntityNPC, the game's functions (thiscall, ecx = the NPC; the result deque is built by the game into a buffer the caller gives)
++--   0x006d1580 fireplace_get_loot(deque*, shouldAdvance)    `ret 8`. Empty for entity flag 0x400 or types 4, 10, 11, 12, 13.
++--   0x006c1ac0 shopkeeper_get_loot(deque*, shouldAdvance)   `ret 8`.
++--   The deque is the one api_pickup_more.lua reads (+4 map, +8 map size, +0xc first, +0x10 count, 0x14-byte entries).
++-- Entity_Effect::CreateLootPreview 0x0060b7a0: static, ecx = the deque, edx = Vector* position, stack (owner Entity*, effect*), caller
++--   cleans. Reuses `effect` when it is a type 1000 variant 191 effect, else spawns one (0x006fe410); puts the position in it, hands
++--   the deque to 0x0060bae0 (thiscall, the effect, one stack word) and parents it to the owner when given; answers the effect (EAX).
++--   The deque handed to it is built here with the game's own emplace_back 0x006b84e0 (`ret 0x14`) and emptied with 0x006da850.
++-- Entity::DoGroundImpactEffects 0x006b68c0: static, stack (Vector* position, Vector* velocity) `ret 8`, strength in xmm3. REPENTOGON's
++--   signature matches nothing; this is the function that spawns 8 to 13 effects of variant 99 (water droplets) around the position,
++--   spread by the velocity's direction, and only while the room's water amount (room +0x7240) is above a threshold.
++-- Entity_Pickup::CanReroll 0x006ee200: thiscall, plain `ret`, bool in AL (flag byte +0x173, then the static variant test 0x006ee240).
++local T = ...
++local B, R, method, static, wrap, this = T.B, T.R, T.method, T.static, T.wrap, T.this
++local ptr, r8, r32, ri32, rf32, w32, wf32, call, log = B.ptr, B.r8, B.r32, B.ri32, B.rf32, B.w32, B.wf32, B.call, B.log
++local type, error, rawget, getmetatable, ipairs = type, error, rawget, getmetatable, ipairs
++local mathtype = math.type
++
++local function argerr(n, fname, want, got)
++  error("bad argument #" .. n .. " to '" .. fname .. "' (" .. want .. " expected, got " .. type(got) .. ")", 3)
++end
++local function vec_arg(v, n, fname)
++  if type(v) ~= "userdata" or v.X == nil then argerr(n, fname, "Vector", v) end
++  return v
++end
++
++local N_HITLIST, E_KNOCKBACK = 0xf00, 0x308
++
++------------------------------------------------------------------------------
++-- Entity: GetKnockbackDirection, SetKnockbackDirection
++------------------------------------------------------------------------------
++method("Entity", "GetKnockbackDirection", function(self)
++  local p = this(self, "GetKnockbackDirection")
++  return Vector(rf32(p + E_KNOCKBACK), rf32(p + E_KNOCKBACK + 4))
++end)
++method("Entity", "SetKnockbackDirection", function(self, dir)
++  local p = this(self, "SetKnockbackDirection")
++  dir = vec_arg(dir, 1, "SetKnockbackDirection")
++  wf32(p + E_KNOCKBACK, dir.X)
++  wf32(p + E_KNOCKBACK + 4, dir.Y)
++end)
++
++------------------------------------------------------------------------------
++-- Entity:SpawnWaterImpactEffects(position, velocity, scale)
++------------------------------------------------------------------------------
++method("Entity", "SpawnWaterImpactEffects", function(self, pos, vel, scale)
++  this(self, "SpawnWaterImpactEffects")
++  pos = vec_arg(pos, 1, "SpawnWaterImpactEffects")
++  if type(scale) ~= "number" then argerr(3, "SpawnWaterImpactEffects", "number", scale) end
++  -- REPENTOGON hands a zero vector when none is given; the game divides by the larger component, so a zero one is replaced by
++  -- a vector with no preferred direction (1, 0) rather than letting the effects' positions turn into NaN
++  if type(vel) ~= "userdata" or vel.X == nil then vel = Vector(0, 0) end
++  if vel.X == 0 and vel.Y == 0 then vel = Vector(1, 0) end
++  call(0x006b68c0, { xmm3 = scale }, ptr(pos), ptr(vel))
++end)
++
++------------------------------------------------------------------------------
++-- EntityPickup:CanReroll()
++------------------------------------------------------------------------------
++method("EntityPickup", "CanReroll", function(self)
++  return (call(0x006ee200, this(self, "CanReroll")) & 0xff) ~= 0
++end)
++
++------------------------------------------------------------------------------
++-- EntityNPC:GetHitList() -> integer[]
++------------------------------------------------------------------------------
++method("EntityNPC", "GetHitList", function(self)
++  local p = this(self, "GetHitList")
++  local out = {}
++  local first, last = r32(p + N_HITLIST), r32(p + N_HITLIST + 4)
++  if first ~= 0 and last >= first then
++    for i = 0, (last - first) // 4 - 1 do out[#out + 1] = r32(first + 4 * i) end
++  end
++  return out
++end)
++
++------------------------------------------------------------------------------
++-- LootList <-> the game's std::deque
++------------------------------------------------------------------------------
++local LL_MT = nil
++do
++  local ok, probe = pcall(function() return LootList() end)
++  if ok and probe ~= nil then LL_MT = getmetatable(probe) end
++end
++
++local function copy_rng(rp)
++  local rng = RNG()
++  local d = ptr(rng)
++  for i = 0, 3 do w32(d + 4 * i, r32(rp + 4 * i)) end
++  return rng
++end
++
++-- read a deque the game built into `buf`, answer a LootList and destroy the deque (and its 8-byte proxy block)
++local function take_deque(buf)
++  local out = LootList()
++  local map, mapsize, first, count = r32(buf + 4), r32(buf + 8), r32(buf + 0xc), r32(buf + 0x10)
++  if mapsize ~= 0 then
++    for i = 0, count - 1 do
++      local e = r32(map + 4 * ((first + i) % mapsize))
++      local rp = r32(e + 0x10)
++      out:PushEntry(ri32(e), ri32(e + 4), ri32(e + 8), r32(e + 0xc), rp ~= 0 and copy_rng(rp) or nil)
++    end
++  end
++  call(0x006da850, buf)
++  if r32(buf) ~= 0 then B.free(r32(buf)) end
++  B.free(buf)
++  return out
++end
++
++local function npc_loot(fname, addr)
++  method("EntityNPC", fname, function(self, advance)
++    local p = this(self, fname)
++    if advance ~= nil and type(advance) ~= "boolean" then argerr(1, fname, "boolean", advance) end
++    local buf = B.alloc(0x20)
++    for i = 0, 7 do w32(buf + 4 * i, 0) end
++    call(addr, p, buf, advance and 1 or 0)
++    return take_deque(buf)
++  end)
++end
++npc_loot("GetFireplaceLoot", 0x006d1580)
++npc_loot("GetShopkeeperLoot", 0x006c1ac0)
++
++------------------------------------------------------------------------------
++-- EntityEffect.CreateLootPreview(lootList, position, owner, effect = nil) -> EntityEffect
++------------------------------------------------------------------------------
++do
++  local EE = rawget(_G, "EntityEffect")
++  if type(EE) ~= "table" then
++    log("api_npc_entity_misc: the game has no EntityEffect table; CreateLootPreview is left out")
++  else
++    static(EE, "EntityEffect", "CreateLootPreview", function(list, pos, owner, effect)
++      if type(list) ~= "table" or list._e == nil or (LL_MT ~= nil and getmetatable(list) ~= LL_MT) then argerr(1, "CreateLootPreview", "LootList", list) end
++      pos = vec_arg(pos, 2, "CreateLootPreview")
++      if type(owner) ~= "userdata" or owner.Type == nil then argerr(3, "CreateLootPreview", "EntityPickup", owner) end
++      local op = this(owner, "CreateLootPreview")
++      local ep = 0
++      if effect ~= nil then
++        if type(effect) ~= "userdata" or effect.Type == nil then argerr(4, "CreateLootPreview", "EntityEffect", effect) end
++        ep = this(effect, "CreateLootPreview")
++      end
++      -- the game's deque: a map, an 8-byte proxy block like the one the game builds, one 0x14-byte block per entry
++      local buf, proxy = B.alloc(0x20), B.alloc(8)
++      for i = 0, 7 do w32(buf + 4 * i, 0) end
++      w32(proxy, buf) w32(proxy + 4, 0)
++      w32(buf, proxy)
++      for _, e in ipairs(list._e) do
++        local rp = e._rng ~= nil and ptr(e._rng) or 0
++        call(0x006b84e0, buf, e._t & 0xffffffff, e._v & 0xffffffff, e._s & 0xffffffff, e._seed & 0xffffffff, rp)
++      end
++      local eff = call(0x0060b7a0, { ecx = buf, edx = ptr(pos) }, op, ep)
++      call(0x006da850, buf)
++      B.free(proxy)
++      B.free(buf)
++      if eff == 0 then return nil end
++      return wrap("EntityEffect", eff)
++    end)
++  end
++end
++
++for _, n in ipairs({ "Entity.GetKnockbackDirection", "Entity.SetKnockbackDirection", "Entity.SpawnWaterImpactEffects", "EntityPickup.CanReroll",
++  "EntityNPC.GetHitList", "EntityNPC.GetFireplaceLoot", "EntityNPC.GetShopkeeperLoot", "EntityEffect.CreateLootPreview" }) do
++  R.Implemented[n] = true
++end
 diff --git a/scripts/recomp/rgon/api_objects.lua b/scripts/recomp/rgon/api_objects.lua
 index 40d6a51..977fd61 100644
 --- a/scripts/recomp/rgon/api_objects.lua
@@ -14374,6 +15251,60 @@ index 0000000..f5cfa28
 +  local len = math.sqrt(dx * dx + dy * dy)
 +  local tv = target.Velocity
 +  return Vector(tp.X + tv.X * len * multiplier, tp.Y + tv.Y * len * multiplier)
++end)
+diff --git a/scripts/recomp/rgon/api_player_cooldowns.lua b/scripts/recomp/rgon/api_player_cooldowns.lua
+new file mode 100644
+index 0000000..57abf68
+--- /dev/null
++++ b/scripts/recomp/rgon/api_player_cooldowns.lua
+@@ -0,0 +1,48 @@
++-- api_player_cooldowns.lua -- wave 10, worker player-cooldowns: the EntityPlayer cooldown words and the Forgotten swap.
++-- Every offset and address below was found in v1.9.7.17 by what the game's own code does with it, then read back in
++-- lab_player_cooldowns.lua; REPENTOGON's behaviour was read from LuaEntityPlayer.cpp, no C++ copied (its offsets are
++-- v1.9.7.12 and are not used).
++--
++--   EntityPlayer:Get/SetItemStateCooldown()   i32 at +0x1604. The word right behind the "item state" item id (+0x1600):
++--       the player update (0x0077b020) counts it down by one each frame (unless the entity is paused, flag 0x4000 of
++--       +0x168) and when it reaches 0 it ends the state (clears +0x1600); the game's item-use code sets it to 5, 15
++--       or 30 (0x0077ea01, 0x0077ea50, 0x0077e2e1). 0x007a4760 and 0x007ac67d clear it with the state.
++--   EntityPlayer:Get/SetForgottenSwapFormCooldown()   i32 at +0x1614. SwapForgottenForm (0x007cc200) sets it to 15 after a
++--       swap of The Forgotten / The Soul; the player update (0x007a42b0) counts it down to 0; the same function refuses a
++--       swap while it is above 0.
++--   EntityPlayer:Get/SetMaggySwingCooldown()   i32 at +0x1ef8. TakeDamage (0x0078e1f0) sets 9 for Tainted Magdalene (player
++--       type 0x16) when she is hurt and the word is below 3; the player update (0x00782af0) counts it down by one.
++--       REPENTOGON's getter returns the raw word for every character, so does this (its documentation says 0 for others).
++--   EntityPlayer:SwapForgottenForm(force = false, noEffects = false) -> boolean   0x007cc200, thiscall, `ret 8` (two
++--       byte words), al. The twin pointer (+0x1d98) must exist; for type 0x10/0x11 `force` skips the cooldown and
++--       health checks, and `noEffects` false sets the cooldown to 15.
++local T = ...
++local B, R, method, wrap, this = T.B, T.R, T.method, T.wrap, T.this
++local ri32, w32, call = B.ri32, B.w32, B.call
++local type, error, math = type, error, math
++local mathtype = math.type
++local P = "EntityPlayer"
++
++local function int_arg(v, n, fname)
++  if mathtype(v) == "integer" then return v end
++  if type(v) == "number" and v == v // 1 then return math.tointeger(v) end
++  error("bad argument #" .. n .. " to '" .. fname .. "' (number expected, got " .. type(v) .. ")", 3)
++end
++local function opt_bool(v, n, fname)
++  if v == nil then return false end
++  if type(v) ~= "boolean" then error("bad argument #" .. n .. " to '" .. fname .. "' (boolean expected, got " .. type(v) .. ")", 3) end
++  return v
++end
++
++for name, off in pairs({ ItemState = 0x1604, ForgottenSwapForm = 0x1614, MaggySwing = 0x1ef8 }) do
++  local get, set = "Get" .. name .. "Cooldown", "Set" .. name .. "Cooldown"
++  method(P, get, function(self) return ri32(this(self, get) + off) end)
++  method(P, set, function(self, v) w32(this(self, set) + off, int_arg(v, 1, set) & 0xffffffff) end)
++end
++
++method(P, "SwapForgottenForm", function(self, force, noEffects)
++  local p = this(self, "SwapForgottenForm")
++  force = opt_bool(force, 1, "SwapForgottenForm")
++  noEffects = opt_bool(noEffects, 2, "SwapForgottenForm")
++  return (call(0x007cc200, p, force and 1 or 0, noEffects and 1 or 0) & 0xff) ~= 0
 +end)
 diff --git a/scripts/recomp/rgon/api_player_easy.lua b/scripts/recomp/rgon/api_player_easy.lua
 new file mode 100644
@@ -16834,6 +17765,447 @@ index 0000000..f110083
 +    end, nil)
 +  end
 +end
+diff --git a/scripts/recomp/rgon/api_room_sets.lua b/scripts/recomp/rgon/api_room_sets.lua
+new file mode 100644
+index 0000000..8dc5228
+--- /dev/null
++++ b/scripts/recomp/rgon/api_room_sets.lua
+@@ -0,0 +1,435 @@
++-- api_room_sets.lua -- wave 10 worker room-sets: RoomConfigStage:GetRoomSet, the RoomConfigSet class (REPENTOGON's CcpContainer_RoomConfigSet:
++-- Get, Size, __len, AddRooms, LoadStb) and RoomConfig.AddRooms / RoomConfig.LoadStb. Written against REPENTOGON's behaviour
++-- (LuaRoomConfigSet.cpp, VirtualRoomSetManager.cpp); every number below is this executable's (v1.9.7.17), read from the game's own
++-- RoomConfig::LoadStageBinary (0x0082aa40) and read_room (0x0082aea0) and proved by lab_room_sets.lua.
++--
++-- How the game stores a set: a RoomSet (0x2c bytes) at game + 0x18910 + stage * 0xc4 + 0x64 + mode * 0x2c holds the file path (std::string),
++-- the pointer to the room array at +0x18, the count at +0x1c and the loaded byte at +0x28. The array is a `new RoomConfig_Room[count]`
++-- of 0x5c-byte rooms whose first word before it (arr - 4) is the count, which the game's vector destructor reads. REPENTOGON keeps added
++-- rooms in a side vector that its hooks make the game search; here the rooms are appended to the game's own array, so every game lookup
++-- (GetRoomByStageTypeAndVariant, GetRandomRoom, the level generator) sees them with no hook. The array is replaced by a bigger block made
++-- with the game's tracked operator new (0x00a0f4e0, ecx = size), with capacity to spare: the count word at arr - 4 is the CAPACITY (spare
++-- rooms are zero rooms, which the destructor handles), +0x1c is the number in use. The old array is left alive: room descriptors hold
++-- pointers into it. The only unload (0x00828fe0, from the Game destructor) frees our block with the game's own delete. Spawn arrays and
++-- entry arrays are made with the same operator new (no count word), which is what the unload frees.
++--
++-- A room: +0 stage, +4 mode, +8 type, +0xc variant, +0x10 subtype, +0x14 name std::string, +0x2c difficulty, +0x30 initial weight, +0x34 weight,
++-- +0x38 doors, +0x3c quest doors, +0x40 spawns, +0x44 spawn count (u16), +0x46 width, +0x47 height, +0x48 shape, +0x4c flags, +0x58 original
++-- variant. A spawn (0x10): x u16, y u16, entries ptr, count u8 at +8, sum of weights f32 at +0xc. An entry (0xc): type u32, variant u16,
++-- subtype u16, weight f32.
++--
++-- The STB format is read from read_room: "STB1", count u32; per room type u32, variant u32, subtype u32, difficulty u8, name (u16 length, bytes),
++-- weight f32, width u8, height u8, shape u8, doors u8, spawns u16; per door x i16, y i16, exists u8; per spawn x u16, y u16, count u8, per entry
++-- type u16, variant u16, subtype u16, weight f32. The door slot of a position is the game's function at 0x00829a10, ported below.
++-- Not done: the variant sets (std::map at +0x20 of the set) are not updated: nothing in the game reads them after loading; a variant that
++-- collides is moved to the type's highest variant + 1 by scanning the array (REPENTOGON does the same through its set).
++
++local T = ...
++local B, R = T.B, T.R
++local ptr, r8, r32, ri32, w8, w32, wf32, log = B.ptr, B.r8, B.r32, B.ri32, B.w8, B.w32, B.wf32, B.log
++local call = B.call
++local w16 = B.w16
++local type, error, tostring, setmetatable, pairs, ipairs, rawget = type, error, tostring, setmetatable, pairs, ipairs, rawget
++local mathtype = math.type
++local unpack = string.unpack
++
++local GAME_PTR = 0x00c71678
++local ROOMCONFIG, STAGE_SIZE, NUM_STAGES = 0x18910, 0xc4, 37
++local SETS, SET_SIZE = 0x64, 0x2c
++local S_ARR, S_COUNT, S_LOADED = 0x18, 0x1c, 0x28
++local ROOM = 0x5c
++local LOAD_STAGE = 0x0082aa40     -- RoomConfig::LoadStageBinary(stage, mode), ret 8, this = game + 0x18910
++local NEW = 0x00a0f4e0            -- the game's tracked operator new, ecx = size
++
++local function int_arg(v, n, what)
++  if mathtype(v) == "integer" then return v end
++  if type(v) == "number" and v == v // 1 then return math.tointeger(v) end
++  error("bad argument #" .. n .. " to '" .. what .. "' (number expected, got " .. (v == nil and "no value" or type(v)) .. ")", 3)
++end
++
++local function game_ptr()
++  local g = r32(GAME_PTR)
++  if g == 0 then error("rgon: room sets used with no game", 3) end
++  return g
++end
++
++-- the greed flag the game's own lookups use
++local function current_mode(game)
++  local m = ri32(game + 0x269c8)
++  return (m == 2 or m == 3) and 1 or 0
++end
++
++local function stage_record(game, stage) return game + ROOMCONFIG + stage * STAGE_SIZE end
++local function set_addr(game, stage, mode) return stage_record(game, stage) + SETS + mode * SET_SIZE end
++-- stages 18..26 and 34 have no record in this build (the record's own id word does not match)
++local function stage_exists(game, stage) return ri32(stage_record(game, stage)) == stage end
++
++local function ensure_loaded(game, stage, mode)
++  local set = set_addr(game, stage, mode)
++  if r8(set + S_LOADED) == 0 then call(LOAD_STAGE, game + ROOMCONFIG, stage, mode) end
++  return set
++end
++
++------------------------------------------------------------------------------
++-- the game's door slot of a grid position (0x00829a10, a cleanup function in ecx = x, edx = y, shape on the stack)
++------------------------------------------------------------------------------
++local function door_slot(x, y, shape)
++  if x == -1 or x == 12 then
++    if y == 3 then return 0 end
++    if y == 10 then return 4 end
++  end
++  if x == 6 then
++    if y == -1 then return 1 end
++    if y == 14 then return shape == 11 and 1 or 3 end
++    if y == 6 then return shape == 9 and 1 or -1 end
++    if y == 7 then return 3 end
++    return -1
++  end
++  if x == 19 then
++    if y == -1 then return 5 end
++    if y == 14 then return shape == 12 and 5 or 7 end
++    if y == 6 then return shape == 10 and 5 or -1 end
++    if y == 7 then return 7 end
++    return -1
++  end
++  if x == 13 or x == 26 then
++    if y == 3 then return 2 end
++    if y == 10 then return 6 end
++  end
++  return -1
++end
++T.room_door_slot = door_slot
++
++local SHAPE_SIZE = { { 13, 7 }, { 13, 3 }, { 5, 7 }, { 13, 14 }, { 5, 14 }, { 26, 7 }, { 26, 3 }, { 26, 14 }, { 26, 14 }, { 26, 14 }, { 26, 14 }, { 26, 14 } }
++
++------------------------------------------------------------------------------
++-- STB parser: bytes -> list of room tables { type, variant, subtype, difficulty, name, weight, width, height, shape, doors, quest, flags, spawns }
++------------------------------------------------------------------------------
++local function add_entry_effects(room, spawn, e)
++  if e.type == 970 and e.variant == 2 then
++    local s = door_slot(spawn.x, spawn.y, room.shape)
++    if s >= 0 and s < 8 then room.quest = room.quest | (1 << s) end
++  elseif e.type == 4500 and e.variant == 0 then
++    room.flags = room.flags | 0x80
++  end
++end
++
++local function parse_stb(bytes, what)
++  if #bytes < 8 or bytes:sub(1, 4) ~= "STB1" then return nil, "invalid room file header in " .. what end
++  local rooms, pos = {}, 5
++  local n
++  n, pos = unpack("<I4", bytes, pos)
++  for _ = 1, n do
++    local r = { doors = 0, quest = 0, flags = 0, spawns = {} }
++    local namelen, ndoors, nspawns
++    r.type, r.variant, r.subtype, r.difficulty, namelen, pos = unpack("<I4I4I4I1I2", bytes, pos)
++    r.name = bytes:sub(pos, pos + namelen - 1)
++    pos = pos + namelen
++    r.weight, r.width, r.height, r.shape, ndoors, nspawns, pos = unpack("<fI1I1I1I1I2", bytes, pos)
++    for _ = 1, ndoors do
++      local x, y, ex
++      x, y, ex, pos = unpack("<i2i2I1", bytes, pos)
++      if ex ~= 0 then
++        local s = door_slot(x, y, r.shape)
++        if s >= 0 and s < 8 then r.doors = r.doors | (1 << s) end
++      end
++    end
++    for _ = 1, nspawns do
++      local sp = { entries = {}, sum = 0.0 }
++      local cnt
++      sp.x, sp.y, cnt, pos = unpack("<I2I2I1", bytes, pos)
++      for _ = 1, cnt do
++        local e = {}
++        e.type, e.variant, e.subtype, e.weight, pos = unpack("<I2I2I2f", bytes, pos)
++        sp.entries[#sp.entries + 1] = e
++        sp.sum = sp.sum + e.weight
++        add_entry_effects(r, sp, e)
++      end
++      r.spawns[#r.spawns + 1] = sp
++    end
++    rooms[#rooms + 1] = r
++  end
++  return rooms
++end
++T.parse_stb = parse_stb
++
++------------------------------------------------------------------------------
++-- a Lua room (Custom Stage API's layout: TYPE, VARIANT, SUBTYPE, NAME, SHAPE, WEIGHT, DIFFICULTY, then spawn tables) -> room table
++------------------------------------------------------------------------------
++local function lnum(t, k, default)
++  local v = t[k]
++  if v == nil then return default end
++  if type(v) ~= "number" then return nil end
++  return v
++end
++
++local function build_lua_room(t)
++  if type(t) ~= "table" then return nil, "not a table" end
++  local rtype, variant, name, shape = lnum(t, "TYPE"), lnum(t, "VARIANT"), t.NAME, lnum(t, "SHAPE")
++  if not rtype or not variant or type(name) ~= "string" or not shape then return nil, "TYPE, VARIANT, NAME and SHAPE are required" end
++  if rtype < 1 or rtype > 29 then rtype = 1 end
++  if shape < 1 or shape > 12 then shape = 1 end
++  local weight = lnum(t, "WEIGHT", 0.0) or 0.0
++  if weight < 0 then weight = 0.0 end
++  local r = { type = math.tointeger(rtype) or 1, variant = math.tointeger(variant) or 0, subtype = math.tointeger(lnum(t, "SUBTYPE", 0) or 0) or 0,
++    difficulty = math.tointeger(lnum(t, "DIFFICULTY", 1) or 1) or 1, name = name, weight = weight, shape = math.tointeger(shape),
++    width = SHAPE_SIZE[math.tointeger(shape)][1], height = SHAPE_SIZE[math.tointeger(shape)][2], doors = 0, quest = 0, flags = 0, spawns = {} }
++  for i = 1, #t do
++    local s = t[i]
++    if type(s) == "table" then
++      if s.ISDOOR then
++        if s.EXISTS then
++          local slot = lnum(s, "SLOT")
++          if not (slot and slot >= 0 and slot < 8) then
++            local x, y = lnum(s, "GRIDX"), lnum(s, "GRIDY")
++            slot = (x and y) and door_slot(math.tointeger(x) or 0, math.tointeger(y) or 0, r.shape) or -1
++          end
++          if slot >= 0 and slot < 8 then r.doors = r.doors | (1 << math.tointeger(slot)) end
++        end
++      else
++        local x, y = lnum(s, "GRIDX"), lnum(s, "GRIDY")
++        if x and y then
++          local sp = { x = math.tointeger(x) & 0xffff, y = math.tointeger(y) & 0xffff, entries = {}, sum = 0.0 }
++          for j = 1, #s do
++            local e = s[j]
++            local et = type(e) == "table" and lnum(e, "TYPE")
++            if et then
++              local w = lnum(e, "WEIGHT", 0.0) or 0.0
++              if w < 0 then w = 0.0 end
++              local ent = { type = math.tointeger(et), variant = math.tointeger(lnum(e, "VARIANT", 0) or 0) or 0,
++                subtype = math.tointeger(lnum(e, "SUBTYPE", 0) or 0) or 0, weight = w }
++              sp.entries[#sp.entries + 1] = ent
++              sp.sum = sp.sum + w
++              add_entry_effects(r, { x = math.tointeger(x), y = math.tointeger(y) }, ent)
++            end
++          end
++          r.spawns[#r.spawns + 1] = sp
++        end
++      end
++    end
++  end
++  return r
++end
++
++------------------------------------------------------------------------------
++-- writing rooms into the game's array
++------------------------------------------------------------------------------
++local ours = {}   -- set address -> { arr = the array we made, cap = its capacity }
++
++local function zero_room(a) for i = 0, ROOM - 4, 4 do w32(a + i, 0) end end
++
++local function new_block(bytes)
++  local p = call(NEW, bytes)
++  if p == 0 then error("rgon: the game's allocator gave no memory", 3) end
++  return p
++end
++
++local function write_room(a, stage, mode, r, variant)
++  w32(a, stage) w32(a + 4, mode) w32(a + 8, r.type) w32(a + 0xc, variant) w32(a + 0x10, r.subtype)
++  w32(a + 0x24, 0) w32(a + 0x28, 15)       -- an empty inline std::string at +0x14 (size +0x10, capacity +0x14 of it)
++  T.set_stdstr(a + 0x14, r.name)
++  w32(a + 0x2c, r.difficulty) wf32(a + 0x30, r.weight) wf32(a + 0x34, r.weight)
++  w32(a + 0x38, r.doors) w32(a + 0x3c, r.quest)
++  local n = #r.spawns
++  if n > 0 then
++    local sp = new_block(n * 0x10)
++    for i, s in ipairs(r.spawns) do
++      local q = sp + (i - 1) * 0x10
++      w16(q, s.x) w16(q + 2, s.y) w32(q + 4, 0) w32(q + 8, 0) wf32(q + 0xc, s.sum)
++      local c = #s.entries
++      if c > 0 then
++        local en = new_block(c * 0xc)
++        for j, e in ipairs(s.entries) do
++          local p = en + (j - 1) * 0xc
++          w32(p, e.type) w16(p + 4, e.variant) w16(p + 6, e.subtype) wf32(p + 8, e.weight)
++        end
++        w32(q + 4, en) w8(q + 8, c)
++      end
++    end
++    w32(a + 0x40, sp)
++  end
++  w16(a + 0x44, n)
++  w8(a + 0x46, r.width) w8(a + 0x47, r.height) w32(a + 0x48, r.shape) w32(a + 0x4c, r.flags)
++  w32(a + 0x58, r.variant)
++end
++
++-- add the room tables (false entries are skipped) to the set; returns the addresses (false for a skipped one)
++local function commit(game, stage, mode, rooms)
++  local set = ensure_loaded(game, stage, mode)
++  local arr, n = r32(set + S_ARR), r32(set + S_COUNT)
++  local add = 0
++  for _, r in ipairs(rooms) do if r then add = add + 1 end end
++  local out = {}
++  if add == 0 then for i = 1, #rooms do out[i] = false end return out end
++  local mine = ours[set]
++  if not (mine and mine.arr == arr and n + add <= mine.cap) then
++    local cap = math.max((n + add) * 2, n + add + 64)
++    local block = new_block(cap * ROOM + 4)
++    w32(block, cap)
++    local na = block + 4
++    for i = 0, n * ROOM - 4, 4 do w32(na + i, r32(arr + i)) end
++    for i = n * ROOM, cap * ROOM - 4, 4 do w32(na + i, 0) end
++    arr = na
++    mine = { arr = na, cap = cap }
++    ours[set] = mine
++    w32(set + S_ARR, na)
++  end
++  -- the variants in use, by type, to keep every added variant unique
++  local top, used = {}, {}
++  for i = 0, n - 1 do
++    local a = arr + i * ROOM
++    local t, v = r32(a + 8), r32(a + 0xc)
++    used[t] = used[t] or {}
++    used[t][v] = true
++    if not top[t] or v > top[t] then top[t] = v end
++  end
++  for idx, r in ipairs(rooms) do
++    if not r then out[idx] = false
++    else
++      local a = arr + n * ROOM
++      zero_room(a)
++      local v = r.variant & 0xffffffff
++      used[r.type] = used[r.type] or {}
++      if used[r.type][v] then v = (top[r.type] or 0) + 1 end
++      used[r.type][v] = true
++      if not top[r.type] or v > top[r.type] then top[r.type] = v end
++      write_room(a, stage, mode, r, v)
++      n = n + 1
++      w32(set + S_COUNT, n)
++      out[idx] = a
++    end
++  end
++  return out
++end
++
++local function wrap(addrs)
++  local out = {}
++  for i = 1, #addrs do
++    out[i] = addrs[i] and T.roomconfig_room(addrs[i]) or nil
++  end
++  return out
++end
++
++-- the mods' copies of rooms/<name>, in load order, content-repentogon before content (as api_data.lua reads mod files)
++local function mod_stb_files(name)
++  local out = {}
++  for _, m in ipairs(T.mods()) do
++    if m.enabled then
++      local p = "mods/" .. m.dir .. "/content-repentogon/rooms/" .. name
++      local b = T.read_file(p)
++      if not b then p = "mods/" .. m.dir .. "/content/rooms/" .. name b = T.read_file(p) end
++      if b then out[#out + 1] = { path = p, bytes = b } end
++    end
++  end
++  return out
++end
++
++local function add_lua_rooms(stage, mode, tbl)
++  local game = game_ptr()
++  if mode == -1 then mode = current_mode(game) end
++  if not stage_exists(game, stage) then log("RoomConfig.AddRooms: stage " .. stage .. " has no room set in this build") return {} end
++  local rooms = {}
++  for i = 1, #tbl do
++    local r, why = build_lua_room(tbl[i])
++    if not r then log("AddRooms: room #" .. i .. ": " .. tostring(why)) end
++    rooms[i] = r or false
++  end
++  return wrap(commit(game, stage, mode, rooms))
++end
++
++local function load_stb(stage, mode, name)
++  local game = game_ptr()
++  if mode == -1 then mode = current_mode(game) end
++  if not stage_exists(game, stage) then log("LoadStb: stage " .. stage .. " has no room set in this build") return {} end
++  local rooms = {}
++  for _, f in ipairs(mod_stb_files("" .. name)) do
++    local list, why = parse_stb(f.bytes, f.path)
++    if not list then log("LoadStb: " .. why)
++    else
++      log("[INFO] Adding rooms from " .. f.path .. " (" .. #list .. " rooms)")
++      for _, r in ipairs(list) do if r.type >= 1 and r.type <= 29 and r.shape >= 1 and r.shape <= 12 then rooms[#rooms + 1] = r end end
++    end
++  end
++  return wrap(commit(game, stage, mode, rooms))
++end
++
++------------------------------------------------------------------------------
++-- the RoomConfigSet class (REPENTOGON: CcpContainer_RoomConfigSet)
++------------------------------------------------------------------------------
++local CLASS = {}
++CLASS.__type = "RoomConfigSet"
++CLASS.__name = "RoomConfigSet"
++local function at(self, what)
++  if type(self) ~= "table" or getmetatable(self) ~= CLASS then
++    error("bad argument #1 to '" .. what .. "' (RoomConfigSet expected, got " .. type(self) .. ")", 3)
++  end
++  return self.stage, self.mode
++end
++local function size_of(self)
++  local stage, mode = at(self, "Size")
++  local game = game_ptr()
++  return r32(ensure_loaded(game, stage, mode) + S_COUNT)
++end
++function CLASS.Get(self, idx)
++  local stage, mode = at(self, "Get")
++  idx = int_arg(idx, 1, "Get")
++  local game = game_ptr()
++  local set = ensure_loaded(game, stage, mode)
++  if idx < 0 or idx >= r32(set + S_COUNT) then return nil end
++  return T.roomconfig_room(r32(set + S_ARR) + idx * ROOM)
++end
++function CLASS.AddRooms(self, tbl)
++  local stage, mode = at(self, "AddRooms")
++  if type(tbl) ~= "table" then error("bad argument #1 to 'AddRooms' (table expected, got " .. (tbl == nil and "no value" or type(tbl)) .. ")", 2) end
++  return add_lua_rooms(stage, mode, tbl)
++end
++function CLASS.LoadStb(self, name)
++  local stage, mode = at(self, "LoadStb")
++  if type(name) ~= "string" then error("bad argument #1 to 'LoadStb' (string expected, got " .. (name == nil and "no value" or type(name)) .. ")", 2) end
++  return load_stb(stage, mode, name)
++end
++CLASS.__len = size_of
++CLASS.__index = function(self, k)
++  if k == "Size" then return size_of(self) end
++  return rawget(CLASS, k)
++end
++CLASS.__eq = function(a, b) return type(a) == "table" and type(b) == "table" and a.stage == b.stage and a.mode == b.mode end
++
++-- RoomConfigStage:GetRoomSet(mode = 0) (api_stage_config.lua asks here)
++function T.roomconfig_roomset(stage, mode)
++  if mode == nil then mode = 0 end
++  mode = int_arg(mode, 1, "GetRoomSet")
++  if mode < 0 or mode > 1 then error("Invalid RoomSet mode " .. mode, 3) end
++  ensure_loaded(game_ptr(), stage, mode)
++  return setmetatable({ stage = stage, mode = mode }, CLASS)
++end
++
++------------------------------------------------------------------------------
++-- RoomConfig.AddRooms(stage, mode, rooms), RoomConfig.LoadStb(stage, mode, file)
++------------------------------------------------------------------------------
++local function check_stage_mode(stage, mode, what)
++  stage, mode = int_arg(stage, 1, what), int_arg(mode, 2, what)
++  if stage < 0 or stage >= NUM_STAGES then error("bad argument #1 to '" .. what .. "' (invalid stage " .. stage .. ")", 3) end
++  if mode < -1 or mode > 1 then error("bad argument #2 to '" .. what .. "' (invalid mode " .. mode .. ")", 3) end
++  return stage, mode
++end
++local function on_both(fname, f)
++  for _, name in ipairs({ "RoomConfig", "RoomConfigHolder" }) do
++    local tbl = rawget(_G, name)
++    if type(tbl) ~= "table" then tbl = {} rawset(_G, name, tbl) end
++    if rawget(tbl, fname) ~= nil then log(name .. "." .. fname .. " already exists; left alone")
++    else T.static(tbl, name, fname, f) end
++  end
++end
++on_both("AddRooms", function(stage, mode, rooms)
++  stage, mode = check_stage_mode(stage, mode, "AddRooms")
++  if type(rooms) ~= "table" then error("bad argument #3 to 'AddRooms' (table expected, got " .. (rooms == nil and "no value" or type(rooms)) .. ")", 2) end
++  return add_lua_rooms(stage, mode, rooms)
++end)
++on_both("LoadStb", function(stage, mode, name)
++  stage, mode = check_stage_mode(stage, mode, "LoadStb")
++  if type(name) ~= "string" then error("bad argument #3 to 'LoadStb' (string expected, got " .. (name == nil and "no value" or type(name)) .. ")", 2) end
++  return load_stb(stage, mode, name)
++end)
++
++for _, k in ipairs({ "Get", "AddRooms", "LoadStb", "Size" }) do R.Implemented["CcpContainer_RoomConfigSet." .. k] = true end
 diff --git a/scripts/recomp/rgon/api_roomconfig.lua b/scripts/recomp/rgon/api_roomconfig.lua
 new file mode 100644
 index 0000000..5d3212d
@@ -17661,10 +19033,10 @@ index 0000000..25d67b8
 +end
 diff --git a/scripts/recomp/rgon/api_shapes.lua b/scripts/recomp/rgon/api_shapes.lua
 new file mode 100644
-index 0000000..64072e4
+index 0000000..849126b
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_shapes.lua
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,142 @@
 +-- api_shapes.lua -- census batch B2: Capsule, Shape, DebugRenderer.Get, Isaac.FindInCapsule.
 +--
 +-- Capsule is a value the game keeps as a struct (its REPENTOGON layout: position, start, end, direction, radius,
@@ -17683,9 +19055,7 @@ index 0000000..64072e4
 +--                                           four-argument caller (FiendFolio palinsopia.lua:65, Capsule(pos, Vector.One,
 +--                                           0, rad), a circle); a non-uniform multiplier or a rotation is unchecked.
 +--
-+-- Shape / DebugRenderer.Get(index, unk): the debug drawing of the game. The object is here, with its timeout and the
-+-- last shape given, and draws nothing (like Beam). They are stand-ins, left out of REPENTOGON.Implemented;
-+-- Isaac.FindInCapsule is the one consumer that works.
++-- Shape / DebugRenderer.Get(index, unk): the game's own debug drawing, in api_image_render.lua (wave 10).
 +
 +local T = ...
 +local B, R, static = T.B, T.R, T.static
@@ -17808,35 +19178,7 @@ index 0000000..64072e4
 +  return out
 +end)
 +
-+-- Shape: what DebugRenderer.Get hands out. Timeout is kept; Capsule and Circle remember what was asked and draw nothing.
-+-- Accepted, not supported: a mod's calls do not error, but none of these names is in REPENTOGON.Implemented.
-+-- inert: Shape DebugRenderer
-+if rawget(_G, "DebugRenderer") == nil then
-+  local Sh = {}
-+  Sh.__index = Sh
-+  Sh.__type = "Shape"
-+  local note = "debug shapes are not drawn"
-+  function Sh:GetTimeout() return self._timeout end
-+  function Sh:SetTimeout(t) self._timeout = math.tointeger(t) or error("bad argument #1 to 'SetTimeout' (number expected, got " .. type(t) .. ")", 2) end
-+  function Sh:Capsule(capsule)
-+    if getmetatable(capsule) ~= Cap then error("bad argument #1 to 'Capsule' (Capsule expected, got " .. type(capsule) .. ")", 2) end
-+    self._last = { kind = "capsule", capsule = capsule }
-+    unsupported("Shape:Capsule", note)
-+  end
-+  function Sh:Circle(position, size)
-+    vec(position, 1, "Circle")
-+    num(size, 2, "Circle")
-+    self._last = { kind = "circle", position = V(position.X, position.Y), size = size }
-+    unsupported("Shape:Circle", note)
-+  end
-+  local shapes = {}
-+  rawset(_G, "DebugRenderer", { Get = function(index, unk)
-+    num(index, 1, "Get")
-+    local s = shapes[index]
-+    if not s then s = setmetatable({ _timeout = 0 }, Sh) shapes[index] = s end
-+    return s
-+  end })
-+end
++-- Shape and DebugRenderer.Get are the game's own objects now: api_image_render.lua.
 diff --git a/scripts/recomp/rgon/api_sprite.lua b/scripts/recomp/rgon/api_sprite.lua
 index 806bce2..51b6b16 100644
 --- a/scripts/recomp/rgon/api_sprite.lua
@@ -17871,10 +19213,10 @@ index 806bce2..51b6b16 100644
 +end
 diff --git a/scripts/recomp/rgon/api_stage_config.lua b/scripts/recomp/rgon/api_stage_config.lua
 new file mode 100644
-index 0000000..93b1d7b
+index 0000000..79445f5
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_stage_config.lua
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,134 @@
 +-- api_stage_config.lua -- wave 8 batch A: the RoomConfigStage class (Epiphany, StageAPI 1.5, Fiend Folio, musicpicker).
 +-- RoomConfig.GetStage(id) itself is in api_roomconfig.lua (it must go on RoomConfig and RoomConfigHolder together) and asks
 +-- T.roomconfig_stage for the object. Written against REPENTOGON's behaviour (LuaRoomConfigStage.cpp, RoomConfigStage.zhl); the record
@@ -17986,6 +19328,12 @@ index 0000000..93b1d7b
 +function CLASS.SetPlayerSpot(self, s) set_stdstr(at(self, "SetPlayerSpot") + PLAYER, str_arg(s, 1, "SetPlayerSpot")) end
 +function CLASS.SetBossSpot(self, s) set_stdstr(at(self, "SetBossSpot") + BOSS, str_arg(s, 1, "SetBossSpot")) end
 +function CLASS.SetSuffix(self, s) set_stdstr(at(self, "SetSuffix") + SUFFIX, str_arg(s, 1, "SetSuffix")) end
++-- GetRoomSet(mode = 0): the set object is api_room_sets.lua's (it loads the set when it is not loaded yet, as the game's own lookup does)
++function CLASS.GetRoomSet(self, mode)
++  local a = at(self, "GetRoomSet")
++  if not T.roomconfig_roomset then error("rgon: RoomConfigSet is not loaded", 2) end
++  return T.roomconfig_roomset(ri32(a + ID), mode)
++end
 +function CLASS.SetXMLName(self, s)
 +  local a = at(self, "SetXMLName")
 +  s = str_arg(s, 1, "SetXMLName")
@@ -19929,7 +21277,7 @@ index 3b6d51e..488241e 100644
  ]],
  }
 diff --git a/scripts/recomp/rgon/hook_slots.lua b/scripts/recomp/rgon/hook_slots.lua
-index 2187a0e..d103fad 100644
+index 2187a0e..08b4b22 100644
 --- a/scripts/recomp/rgon/hook_slots.lua
 +++ b/scripts/recomp/rgon/hook_slots.lua
 @@ -100,6 +100,42 @@ return {
@@ -20009,7 +21357,7 @@ index 2187a0e..d103fad 100644
    -- instruction hooks (round 110): slot, false, the instruction's address
    ["Entity_Player::EvaluateItems@TearsUp"] = { 160, false, 0x00764864 },
    ["Entity_Player::EvaluateItems@FlatTears"] = { 161, false, 0x00764f2e },
-@@ -170,4 +233,94 @@ return {
+@@ -170,4 +233,104 @@ return {
    ["Entity_Tear::Collision_00676be0@ParasiteSplit"] = { 167, false, 0x006770c2 },
    ["Entity_Tear::Collision_00676be0@BoneSplit"] = { 168, false, 0x00677498 },
    ["ModManager::RenderCharacterPortrait_008f8860@Frame"] = { 170, false, 0x008f89c4 },
@@ -20083,6 +21431,11 @@ index 2187a0e..d103fad 100644
 +  ["Entity_Pickup::GetCoinValue"] = { 341, 0x0 },
 +  ["Room::TriggerEffectRemoved"] = { 342, 0x8 },
 +  ["RoomTransition::Render"] = { 343, 0x0 },
++  ["Minimap::Update"] = { 377, 0x0 },
++  ["Minimap::Render"] = { 378, 0x0 },
++  ["PlayerHUD::RenderInventory"] = { 379, 0x4 },
++  ["PlayerHUD::RenderSpellQueue"] = { 380, 0x4 },
++  ["PlayerHUD::RenderCraftingTable"] = { 381, 0x4 },
 +  ["Camera::ClampedToRoom@Flag"] = { 307, false, 0x0094355b },
 +  ["Camera::Update_009439d0@SlowStopClamp"] = { 308, false, 0x0094433b },
 +  ["Level::GetRandomRoomIndex"] = { 329, 0x8 },
@@ -20093,6 +21446,11 @@ index 2187a0e..d103fad 100644
 +  ["LevelGenerator::Generate"] = { 334, 0x1c },
 +  ["Room::save_entity"] = { 335, 0xc },
 +  ["Room::restore_entity"] = { 336, 0x8 },
++  ["Entity::SetColor"] = { 360, 0x14 },
++  ["Entity::GetStatusEffectTarget"] = { 361, 0x0 },
++  ["Entity_Familiar::CanCharm"] = { 362, 0x0 },
++  ["Entity_NPC::GetPlayerTarget"] = { 363, 0x0 },
++  ["Entity_Familiar::GetMultiplier"] = { 364, 0x0 },
 +  ["Ambush::SpawnWave@SelectRoom"] = { 337, false, 0x0083378a },
 +  ["Room::SpawnGreedModeWave@SelectRoom"] = { 390, false, 0x00816e24 },
 +  ["Level::place_rooms_backwards@BossRestore"] = { 391, false, 0x0074227b },
@@ -22963,6 +24321,268 @@ index 0000000..ce4d487
 +  local ok, err = pcall(f)
 +  if not ok then check(false, "step " .. i .. " raised: " .. tostring(err)) end
 +end)
+diff --git a/scripts/recomp/rgon/lab_cb_entity.lua b/scripts/recomp/rgon/lab_cb_entity.lua
+new file mode 100644
+index 0000000..e464441
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_cb_entity.lua
+@@ -0,0 +1,256 @@
++-- lab_cb_entity.lua (development only; ISAAC_RGON_LAB=lab_cb_entity.lua, worker cb-entity)
++-- Fires the callbacks of api_cb_entity.lua and checks their arguments and what an answer does:
++--   1486/1487 SetColor (PRE false cancels, PRE Color replaces, POST sees the replacement; the entity's colour a frame later shows it),
++--   1485 status effect target (direct call of the game's function, answer replaces it), 1473 CanCharm (false answers "cannot"),
++--   1222 NPC target (the game's own AI calls it every frame; a direct call's answer is replaced), 1225 familiar multiplier
++--   (the game's BFFS doubling is in the argument; a number replaces the result), 1175/1176 familiar grid collision.
++-- Prints "lab_cb_entity: DONE n PASS m FAIL".
++local T = ...
++local B = T.B
++local M = ModCallbacks
++local mod = RegisterMod("rgon lab cb-entity", 1)
++local pass, fail = 0, 0
++local function say(s) B.log("lab_cb_entity: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_cb_entity: %s %s", ok and "PASS" or "FAIL", what))
++end
++
++local rec, beh = {}, {}
++local function count(n) return #(rec[n] or {}) end
++local function last(n) local l = rec[n] return l and l[#l] end
++local function reset(n) rec[n] = {} end
++local function tos(v)
++  if type(v) == "userdata" then
++    local ok, t = pcall(function()
++      if v.Type ~= nil and v.Variant ~= nil then return "ent:" .. v.Type .. "." .. v.Variant .. "." .. v.SubType end
++      if v.R ~= nil then return string.format("color:%.2f,%.2f,%.2f,%.2f", v.R, v.G, v.B, v.A) end
++      return "userdata"
++    end)
++    return ok and t or "userdata"
++  end
++  return tostring(v)
++end
++local NAMES = { "MC_PRE_ENTITY_SET_COLOR", "MC_POST_ENTITY_SET_COLOR", "MC_GET_STATUS_EFFECT_TARGET", "MC_PRE_FAMILIAR_CAN_CHARM",
++                "MC_NPC_PICK_TARGET", "MC_EVALUATE_FAMILIAR_MULTIPLIER", "MC_PRE_FAMILIAR_GRID_COLLISION", "MC_FAMILIAR_GRID_COLLISION" }
++for _, n in ipairs(NAMES) do
++  local id = M[n]
++  if not id then
++    check(false, n .. " has a ModCallbacks number")
++  else
++    mod:AddCallback(id, function(_, ...)
++      local a = {}
++      for i = 1, select("#", ...) do a[#a + 1] = tos((select(i, ...))) end
++      local l = rec[n] or {}
++      rec[n] = l
++      local r = { n = select("#", ...), ... }
++      r.text = table.concat(a, ",")
++      l[#l + 1] = r
++      if #l <= 3 then say(string.format("%s #%d (%s)", n, #l, r.text)) end
++      local f = beh[n]
++      if f then return f(...) end
++    end)
++  end
++end
++
++local game = Game()
++local ptr = B.ptr
++local function npc(pos)
++  return Isaac.Spawn(EntityType.ENTITY_FLY, 0, 0, pos, Vector(0, 0), nil):ToNPC()
++end
++local function near(a, b) return math.abs(a - b) < 0.02 end
++local function signed(v) return v >= 0x80000000 and v - 0x100000000 or v end
++
++local st = {}
++local frame = 0
++local finished = false
++local function finish()
++  if finished then return end
++  finished = true
++  B.log(string.format("lab_cb_entity: DONE %d PASS %d FAIL", pass, fail))
++end
++
++local function stage_misc()
++  local player = Isaac.GetPlayer(0)
++  local room = game:GetRoom()
++
++  -- 1485: the game's own function, called directly
++  local a, b = npc(Vector(200, 200)), npc(Vector(260, 200))
++  reset("MC_GET_STATUS_EFFECT_TARGET")
++  local r = B.call(0x006a89f0, ptr(a))
++  check(r == ptr(a), "GetStatusEffectTarget without an answer returns the entity itself")
++  local c = last("MC_GET_STATUS_EFFECT_TARGET")
++  check(c and c.n == 1 and c[1] and ptr(c[1]) == ptr(a), "MC_GET_STATUS_EFFECT_TARGET (entity): " .. tostring(c and c.text))
++  beh.MC_GET_STATUS_EFFECT_TARGET = function() return b end
++  r = B.call(0x006a89f0, ptr(a))
++  check(r == ptr(b), "an Entity answer replaces the target: " .. string.format("%08x vs %08x", r or 0, ptr(b)))
++  beh.MC_GET_STATUS_EFFECT_TARGET = nil
++  -- the game's own users of it: Entity::GetHitListIndex 0x006b62b0 asks for the target of some entity types
++  reset("MC_GET_STATUS_EFFECT_TARGET")
++  B.call(0x006b62b0, ptr(a))
++  say("GetHitListIndex (the game's own caller) fired MC_GET_STATUS_EFFECT_TARGET " .. count("MC_GET_STATUS_EFFECT_TARGET") .. " times (informational)")
++  a:Remove() b:Remove()
++
++  -- 1473: CanCharm on a familiar
++  local fam = Isaac.Spawn(EntityType.ENTITY_FAMILIAR, FamiliarVariant.BROTHER_BOBBY, 0, Vector(300, 200), Vector(0, 0), player):ToFamiliar()
++  fam.Player = player
++  st.fam = fam
++  reset("MC_PRE_FAMILIAR_CAN_CHARM")
++  local base = B.call(0x0060dae0, ptr(fam)) & 0xff
++  check(base == 1, "CanCharm of a Brother Bobby is true without an answer: " .. tostring(base))
++  local cc = last("MC_PRE_FAMILIAR_CAN_CHARM")
++  check(cc and cc.n == 1 and cc[1] and ptr(cc[1]) == ptr(fam), "MC_PRE_FAMILIAR_CAN_CHARM (familiar): " .. tostring(cc and cc.text))
++  beh.MC_PRE_FAMILIAR_CAN_CHARM = function() return false end
++  local no = B.call(0x0060dae0, ptr(fam)) & 0xff
++  check(no == 0, "false answers 'cannot charm': " .. tostring(no))
++  beh.MC_PRE_FAMILIAR_CAN_CHARM = nil
++  say("the game's own CanCharm calls so far: " .. count("MC_PRE_FAMILIAR_CAN_CHARM") .. " (informational)")
++
++  -- 1225: familiar multiplier
++  reset("MC_EVALUATE_FAMILIAR_MULTIPLIER")
++  local m0 = fam:GetMultiplier()
++  local ev = last("MC_EVALUATE_FAMILIAR_MULTIPLIER")
++  check(near(m0, 1.0), "no answer: Brother Bobby's multiplier is 1: " .. tostring(m0))
++  check(ev and ev.n == 3 and ev[1] and ptr(ev[1]) == ptr(fam) and near(ev[2], m0) and ev[3] and ptr(ev[3]) == ptr(player),
++    "MC_EVALUATE_FAMILIAR_MULTIPLIER (familiar, multiplier, player): " .. tostring(ev and ev.text))
++  beh.MC_EVALUATE_FAMILIAR_MULTIPLIER = function(f, m) return m * 3 end
++  local m1 = fam:GetMultiplier()
++  check(near(m1, 3.0), "a number replaces the multiplier (1 -> 3): " .. tostring(m1))
++  beh.MC_EVALUATE_FAMILIAR_MULTIPLIER = function() return nil end
++  player:AddCollectible(CollectibleType.COLLECTIBLE_BFFS, 0, false)
++  local m2 = fam:GetMultiplier()
++  local ev2 = last("MC_EVALUATE_FAMILIAR_MULTIPLIER")
++  check(near(m2, 2.0) and ev2 and near(ev2[2], 2.0), "the game's BFFS doubling is already in the argument and the result: " .. tostring(m2) .. " / " .. tostring(ev2 and ev2.text))
++  beh.MC_EVALUATE_FAMILIAR_MULTIPLIER = nil
++  player:RemoveCollectible(CollectibleType.COLLECTIBLE_BFFS)
++  say("the game's own GetMultiplier calls so far: " .. count("MC_EVALUATE_FAMILIAR_MULTIPLIER") .. " (informational)")
++  fam:Remove()
++
++  -- 1222: the game's own AI asks for the target every frame
++  reset("MC_NPC_PICK_TARGET")
++  st.flies = { npc(Vector(150, 150)), npc(Vector(450, 150)) }
++  st.target_frame = frame
++end
++
++local function stage_target()
++  local n = count("MC_NPC_PICK_TARGET")
++  check(n > 0, "MC_NPC_PICK_TARGET fired from the game's own NPC AI: x" .. n)
++  local c = last("MC_NPC_PICK_TARGET")
++  check(c and c.n == 2 and c[1] and c[1].Type == EntityType.ENTITY_FLY and c[2] and c[2].Type == EntityType.ENTITY_PLAYER,
++    "(npc, currentTarget) = (fly, player): " .. tostring(c and c.text))
++  local f1, f2 = st.flies[1], st.flies[2]
++  beh.MC_NPC_PICK_TARGET = function(n1) return f2 end
++  local got = B.call(0x006be840, ptr(f1))
++  check(got == ptr(f2), "an Entity answer replaces the target (the other fly): " .. string.format("%08x vs %08x", got or 0, ptr(f2)))
++  beh.MC_NPC_PICK_TARGET = nil
++  local plain = B.call(0x006be840, ptr(f1))
++  check(plain == ptr(Isaac.GetPlayer(0)), "without an answer the game's target (the player) stays")
++  for _, f in ipairs(st.flies) do f:Remove() end
++end
++
++local function stage_color1()
++  local e1, e2, e3 = npc(Vector(120, 300)), npc(Vector(240, 300)), npc(Vector(360, 300))
++  st.col = { e1, e2, e3 }
++  for _, e in ipairs(st.col) do e:ClearEntityFlags(EntityFlag.FLAG_APPEAR) e.Visible = true end
++  reset("MC_PRE_ENTITY_SET_COLOR") reset("MC_POST_ENTITY_SET_COLOR")
++  local red = Color(1, 0, 0, 1, 0, 0, 0)
++  e1:SetColor(red, 30, 1, false, false)
++  local p, q = last("MC_PRE_ENTITY_SET_COLOR"), last("MC_POST_ENTITY_SET_COLOR")
++  check(p and p.n == 6 and ptr(p[1]) == ptr(e1) and p[2].R == 1 and p[2].G == 0 and p[3] == 30 and p[4] == 1 and p[5] == false and p[6] == false,
++    "MC_PRE_ENTITY_SET_COLOR (entity, color, duration, priority, fadeOut, share): " .. tostring(p and p.text))
++  check(q and q.n == 6 and ptr(q[1]) == ptr(e1) and q[2].R == 1 and q[3] == 30, "MC_POST_ENTITY_SET_COLOR the same: " .. tostring(q and q.text))
++  e1:SetColor(red, 20, 3, true, true)
++  p = last("MC_PRE_ENTITY_SET_COLOR")
++  check(p and p[3] == 20 and p[4] == 3 and p[5] == true and p[6] == true, "booleans and numbers pass through: " .. tostring(p and p.text))
++  -- e2: PRE false
++  beh.MC_PRE_ENTITY_SET_COLOR = function() return false end
++  local posts = count("MC_POST_ENTITY_SET_COLOR")
++  e2:SetColor(red, 30, 1, false, false)
++  check(count("MC_POST_ENTITY_SET_COLOR") == posts, "PRE false: no POST")
++  -- e3: PRE answers a green colour
++  beh.MC_PRE_ENTITY_SET_COLOR = function() return Color(0, 1, 0, 1, 0, 0, 0) end
++  e3:SetColor(red, 30, 1, false, false)
++  local q3 = last("MC_POST_ENTITY_SET_COLOR")
++  check(q3 and q3[2].G == 1 and q3[2].R == 0, "POST sees the replacement colour: " .. tostring(q3 and q3.text))
++  beh.MC_PRE_ENTITY_SET_COLOR = nil
++end
++
++local function stage_color2()
++  local e1, e2, e3 = st.col[1], st.col[2], st.col[3]
++  local c1, c2, c3 = e1:GetColor(), e2:GetColor(), e3:GetColor()
++  say(string.format("colours: e1 %.2f,%.2f,%.2f  e2(cancelled) %.2f,%.2f,%.2f  e3(replaced) %.2f,%.2f,%.2f", c1.R, c1.G, c1.B, c2.R, c2.G, c2.B, c3.R, c3.G, c3.B))
++  check(c1.R > 0.9 and c1.G < 0.2 and c1.B < 0.2, "the entity shows the colour it was given (red)")
++  check(c2.G > 0.8 and c2.B > 0.8, "PRE false: the entity did not get the colour")
++  check(c3.G > 0.9 and c3.R < 0.2, "PRE answer: the entity shows the replacement (green) not the asked colour (red)")
++  for _, e in ipairs(st.col) do e:Remove() end
++end
++
++-- 1175 / 1176: a familiar with a grid collision class walks into a rock
++local function stage_grid_start()
++  local player = Isaac.GetPlayer(0)
++  local room = game:GetRoom()
++  local width = room:GetGridWidth()
++  local rock_idx = 4 * width + 10
++  st.rock_idx = rock_idx
++  room:RemoveGridEntity(rock_idx, 0, false)
++  room:SpawnGridEntity(rock_idx, GridEntityType.GRID_ROCK, 0, 0, 0)
++  local rock_pos = room:GetGridPosition(rock_idx)
++  st.rock_pos = rock_pos
++  local fam = Isaac.Spawn(EntityType.ENTITY_FAMILIAR, FamiliarVariant.BROTHER_BOBBY, 0, rock_pos + Vector(-70, 0), Vector(0, 0), player):ToFamiliar()
++  fam.Player = player
++  fam.GridCollisionClass = EntityGridCollisionClass.GRIDCOLL_GROUND
++  st.gfam = fam
++  st.gstart = frame
++  reset("MC_PRE_FAMILIAR_GRID_COLLISION") reset("MC_FAMILIAR_GRID_COLLISION")
++  st.push = true
++  st.mode = "observe"
++  say(string.format("rock %d at (%.0f,%.0f), familiar at (%.0f,%.0f), class %d", rock_idx, rock_pos.X, rock_pos.Y, fam.Position.X, fam.Position.Y, fam.GridCollisionClass))
++end
++mod:AddCallback(M.MC_FAMILIAR_UPDATE, function(_, f)
++  if st.push and st.gfam and ptr(f) == ptr(st.gfam) then
++    f.GridCollisionClass = EntityGridCollisionClass.GRIDCOLL_GROUND
++    f.Velocity = Vector(8, 0)
++    if not st.maxx or f.Position.X > st.maxx then st.maxx = f.Position.X end
++  end
++end)
++
++local function stage_grid_observe()
++  local n = count("MC_PRE_FAMILIAR_GRID_COLLISION")
++  local c = last("MC_PRE_FAMILIAR_GRID_COLLISION")
++  local fam = st.gfam
++  say(string.format("familiar at (%.0f,%.0f), max x %.0f, rock x %.0f, PRE x%d POST x%d", fam.Position.X, fam.Position.Y, st.maxx or -1, st.rock_pos.X, n, count("MC_FAMILIAR_GRID_COLLISION")))
++  check(n > 0, "MC_PRE_FAMILIAR_GRID_COLLISION fired: x" .. n)
++  check(c and c.n == 3 and c[1] and ptr(c[1]) == ptr(fam) and c[2] == st.rock_idx and c[3] ~= nil, "(familiar, gridIndex, gridEntity): " .. tostring(c and c.text))
++  check(count("MC_FAMILIAR_GRID_COLLISION") > 0, "MC_FAMILIAR_GRID_COLLISION fired: x" .. count("MC_FAMILIAR_GRID_COLLISION"))
++  check((st.maxx or 1e9) < st.rock_pos.X, "the rock stops the familiar (never reached x " .. st.rock_pos.X .. "): max x " .. tostring(st.maxx))
++  -- now ignore the collision
++  beh.MC_PRE_FAMILIAR_GRID_COLLISION = function() return true end
++  fam.Position = st.rock_pos + Vector(-70, 0)
++  st.maxx = nil
++  reset("MC_FAMILIAR_GRID_COLLISION")
++end
++
++local function stage_grid_ignore()
++  local fam = st.gfam
++  say(string.format("ignoring: familiar at (%.0f,%.0f), max x %.0f", fam.Position.X, fam.Position.Y, st.maxx or -1))
++  check((st.maxx or 0) > st.rock_pos.X + 10, "PRE true: the familiar passes through the rock, max x " .. tostring(st.maxx))
++  check(count("MC_FAMILIAR_GRID_COLLISION") == 0, "PRE true: the POST callback does not run")
++  beh.MC_PRE_FAMILIAR_GRID_COLLISION = nil
++  st.push = false
++  fam:Remove()
++  game:GetRoom():RemoveGridEntity(st.rock_idx, 0, false)
++end
++
++local plan = {
++  [12] = stage_misc, [16] = stage_target, [18] = stage_color1, [22] = stage_color2, [24] = stage_grid_start,
++  [60] = stage_grid_observe, [100] = stage_grid_ignore,
++  [102] = finish,
++}
++mod:AddCallback(M.MC_POST_UPDATE, function()
++  frame = frame + 1
++  local f = plan[frame]
++  if f then
++    local ok, err = pcall(f)
++    if not ok then check(false, "stage at frame " .. frame .. " raised: " .. tostring(err)) end
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_cb_f.lua b/scripts/recomp/rgon/lab_cb_f.lua
 new file mode 100644
 index 0000000..4bfce3f
@@ -24059,12 +25679,187 @@ index 0000000..8ad73bb
 +  local ok, err = pcall(f)
 +  if not ok then check(false, "step " .. i .. " raised: " .. tostring(err)) end
 +end)
+diff --git a/scripts/recomp/rgon/lab_cb_hud.lua b/scripts/recomp/rgon/lab_cb_hud.lua
+new file mode 100644
+index 0000000..7a73fe8
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_cb_hud.lua
+@@ -0,0 +1,169 @@
++-- lab_cb_hud.lua (development only; ISAAC_RGON_LAB=lab_cb_hud.lua, worker cb-hud)
++-- Fires the callbacks of api_cb_hud.lua: the minimap (1477-1480: every frame, no arguments, an answer is ignored) and the PlayerHUD's
++-- inventory (Tainted Isaac, restart 21), poop spell queue (Tainted ???, restart 25) and crafting table (Tainted Cain, restart 23):
++-- arguments (player, position, scale), PRE false cancels the drawing and the POST, a Vector moves the drawing (the POST then hears it).
++-- "visual: <name> normal / hidden / moved" lines mark the frames to photograph in a windowed run.
++-- Prints "lab_cb_hud: DONE n PASS m FAIL".
++local T = ...
++local B = T.B
++local M = ModCallbacks
++local mod = RegisterMod("rgon lab cb-hud", 1)
++local pass, fail = 0, 0
++local function say(s) B.log("lab_cb_hud: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_cb_hud: %s %s", ok and "PASS" or "FAIL", what))
++end
++local rec, beh = {}, {}
++local function count(n) return #(rec[n] or {}) end
++local function last(n) local l = rec[n] return l and l[#l] end
++local function reset(n) rec[n] = {} end
++local function tos(v)
++  if type(v) == "userdata" then
++    local ok, t = pcall(function()
++      if v.X ~= nil then return string.format("vec:%.1f,%.1f", v.X, v.Y) end
++      if v.GetPlayerType then return "player:" .. v:GetPlayerType() end
++      return "userdata"
++    end)
++    return ok and t or "userdata"
++  end
++  return tostring(v)
++end
++local NAMES = {
++  "MC_PRE_MINIMAP_UPDATE", "MC_POST_MINIMAP_UPDATE", "MC_PRE_MINIMAP_RENDER", "MC_POST_MINIMAP_RENDER",
++  "MC_PRE_PLAYERHUD_RENDER_INVENTORY", "MC_POST_PLAYERHUD_RENDER_INVENTORY",
++  "MC_PRE_PLAYERHUD_RENDER_POOP_SPELL_QUEUE", "MC_POST_PLAYERHUD_RENDER_POOP_SPELL_QUEUE",
++  "MC_PRE_PLAYERHUD_RENDER_CRAFTING_TABLE", "MC_POST_PLAYERHUD_RENDER_CRAFTING_TABLE",
++}
++for _, n in ipairs(NAMES) do
++  local id = M[n]
++  if not id then
++    check(false, n .. " has a ModCallbacks number")
++  else
++    mod:AddCallback(id, function(_, ...)
++      local a = {}
++      for i = 1, select("#", ...) do a[#a + 1] = tos((select(i, ...))) end
++      local l = rec[n] or {}
++      rec[n] = l
++      local r = { n = select("#", ...), ... }
++      r.text = table.concat(a, ",")
++      l[#l + 1] = r
++      if #l <= 2 then say(string.format("%s #%d (%s)", n, #l, r.text)) end
++      local f = beh[n]
++      if f then return f(...) end
++    end)
++  end
++end
++
++local steps = {}
++local function step(f) steps[#steps + 1] = f end
++local waiting, wait_left, wait_what, wait_cond
++local function wait(what, frames, cond) waiting, wait_left, wait_what, wait_cond = true, frames, what, cond end
++local function pl() return Isaac.GetPlayer(0) end
++
++-- 1. the minimap
++step(function()
++  wait("minimap callbacks", 90, function()
++    return count("MC_PRE_MINIMAP_UPDATE") > 2 and count("MC_POST_MINIMAP_UPDATE") > 2 and count("MC_PRE_MINIMAP_RENDER") > 2 and count("MC_POST_MINIMAP_RENDER") > 2
++  end)
++end)
++step(function()
++  for _, n in ipairs({ "MC_PRE_MINIMAP_UPDATE", "MC_POST_MINIMAP_UPDATE", "MC_PRE_MINIMAP_RENDER", "MC_POST_MINIMAP_RENDER" }) do
++    local r = last(n)
++    check(r ~= nil and r.n == 0, n .. " fires with no argument (" .. count(n) .. " calls)")
++  end
++  local pu, pr = count("MC_PRE_MINIMAP_UPDATE"), count("MC_POST_MINIMAP_UPDATE")
++  check(math.abs(pu - pr) <= 1, "the update PRE and POST come in pairs (" .. pu .. " / " .. pr .. ")")
++  local ru, rr = count("MC_PRE_MINIMAP_RENDER"), count("MC_POST_MINIMAP_RENDER")
++  check(math.abs(ru - rr) <= 1, "the render PRE and POST come in pairs (" .. ru .. " / " .. rr .. ")")
++  -- an answer is ignored, as REPENTOGON's: the POST still follows
++  base_u, base_r = count("MC_POST_MINIMAP_UPDATE"), count("MC_POST_MINIMAP_RENDER")
++  beh.MC_PRE_MINIMAP_UPDATE = function() return false end
++  beh.MC_PRE_MINIMAP_RENDER = function() return false end
++  wait("frames", 20, function() return false end)
++end)
++step(function()
++  check(count("MC_POST_MINIMAP_UPDATE") > base_u, "PRE minimap update's false is ignored: the POST still fires")
++  check(count("MC_POST_MINIMAP_RENDER") > base_r, "PRE minimap render's false is ignored: the POST still fires")
++  beh.MC_PRE_MINIMAP_UPDATE, beh.MC_PRE_MINIMAP_RENDER = nil, nil
++end)
++
++-- 2. the PlayerHUD elements, one per character
++local function element(label, ptype, pre, post, wait_frames)
++  local before_pos
++  step(function()
++    Isaac.ExecuteCommand("restart " .. ptype)
++    wait("frames", 150, function() return false end)
++  end)
++  step(function()
++    reset(pre) reset(post)
++    wait(label .. " callbacks", 200, function() return count(pre) > 2 and count(post) > 2 end)
++  end)
++  step(function()
++    local r, p = last(pre), last(post)
++    check(pl():GetPlayerType() == ptype, label .. ": the player is type " .. ptype)
++    check(r ~= nil and r.n == 3, label .. " PRE: (player, position, scale) (" .. (r and r.text or "none") .. ")")
++    if r then
++      check(type(r[1]) == "userdata" and r[1]:GetPlayerType() == ptype, label .. " PRE: the player")
++      check(type(r[2]) == "userdata" and r[2].X > 0 and r[2].X < 600 and r[2].Y > 0 and r[2].Y < 400, label .. " PRE: position is on screen (" .. tos(r[2]) .. ")")
++      check(type(r[3]) == "number" and r[3] > 0 and r[3] <= 4, label .. " PRE: scale " .. tostring(r[3]))
++      before_pos = Vector(r[2].X, r[2].Y)
++    end
++    check(p ~= nil and p.n == 3 and p[2].X == r[2].X and p[2].Y == r[2].Y and p[3] == r[3], label .. " POST: the same (player, position, scale) (" .. (p and p.text or "none") .. ")")
++    say("visual: " .. label .. " normal")
++    wait("frames", 120, function() return false end)
++  end)
++  step(function()
++    reset(pre) reset(post)
++    beh[pre] = function() return false end
++    say("visual: " .. label .. " hidden")
++    wait("frames", 120, function() return false end)
++  end)
++  step(function()
++    check(count(pre) > 2, label .. ": PRE keeps firing while it cancels (" .. count(pre) .. ")")
++    check(count(post) == 0, label .. ": POST does not fire while PRE cancels (" .. count(post) .. ")")
++    reset(pre) reset(post)
++    beh[pre] = function() return Vector(60, 200) end
++    say("visual: " .. label .. " moved")
++    wait("frames", 120, function() return false end)
++  end)
++  step(function()
++    local r, p = last(pre), last(post)
++    check(r ~= nil and before_pos ~= nil and math.abs(r[2].X - before_pos.X) < 0.01 and math.abs(r[2].Y - before_pos.Y) < 0.01,
++      label .. ": the position handed to PRE is the game's again each frame (" .. (r and tos(r[2]) or "none") .. ")")
++    check(p ~= nil and math.abs(p[2].X - 60) < 0.01 and math.abs(p[2].Y - 200) < 0.01, label .. ": POST hears the moved position (" .. (p and p.text or "none") .. ")")
++    beh[pre] = nil
++  end)
++end
++element("inventory", 21, "MC_PRE_PLAYERHUD_RENDER_INVENTORY", "MC_POST_PLAYERHUD_RENDER_INVENTORY")
++element("spell queue", 25, "MC_PRE_PLAYERHUD_RENDER_POOP_SPELL_QUEUE", "MC_POST_PLAYERHUD_RENDER_POOP_SPELL_QUEUE")
++element("crafting table", 23, "MC_PRE_PLAYERHUD_RENDER_CRAFTING_TABLE", "MC_POST_PLAYERHUD_RENDER_CRAFTING_TABLE")
++
++step(function()
++  B.log(string.format("lab_cb_hud: DONE %d PASS %d FAIL", pass, fail))
++end)
++
++local frame, i = 0, 0
++mod:AddCallback(M.MC_POST_UPDATE, function()
++  frame = frame + 1
++  if frame < 5 then return end
++  if waiting then
++    if wait_cond() then
++      waiting = false
++    else
++      wait_left = wait_left - 1
++      if wait_left <= 0 then
++        waiting = false
++        if wait_what ~= "frames" then check(false, "timed out waiting for " .. wait_what) end
++      else
++        return
++      end
++    end
++  end
++  if frame % 3 ~= 0 then return end
++  i = i + 1
++  local f = steps[i]
++  if not f then return end
++  local ok, err = pcall(f)
++  if not ok then check(false, "step " .. i .. " raised: " .. tostring(err)) end
++end)
 diff --git a/scripts/recomp/rgon/lab_cb_level.lua b/scripts/recomp/rgon/lab_cb_level.lua
 new file mode 100644
-index 0000000..387abab
+index 0000000..8c1fb78
 --- /dev/null
 +++ b/scripts/recomp/rgon/lab_cb_level.lua
-@@ -0,0 +1,241 @@
+@@ -0,0 +1,262 @@
 +-- lab_cb_level.lua (development only; ISAAC_RGON_LAB=lab_cb_level.lua, worker cb-level)
 +-- Fires the callbacks of api_cb_level.lua and checks the counts and arguments the game itself produces: 1058 (Ambush wave pick, a
 +-- replacement room), 1290 (Level:GetRandomRoomIndex, an integer replaces the answer), 1304/1305 (a room is left and entered
@@ -24125,23 +25920,32 @@ index 0000000..387abab
 +local lg_seen
 +mod:AddCallback(M.MC_POST_LEVEL_LAYOUT_GENERATED, function(_, lg)
 +  local p = B.ptr(lg)
-+  lg_seen = { ptr = p, vecs = {} }
-+  for off = 0, 0x800, 4 do
-+    local ok, b = pcall(B.r32, p + off)
-+    local ok2, e = pcall(B.r32, p + off + 4)
-+    if ok and ok2 and b >= 0x10000 and b < 0x80000000 and e > b and (e - b) % 0x50 == 0 and (e - b) // 0x50 >= 5 and (e - b) // 0x50 <= 100 then
-+      local okc, idx = pcall(B.r32, b + 4)
-+      local okd, col = pcall(B.r32, b + 8)
-+      say(string.format("LG vector candidate +0x%x n=%d first index %s col %s", off, (e - b) // 0x50, tostring(idx), tostring(col)))
-+      lg_seen.vecs[#lg_seen.vecs + 1] = off
-+    end
-+  end
++  lg_seen = { ptr = p }
++  local b, en = B.r32(p + 0x364), B.r32(p + 0x364 + 4)
++  lg_seen.bytes = en - b
++  say(string.format("LG vector begin %08x end %08x bytes %d", b, en, en - b))
 +  local ok, rooms = pcall(function() return lg:GetAllRooms() end)
-+  lg_seen.rooms = ok and #rooms or -1
++  rooms = ok and rooms or {}
++  lg_seen.rooms = #rooms
++  lg_seen.cells, lg_seen.seq = {}, true
++  for k, r in ipairs(rooms) do
++    lg_seen.cells[k] = { r:Column(), r:Row() }
++    if r:GenerationIndex() ~= k - 1 then lg_seen.seq = false end   -- the index field runs 0..n-1 at the true stride only
++    say(string.format("LG room %d idx %d col %d row %d shape %d doors %d", k - 1, r:GenerationIndex(), r:Column(), r:Row(), r:Shape(), r:DoorMask()))
++  end
++  -- dead ends from the records alone: a room with exactly one neighbouring cell (1x1 rooms only)
++  local dead = 0
++  for k, c in ipairs(lg_seen.cells) do
++    local nb = 0
++    for k2, c2 in ipairs(lg_seen.cells) do
++      if k2 ~= k and math.abs(c[1] - c2[1]) + math.abs(c[2] - c2[2]) == 1 then nb = nb + 1 end
++    end
++    if nb == 1 then dead = dead + 1 end
++  end
++  lg_seen.dead_expected = dead
 +  local ok2, de = pcall(function() return lg:GetDeadEnds() end)
 +  local ok3, nde = pcall(function() return lg:GetNonDeadEnds() end)
 +  lg_seen.de, lg_seen.nde = ok2 and #de or -1, ok3 and #nde or -1
-+  if ok and #rooms > 0 then lg_seen.first = rooms[1]:GenerationIndex() end
 +end)
 +
 +local game = Game()
@@ -24166,8 +25970,20 @@ index 0000000..387abab
 +  check(count("MC_POST_LEVEL_LAYOUT_GENERATED") >= 1, "MC_POST_LEVEL_LAYOUT_GENERATED fired during generation: " .. count("MC_POST_LEVEL_LAYOUT_GENERATED"))
 +  local l = last("MC_POST_LEVEL_LAYOUT_GENERATED")
 +  check(l ~= nil and l.n == 1 and l[1].GetAllRooms ~= nil, "its argument is a LevelGenerator: " .. tostring(l and l.text))
-+  check(lg_seen ~= nil and lg_seen.rooms >= 5, "GetAllRooms inside the callback lists the layout's rooms: " .. tostring(lg_seen and lg_seen.rooms))
-+  check(lg_seen ~= nil and lg_seen.de >= 1 and lg_seen.nde >= 1 and lg_seen.de + lg_seen.nde <= lg_seen.rooms, "dead ends " .. tostring(lg_seen and lg_seen.de) .. " + non dead ends " .. tostring(lg_seen and lg_seen.nde))
++  local n = lg_seen and lg_seen.rooms or -1
++  check(n >= 5 and lg_seen.bytes == n * 0x48, "GetAllRooms lists " .. n .. " rooms from " .. tostring(lg_seen and lg_seen.bytes) .. " bytes (stride 0x48)")
++  check(lg_seen ~= nil and lg_seen.seq, "the generation index of the records runs 0..n-1 (only true at the real stride)")
++  local at_cells, size = 0, 0
++  for _, c in ipairs(lg_seen and lg_seen.cells or {}) do
++    local d = level:GetRoomByIdx(c[1] + 13 * c[2], -1)
++    if d and d.Data ~= nil then at_cells = at_cells + 1 end
++  end
++  local oks, sz = pcall(function() return level:GetRooms().Size end)
++  size = oks and sz or -1
++  say("level rooms " .. tostring(size) .. ", records with a level room at their cell " .. at_cells)
++  check(at_cells == n, "every generator record has a room in the Level at its grid cell: " .. at_cells .. " of " .. n)
++  check(size >= n, "the Level lists at least the generator's rooms: " .. tostring(size) .. " >= " .. n)
++  check(lg_seen.de == lg_seen.dead_expected and lg_seen.de >= 1 and lg_seen.de + lg_seen.nde == n, "dead ends " .. tostring(lg_seen.de) .. " (neighbour count from the records: " .. tostring(lg_seen.dead_expected) .. ") + non dead ends " .. tostring(lg_seen.nde) .. " = " .. n)
 +end)
 +
 +-- 1. 1290
@@ -29395,6 +31211,166 @@ index 0000000..2423b50
 +    say("RESULT " .. (fails == 0 and "PASS" or ("FAIL (" .. fails .. ")")))
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_image_render.lua b/scripts/recomp/rgon/lab_image_render.lua
+new file mode 100644
+index 0000000..bee79d4
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_image_render.lua
+@@ -0,0 +1,154 @@
++-- lab_image_render.lua (development only; LAB=lab_image_render.lua, worker image-render, wave 10): every name of api_image_render.lua.
++-- Lines "lab_image_render: PASS|FAIL <name> <detail>" and a last "DONE pass=N fail=M". Needs a run to the first room
++-- (SCRIPT='until=Room 1.2(Start Room):enter'). With SHOT=<frame>:<png> in a windowed run the shapes are on screen at frame 90.
++local T = ...
++local B = T.B
++local r32, ri32, rf32, w32 = B.r32, B.ri32, B.rf32, B.w32
++local mod = RegisterMod("rgon lab image render", 1)
++local pass, fail = 0, 0
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log("lab_image_render: " .. (ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function try(name, f)
++  local ok, err = pcall(f)
++  if not ok then check(name, false, "error: " .. tostring(err)) end
++end
++local started, frame = false, 0
++mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() started = true end)
++local GAME = 0x00c71678
++local I = T.R.Implemented
++
++for _, n in ipairs({ "Renderer.GetPixelationAmount", "DebugRenderer.Get", "Shape.GetTimeout", "Shape.SetTimeout", "Shape.Capsule", "Shape.Circle", "Image.GetPaddedWidth", "Image.GetPaddedHeight" }) do
++  check("Implemented " .. n, I[n] == true)
++end
++
++-- Renderer.GetPixelationAmount: 0 between frames, the game's value while it renders
++local px_between, px_render, px_forced = nil, nil, nil
++local force = false
++mod:AddCallback(ModCallbacks.MC_POST_PLAYER_RENDER, function()
++  if not started then return end
++  px_render = Renderer.GetPixelationAmount()
++  if force then px_forced = Renderer.GetPixelationAmount() end
++end)
++
++local function pixelation()
++  try("GetPixelationAmount", function()
++    px_between = Renderer.GetPixelationAmount()
++    check("GetPixelationAmount is the float global", px_between == rf32(0x00c79a4c) and type(px_between) == "number", px_between)
++    check("GetPixelationAmount is 0 after the game's render ended", px_between == 0, px_between)
++    check("GetPixelationAmount during a render is a number in [0, 1]", type(px_render) == "number" and px_render >= 0 and px_render <= 1, px_render)
++    B.log("lab_image_render: note pixelation while rendering " .. tostring(px_render))
++  end)
++end
++local function force_on()
++  local g = r32(GAME)
++  w32(g + 0x269e0, 10) w32(g + 0x269e4, 60)
++  force = true
++end
++local function force_off()
++  w32(r32(GAME) + 0x269e0, 0)
++  force = false
++  try("pixelation forced", function()
++    check("a countdown of 10 over 60 reads 10/15 while rendering", px_forced ~= nil and math.abs(px_forced - 10 / 15) < 1e-4, px_forced)
++  end)
++end
++
++-- Image padded sizes
++local function padded()
++  try("Image padded", function()
++    local function pad(w, h)
++      local im = Renderer.CreateImage(w, h, "lab_padded_" .. w .. "x" .. h)
++      return im:GetPaddedWidth(), im:GetPaddedHeight()
++    end
++    local pw, ph = pad(780, 468)
++    check("GetPaddedWidth/Height of 780x468 is 1024x512 (the engine's own floor buffer pads that size so)", pw == 1024 and ph == 512, pw .. "x" .. ph)
++    pw, ph = pad(512, 512)
++    check("a power of two pads to itself", pw == 512 and ph == 512, pw .. "x" .. ph)
++    pw, ph = pad(100, 300)
++    check("100x300 pads to 128x512", pw == 128 and ph == 512, pw .. "x" .. ph)
++    pw, ph = pad(1, 1)
++    check("1x1 pads to 1x1", pw == 1 and ph == 1)
++    pw, ph = pad(0, 0)
++    check("0x0 stays 0", pw == 0 and ph == 0)
++    local im = Renderer.CreateImage(33, 65, "lab_padded_b")
++    check("GetWidth is not padded", im:GetWidth() == 33 and im:GetHeight() == 65)
++    check("GetPaddedWidth without object errors", not pcall(im.GetPaddedWidth, {}))
++    -- the engine side: the room's floor and wall buffers (Backdrop +0 and +8 hold the image pointers)
++    local bd = B.ptr(Game():GetRoom():GetBackdrop())
++    for i, off in ipairs({ 0, 8 }) do
++      local p = r32(bd + off)
++      local w, h, pw2, ph2 = ri32(p + 0x10), ri32(p + 0x14), ri32(p + 0x18), ri32(p + 0x1c)
++      local im2 = Renderer.CreateImage(w, h, "lab_backdrop_" .. i)
++      check("backdrop buffer " .. i .. " engine padded size equals the Layer's rule", im2:GetPaddedWidth() == pw2 and im2:GetPaddedHeight() == ph2,
++        w .. "x" .. h .. " -> " .. pw2 .. "x" .. ph2)
++    end
++    local loaded = Renderer.LoadImage("gfx/ui/hudpickups.png")
++    B.log("lab_image_render: note hudpickups.png " .. loaded:GetWidth() .. "x" .. loaded:GetHeight() .. " pads " .. loaded:GetPaddedWidth() .. "x" .. loaded:GetPaddedHeight())
++  end)
++end
++
++-- HistoryHUD trinkets
++local function hud_trinkets()
++  try("HistoryHUD trinkets", function()
++    local p = Isaac.GetPlayer(0)
++    p:AddTrinket(TrinketType.TRINKET_SWALLOWED_PENNY)
++    local hh = Game():GetHUD():GetHistoryHUD()
++    B.call(0x0083b280, { ecx = B.ptr(Game():GetHUD()) + 0x5c54 }, 0, 1)
++    local hist = p:GetHistory():GetCollectiblesHistory()
++    local n = 0
++    for _, e in ipairs(hist) do if e:IsTrinket() then n = n + 1 end end
++    B.log("lab_image_render: note history entries " .. #hist .. ", trinket entries " .. n .. ", HUD items " .. #hh:GetItems(0, true))
++  end)
++end
++
++-- Shape
++local shape_keep
++local function shapes()
++  try("DebugRenderer.Get / Shape", function()
++    local s = DebugRenderer.Get(9001, true)
++    check("DebugRenderer.Get answers a Shape", s ~= nil and tostring(s):find("Shape", 1, true) ~= nil, tostring(s))
++    check("a fresh shape has the game's timeout 5", s:GetTimeout() == 5, s:GetTimeout())
++    s:SetTimeout(300)
++    check("SetTimeout is read back", s:GetTimeout() == 300, s:GetTimeout())
++    check("Get(same index) answers the same node", DebugRenderer.Get(9001, false) == s and DebugRenderer.Get(9001, false):GetTimeout() == 300)
++    local a = s.address
++    local function count(off) return (ri32(a + off + 4) - ri32(a + off)) end
++    local v0, i0 = count(0x20), count(8)
++    s:Circle(Vector(300, 200), 40)
++    check("Circle adds vertices and indices", count(0x20) > v0 and count(8) > i0, (count(0x20) - v0) .. " bytes of vertices, " .. (count(8) - i0) .. " of indices")
++    local v1, i1 = count(0x20), count(8)
++    local cap = Capsule(Vector(200, 300), Vector(400, 300), 20)
++    s:Capsule(cap)
++    check("Capsule adds 24 bytes of vertices and 8 of indices", count(0x20) - v1 == 24 and count(8) - i1 == 8, (count(0x20) - v1) .. "/" .. (count(8) - i1))
++    check("Shape:Circle with a non-Vector errors", not pcall(s.Circle, s, 5, 5))
++    check("Shape:Capsule with a Vector errors", not pcall(s.Capsule, s, Vector(0, 0)))
++    check("Shape:SetTimeout with a string errors", not pcall(s.SetTimeout, s, "x"))
++    local n1 = DebugRenderer.Get(-1)
++    local n2 = DebugRenderer.Get()
++    check("Get(-1) always makes a new shape", n1 ~= nil and n2 ~= nil and n1.address ~= n2.address)
++    check("DebugRenderer.Get with a string errors", not pcall(DebugRenderer.Get, "x"))
++    shape_keep = s
++  end)
++end
++local function shapes_visible()
++  -- debug bit 5 (console `debug 6`) makes the game draw its shapes; keep the timeout up
++  local g = r32(GAME)
++  w32(g + 0x26544, r32(g + 0x26544) | 0x20)
++  if shape_keep then shape_keep:SetTimeout(600) end
++end
++
++mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++  if not started then return end
++  frame = frame + 1
++  if frame == 20 then pixelation() end
++  if frame == 30 then force_on() end
++  if frame == 34 then force_off() end
++  if frame == 36 then padded() end
++  if frame == 38 then hud_trinkets() end
++  if frame == 40 then shapes() end
++  if frame >= 60 and frame < 200 and frame % 10 == 0 then shapes_visible() end
++  if frame == 210 then
++    B.log("lab_image_render: DONE pass=" .. pass .. " fail=" .. fail)
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_isaac_misc.lua b/scripts/recomp/rgon/lab_isaac_misc.lua
 new file mode 100644
 index 0000000..1f46f9a
@@ -30089,6 +32065,141 @@ index 0000000..186db3e
 +    B.log(string.format("lab_level_game: DONE pass=%d fail=%d", pass, fail))
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_level_itempool_misc.lua b/scripts/recomp/rgon/lab_level_itempool_misc.lua
+new file mode 100644
+index 0000000..faaedb2
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_level_itempool_misc.lua
+@@ -0,0 +1,129 @@
++-- lab_level_itempool_misc.lua (development only; LAB=lab_level_itempool_misc.lua, wave 10 worker level-itempool-misc): every name of
++-- api_level_itempool_misc.lua is called in the start room and read back. Lines "lab_level_itempool_misc: PASS|FAIL <name> <detail>"
++-- and a last "DONE pass=N fail=M". Lines "note" are measurements.
++local T = ...
++local B = T.B
++local r32, ri32, rf32, w32 = B.r32, B.ri32, B.rf32, B.w32
++local mod = RegisterMod("rgon lab level itempool misc", 1)
++local pass, fail = 0, 0
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log("lab_level_itempool_misc: " .. (ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function note(s) B.log("lab_level_itempool_misc: note " .. s) end
++local function try(name, f)
++  local ok, err = pcall(f)
++  if not ok then check(name, false, "error: " .. tostring(err)) end
++end
++local function fails(name, f)
++  local ok, err = pcall(f)
++  check(name .. " errors", not ok, err)
++end
++local started, frame = false, 0
++mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() started = true end)
++local g = Game()
++
++local function names()
++  local I = REPENTOGON.Implemented
++  for _, n in ipairs({ "Level.PlaceRoom", "ItemPool.AddTemporaryCollectible", "ItemPool.RemoveTemporaryCollectible" }) do
++    check("Implemented " .. n, I[n] == true)
++  end
++  note("probe Input.GetDeviceNameByIdx " .. type(Input.GetDeviceNameByIdx) .. " Game.ShowGenericLeaderboard " .. type(g.ShowGenericLeaderboard)
++    .. " MusicManager.GetCurrentJingleID " .. type(MusicManager().GetCurrentJingleID)
++    .. " PlayerManager.SpawnSelectedBaby " .. type(PlayerManager and PlayerManager.SpawnSelectedBaby))
++  local m = B.ptr(MusicManager())
++  local words = {}
++  for o = 0x320, 0x364, 4 do words[#words + 1] = string.format("%x=%x", o, r32(m + o)) end
++  note("music object " .. table.concat(words, " "))
++  local seen = {}
++  for _, c in ipairs({ "Input", "PlayerManager" }) do
++    local t = _G[c]
++    for k in pairs(t) do seen[#seen + 1] = c .. "." .. tostring(k) end
++  end
++  table.sort(seen)
++  note("tables " .. table.concat(seen, ","))
++end
++
++local function place_room()
++  local level = g:GetLevel()
++  local cells = level:FindValidRoomPlacementLocations(1, -1)
++  check("a free cell exists", type(cells) == "table" and #cells > 0, cells and #cells)
++  local idx = cells[1]
++  local config = RoomConfig.GetRoomByStageTypeAndVariant(StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1, 0)
++  check("a room config", config ~= nil)
++  local before = level:GetRoomByIdx(idx)
++  check("the cell is empty first", before == nil or before.Data == nil)
++  local entry = Isaac.LevelGeneratorEntry()
++  entry:SetColIdx(idx % 13)
++  entry:SetLineIdx(idx // 13)
++  entry:SetAllowedDoors(15)
++  local ok = level:PlaceRoom(entry, config, 4321)
++  check("PlaceRoom answers true", ok == true, ok)
++  local d = level:GetRoomByIdx(idx)
++  check("the room is in the grid", d ~= nil and d.Data ~= nil and d.Data.Type == config.Type and d.Data.Shape == config.Shape,
++    d and d.Data and (d.Data.Type .. "/" .. d.Data.Shape))
++  check("its grid index", d ~= nil and d.GridIndex == idx, d and d.GridIndex)
++  fails("PlaceRoom bad entry", function() level:PlaceRoom(5, config, 1) end)
++  fails("PlaceRoom bad config", function() level:PlaceRoom(entry, nil, 1) end)
++  fails("PlaceRoom bad seed", function() level:PlaceRoom(entry, config, "x") end)
++end
++
++local function pool_names()
++  local pool = g:GetItemPool()
++  local pt = ItemPoolType.POOL_TREASURE
++  local POOL_AT = 0x00732c70
++  local P = B.ptr(pool)
++  local data = B.call(POOL_AT, P, pt)
++  local function size() return (r32(data + 8) - r32(data + 4)) // 0x18 end
++  local function present(id)
++    for e = r32(data + 4), r32(data + 8) - 1, 0x18 do if ri32(e) == id then return true end end
++    return false
++  end
++  local id
++  for c = 1, Isaac.GetItemConfig():GetCollectibles().Size - 1 do
++    if Isaac.GetItemConfig():GetCollectible(c) ~= nil and not present(c) then id = c break end
++  end
++  check("a collectible outside the treasure pool", id ~= nil, id)
++  local n0, w0 = size(), rf32(data)
++  try("temporary add", function()
++    pool:AddTemporaryCollectible(pt, { itemID = id, weight = 1000000 })
++    check("size +1", size() == n0 + 1, size())
++    check("present in the live pool", present(id))
++    check("total weight grew", rf32(data) > w0 + 900000, rf32(data))
++    local rng = RNG() rng:SetSeed(77, 35)
++    local hits = 0
++    for i = 1, 8 do
++      local r = pool:PickCollectible(pt, false, rng)
++      if r ~= nil and r.itemID == id then hits = hits + 1 end
++    end
++    check("the pool picks it", hits == 8, hits)
++    -- a list of entries, one of them with a name of no item
++    pool:AddTemporaryCollectible(pt, { { itemID = id, weight = 2 }, { itemID = 999999 } })
++    check("a list adds the valid entries only", size() == n0 + 2, size())
++    pool:RemoveTemporaryCollectible(pt, { itemID = id, weight = 2 })
++    check("removing the second entry", size() == n0 + 1, size())
++    pool:RemoveTemporaryCollectible(pt, { itemID = id, weight = 2 })
++    check("a removal that matches nothing does nothing", size() == n0 + 1, size())
++    pool:RemoveTemporaryCollectible(pt, { itemID = id, weight = 1000000 })
++    check("size back", size() == n0, size())
++    check("gone from the live pool", not present(id))
++    check("total weight back", math.abs(rf32(data) - w0) < 0.5, rf32(data) .. " vs " .. w0)
++  end)
++  try("a permanent entry is not removed", function()
++    local perm = ri32(r32(data + 4))
++    pool:RemoveTemporaryCollectible(pt, { itemID = perm })
++    check("size unchanged", size() == n0, size())
++  end)
++  fails("AddTemporaryCollectible bad pool", function() pool:AddTemporaryCollectible(99, { itemID = 1 }) end)
++  fails("AddTemporaryCollectible bad table", function() pool:AddTemporaryCollectible(pt, "x") end)
++  fails("RemoveTemporaryCollectible bad pool", function() pool:RemoveTemporaryCollectible(-1, { itemID = 1 }) end)
++end
++
++local steps = { [5] = names, [10] = place_room, [20] = pool_names }
++mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++  if not started then return end
++  frame = frame + 1
++  local f = steps[frame]
++  if f then local ok, err = pcall(f) if not ok then check("step " .. frame, false, err) end end
++  if frame == 40 then B.log(string.format("lab_level_itempool_misc: DONE pass=%d fail=%d", pass, fail)) end
++end)
 diff --git a/scripts/recomp/rgon/lab_liftgap.lua b/scripts/recomp/rgon/lab_liftgap.lua
 new file mode 100644
 index 0000000..59673b8
@@ -30449,6 +32560,147 @@ index 0000000..38d08dd
 +  end
 +end)
 +say("loaded N=" .. N)
+diff --git a/scripts/recomp/rgon/lab_menus_more.lua b/scripts/recomp/rgon/lab_menus_more.lua
+new file mode 100644
+index 0000000..2b5bd4f
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_menus_more.lua
+@@ -0,0 +1,135 @@
++-- lab_menus_more.lua (development only; ISAAC_RGON_LAB=lab_menus_more.lua, wave 10 worker menus-c): api_menus_more.lua against the game.
++-- Logs "lab_menus_more: PASS/FAIL ..", INFO lines for what is only looked at, and "lab_menus_more: DONE n PASS m FAIL".
++-- Needs a played save (copy), a few small mods and one mod with custom challenges (Epiphany) in the support folder (symlinks).
++--   ISAAC_LAB_MODE=menu (default), headless is fine; the timeline is in menu render frames f (presented frame F = f + 139):
++--     HEADLESS=1 FRAMES=1500 LAB=lab_menus_more.lua SCRIPT='120:enter,300:enter,479:down,519:up,559:down,599:enter,879:down,919:up' scripts/mac/run.sh <support> <log>
++--     f 300 the lab makes the mods menu (id 16) the active one, f 310-460 setters and reads, keys at F 479..599 move and toggle;
++--     f 700 the custom challenge menu (id 15), keys at F 879 (down) and 919 (up).
++--   ISAAC_LAB_MODE=run: in a run (SCRIPT='until=Room 1.2(Start Room):enter,@100:esc:hold=4,@160:down:hold=4,@260:esc:hold=4'): the pause
++--     screen's sprites while it is open, and the generic prompt's current selection words.
++local T = ...
++local B = T.B
++local R = T.R or REPENTOGON
++local r32, w32, ri32, log = B.r32, B.w32, B.ri32, B.log
++local mod = RegisterMod("rgon lab menus more", 1)
++local pass, fail = 0, 0
++local function say(s) log("lab_menus_more: " .. s) end
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  say((ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function info(s) say("INFO " .. s) end
++local MM_PTR = 0x00c72a20
++
++local NAMES = {
++  "ModsMenu.GetSelectedElement", "ModsMenu.SetSelectedElement", "ModsMenu.WasListEdited",
++  "CustomChallengeMenu.GetSelectedChallengeID", "CustomChallengeMenu.SetSelectedChallengeID",
++  "PauseMenu.GetMyStuffSprite",
++}
++for _, n in ipairs(NAMES) do check("Implemented " .. n, R.Implemented[n] == true) end
++-- the names the game never reacted to must not be claimed
++for _, n in ipairs({ "DailyChallengeMenu.GetSelectedElement", "DailyChallengeMenu.GetTimeLeftHours", "DailyChallengeMenu.IsLeaderboardVisible",
++  "KeyConfigMenu.GetSelectedColumn", "KeyConfigMenu.IsEditActive", "ControllerSelectMenu.GetSelectedElement", "ControllerSelectMenu.SetSelectedElement",
++  "PauseMenu.GetCompletionMarksSprite", "GenericPrompt.GetCurrentSelection" }) do
++  check("not claimed " .. n, R.Implemented[n] ~= true)
++end
++
++local f = 0
++local actions = {}
++local function at(fr, fn) actions[fr] = fn end
++local function base_mods() return r32(MM_PTR) + 0xd96c end
++local start
++local function ptr() return r32(base_mods() + 0x128) end
++
++at(300, function() MenuManager.SetActiveMenu(16) end)
++at(310, function()
++  check("ModsMenu starts at element 1", ModsMenu.GetSelectedElement() == 1, ModsMenu.GetSelectedElement())
++  check("ModsMenu.WasListEdited false at rest", ModsMenu.WasListEdited() == false)
++  start = ptr() - 4 * ri32(base_mods())
++  ModsMenu.SetSelectedElement(3)
++  check("ModsMenu.SetSelectedElement(3) reads back 3", ModsMenu.GetSelectedElement() == 3, ModsMenu.GetSelectedElement())
++  check("ModsMenu.SetSelectedElement moves the list pointer by 4 per element", ptr() == start + 8, string.format("0x%x vs 0x%x", ptr(), start + 8))
++  ModsMenu.SetSelectedElement(0)
++  check("ModsMenu.SetSelectedElement(0) clamps to 1", ModsMenu.GetSelectedElement() == 1, ModsMenu.GetSelectedElement())
++  ModsMenu.SetSelectedElement(1000)
++  local last = ModsMenu.GetSelectedElement()
++  info("SetSelectedElement(1000) clamped to " .. last)
++  check("ModsMenu.SetSelectedElement(1000) clamps to the mod count (5 mods in this support folder)", last == 5, last)
++  ModsMenu.SetSelectedElement(3)
++end)
++-- Down at F 479 (f 340): the game goes on from the written element 3 (index 2) to element 4
++at(345, function()
++  check("the game's Down moves on from the written element (3 -> 4)", ModsMenu.GetSelectedElement() == 4, ModsMenu.GetSelectedElement())
++  check("and the pointer it recomputes agrees with the setter's rule", ptr() == start + 12, string.format("0x%x vs 0x%x", ptr(), start + 12))
++end)
++at(385, function() check("the game's Up moves back (4 -> 3)", ModsMenu.GetSelectedElement() == 3, ModsMenu.GetSelectedElement()) end)
++at(425, function() check("the game's Down again (3 -> 4)", ModsMenu.GetSelectedElement() == 4, ModsMenu.GetSelectedElement()) end)
++at(450, function() ModsMenu.SetSelectedElement(2) end)
++-- Enter at F 599 (f 460): toggles the mod the pointer names, the menu notes the edit
++at(500, function() check("ModsMenu.WasListEdited true after Enter on the mod chosen by the setter (element 2)", ModsMenu.WasListEdited() == true) end)
++
++at(700, function() MenuManager.SetActiveMenu(15) end)
++local c0
++at(710, function()
++  c0 = CustomChallengeMenu.GetSelectedChallengeID()
++  info("custom challenge menu at rest: " .. c0)
++  CustomChallengeMenu.SetSelectedChallengeID(2)
++  check("CustomChallengeMenu.SetSelectedChallengeID(2) reads back 2", CustomChallengeMenu.GetSelectedChallengeID() == 2, CustomChallengeMenu.GetSelectedChallengeID())
++end)
++at(745, function() check("the game's Down moves on from the written challenge (2 -> 3)", CustomChallengeMenu.GetSelectedChallengeID() == 3, CustomChallengeMenu.GetSelectedChallengeID()) end)
++-- Up is a row move in the game's grid (3 -> 62 here, 11 -> 45 and 46 -> 45 in other runs): looked at only
++at(785, function() info("after the game's Up: " .. CustomChallengeMenu.GetSelectedChallengeID()) end)
++at(900, function() say(string.format("DONE %d PASS %d FAIL", pass, fail)) end)
++
++local function menu_mode()
++  mod:AddCallback(ModCallbacks.MC_MAIN_MENU_RENDER, function()
++    f = f + 1
++    if r32(MM_PTR) == 0 then return end
++    if actions[f] then
++      local ok, err = pcall(actions[f])
++      if not ok then check("action at " .. f .. " ran", false, err) end
++    end
++  end)
++end
++
++local function run_mode()
++  local GAME_PTR, PAUSE = 0x00c71678, 0x23a74
++  local frame, prompt, lastp = 0, nil, {}
++  local function pwatch(key, v) if lastp[key] ~= v then lastp[key] = v info(string.format("run frame %d: %s = %s", frame, key, tostring(v))) end end
++  mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++    if not Isaac.IsInGame() then return end
++    frame = frame + 1
++    local g = r32(GAME_PTR)
++    if Game():IsPaused() then
++      pwatch("pause selected", PauseMenu.GetSelectedElement())
++      if not lastp.mystuff and frame > 110 then
++        lastp.mystuff = true
++        local sp = PauseMenu.GetMyStuffSprite()
++        check("PauseMenu.GetMyStuffSprite is PauseScreen_MyStuff.anm2 while paused", sp ~= nil and sp:GetFilename():find("PauseScreen_MyStuff.anm2", 1, true) ~= nil, sp and sp:GetFilename() or "nil")
++      end
++      if frame % 20 == 0 and not lastp.scanned then
++        lastp.scanned = true
++        for o = PAUSE, PAUSE + 0xe00, 4 do
++          if r32(g + o + 0x30) == g + o and r32(g + o + 0x50) == g + o then
++            local ok, name = pcall(function() return T.wrap("Sprite", g + o):GetFilename() end)
++            info(string.format("paused sprite pause+0x%x %s", o - PAUSE, ok and name or "?"))
++          end
++        end
++      end
++    end
++    prompt = prompt or Game():GetGenericPrompt()
++    if frame == 330 then
++      prompt:Initialize(false)
++      prompt:SetText("Menus-c lab", "left and right choose", "", "", "")
++      prompt:Show()
++    end
++    if frame >= 331 and frame < 700 then
++      prompt:Update(true)
++      prompt:Render()
++      pwatch("prompt cur +0x128", ri32(prompt.address + 0x128))
++      pwatch("prompt sub +0x12c", ri32(prompt.address + 0x12c))
++    end
++    if frame == 800 then say(string.format("DONE %d PASS %d FAIL", pass, fail)) end
++  end)
++end
++if (B.env("ISAAC_LAB_MODE") or "menu") == "run" then run_mode() else menu_mode() end
 diff --git a/scripts/recomp/rgon/lab_menus_probe.lua b/scripts/recomp/rgon/lab_menus_probe.lua
 new file mode 100644
 index 0000000..21d4c61
@@ -31801,6 +34053,184 @@ index 0000000..36a70c4
 +    if not ok then check("lab body", false, err) B.log(string.format("lab_npc_blood: DONE pass=%d fail=%d", pass, fail)) end
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_npc_entity_misc.lua b/scripts/recomp/rgon/lab_npc_entity_misc.lua
+new file mode 100644
+index 0000000..cec4808
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_npc_entity_misc.lua
+@@ -0,0 +1,172 @@
++-- lab_npc_entity_misc.lua (development only; LAB=lab_npc_entity_misc.lua): every name of api_npc_entity_misc.lua.
++-- Lines "lab_npc_entity_misc: PASS|FAIL <name> <detail>", a last "DONE pass=N fail=M".
++local T = ...
++local B = T.B
++local r32, ri32, rf32, w32, wf32, call, ptr = B.r32, B.ri32, B.rf32, B.w32, B.wf32, B.call, B.ptr
++local mod = RegisterMod("rgon lab npc entity misc", 1)
++local pass, fail = 0, 0
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log("lab_npc_entity_misc: " .. (ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function note(s) B.log("lab_npc_entity_misc: note " .. s) end
++local function try(name, f)
++  local ok, err = pcall(f)
++  if not ok then check(name, false, "error: " .. tostring(err)) end
++end
++local started, frame = false, 0
++mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() started = true end)
++
++local function names()
++  local I = REPENTOGON.Implemented
++  for _, n in ipairs({ "Entity.GetKnockbackDirection", "Entity.SetKnockbackDirection", "Entity.SpawnWaterImpactEffects", "EntityPickup.CanReroll",
++    "EntityNPC.GetHitList", "EntityNPC.GetFireplaceLoot", "EntityNPC.GetShopkeeperLoot", "EntityEffect.CreateLootPreview" }) do
++    check("Implemented " .. n, I[n] == true)
++  end
++  for _, n in ipairs({ "EntityNPC.SetFlyingOverride", "EntityNPC.GetFlyingOverride", "EntityNPC.ClearFlyingOverride", "EntityDelirium.Transform",
++    "Entity.GetDebugShape", "Entity.TeleportToRandomPosition", "EntityFamiliar.RemoveFromPlayer", "EntityNPC.FireGridEntity", "EntityNPC.ThrowMaggot",
++    "EntityNPC.ThrowMaggotAtPos", "EntityNPC.ShootMaggotProjectile", "EntityNPC.SpawnBloodSplash" }) do
++    check("deferred " .. n .. " left unregistered", I[n] ~= true)
++  end
++end
++
++local function checks()
++  local pos = Game():GetRoom():GetCenterPos()
++  local p = Isaac.GetPlayer(0)
++  local gaper = Isaac.Spawn(10, 0, 0, pos, Vector(0, 0), nil)
++  gaper:AddEntityFlags(EntityFlag.FLAG_FREEZE)
++  local ga = ptr(gaper)
++
++  try("knockback", function()
++    gaper:AddKnockback(EntityRef(p), Vector(3, 4), 10, false)
++    local d = gaper:GetKnockbackDirection()
++    check("GetKnockbackDirection is the words at +0x308", d.X == rf32(ga + 0x308) and d.Y == rf32(ga + 0x30c), d.X .. "," .. d.Y)
++    check("AddKnockback wrote a direction along (3,4)", d.X ~= 0 and math.abs(d.X * 4 - d.Y * 3) < 1e-3, d.X .. "," .. d.Y)
++    gaper:SetKnockbackDirection(Vector(-7, 2.5))
++    check("SetKnockbackDirection writes", rf32(ga + 0x308) == -7 and rf32(ga + 0x30c) == 2.5)
++    local g = gaper:GetKnockbackDirection()
++    check("GetKnockbackDirection reads it back", g.X == -7 and g.Y == 2.5)
++    check("GetKnockbackDirection is a copy", (function() g.X = 9 return gaper:GetKnockbackDirection().X == -7 end)())
++  end)
++
++  try("hitlist", function()
++    local n = gaper:ToNPC()
++    check("GetHitList empty on a fresh NPC", #n:GetHitList() == 0)
++    call(0x00431620, ga + 0xf00, ptr(p))
++    local idx = call(0x006b62b0, ptr(p))
++    local l = n:GetHitList()
++    check("GetHitList holds the inserted entity's hit list index", #l == 1 and l[1] == idx, #l .. " " .. tostring(l[1]) .. " want " .. idx)
++    local e2 = Isaac.Spawn(10, 0, 0, pos + Vector(80, 0), Vector(0, 0), nil)
++    e2:AddEntityFlags(EntityFlag.FLAG_FREEZE)
++    call(0x00431620, ga + 0xf00, ptr(e2))
++    check("GetHitList grows to two entries", #n:GetHitList() == 2, #n:GetHitList())
++    call(0x00431620, ga + 0xf00, ptr(e2))
++    note("hit list after a duplicate insert: " .. #n:GetHitList())
++    e2:Remove()
++  end)
++
++  try("fireplace", function()
++    local f = Isaac.Spawn(33, 0, 0, pos + Vector(0, 80), Vector(0, 0), nil):ToNPC()
++    local a, b = f:GetFireplaceLoot(false), f:GetFireplaceLoot(false)
++    local ea, eb = a:GetEntries(), b:GetEntries()
++    check("GetFireplaceLoot answers a LootList", type(ea) == "table")
++    local s = {}
++    for _, e in ipairs(ea) do s[#s + 1] = e:GetType() .. "." .. e:GetVariant() .. "." .. e:GetSubType() end
++    note("fireplace loot: " .. table.concat(s, " "))
++    check("GetFireplaceLoot without advance is repeatable", #ea == #eb and (#ea == 0 or (ea[1]:GetVariant() == eb[1]:GetVariant() and ea[1]:GetSubType() == eb[1]:GetSubType())))
++    local c = f:GetFireplaceLoot()
++    check("GetFireplaceLoot default argument", #c:GetEntries() == #ea)
++    f:Remove()
++    local per = {}
++    for v = 0, 4 do
++      local fp = Isaac.Spawn(33, v, 0, pos + Vector(40 * v, 120), Vector(0, 0), nil):ToNPC()
++      if fp then per[#per + 1] = v .. "=" .. #fp:GetFireplaceLoot(false):GetEntries() fp:Remove() end
++    end
++    note("fireplace loot counts by variant: " .. table.concat(per, " "))
++  end)
++
++  try("shopkeeper", function()
++    local s = Isaac.Spawn(17, 0, 0, pos + Vector(0, -80), Vector(0, 0), nil):ToNPC()
++    local a = s:GetShopkeeperLoot(false)
++    local ea = a:GetEntries()
++    local out = {}
++    for _, e in ipairs(ea) do out[#out + 1] = e:GetType() .. "." .. e:GetVariant() .. "." .. e:GetSubType() end
++    note("shopkeeper loot: " .. table.concat(out, " "))
++    check("GetShopkeeperLoot answers a LootList", type(ea) == "table")
++    check("GetShopkeeperLoot repeatable", #s:GetShopkeeperLoot(false):GetEntries() == #ea)
++    s:Remove()
++  end)
++
++  try("CanReroll", function()
++    local vals = {}
++    for _, v in ipairs({ { 100, 1 }, { 20, 1 }, { 30, 1 }, { 40, 1 }, { 50, 1 }, { 300, 1 }, { 350, 1 }, { 90, 1 } }) do
++      local pk = Isaac.Spawn(5, v[1], v[2], pos + Vector(160, 0), Vector(0, 0), nil):ToPickup()
++      if pk then
++        local ok, r = pcall(pk.CanReroll, pk)
++        vals[#vals + 1] = v[1] .. "=" .. tostring(r)
++        check("CanReroll boolean for variant " .. v[1], ok and type(r) == "boolean", tostring(r))
++        if v[1] == 100 then check("a collectible can be rerolled", r == true) end
++        local want = (call(0x006ee240, { ecx = v[1], edx = v[2] }) & 0xff) ~= 0
++        check("CanReroll agrees with the variant test 0x6ee240 for variant " .. v[1], r == want, tostring(r) .. " " .. tostring(want))
++        local fa = ptr(pk) + 0x173
++        local old = B.r8(fa)
++        B.w8(fa, 1)
++        check("CanReroll is false with the flag byte +0x173 set (variant " .. v[1] .. ")", pk:CanReroll() == false)
++        B.w8(fa, old)
++        pk:Remove()
++      end
++    end
++    note("CanReroll: " .. table.concat(vals, " "))
++  end)
++
++  try("water", function()
++    local room = Game():GetRoom()
++    local ra = ptr(room)
++    local old = rf32(ra + 0x7240)
++    local function count() return #Isaac.FindByType(1000, 99) end
++    local c0 = count()
++    gaper:SpawnWaterImpactEffects(pos, Vector(3, 1), 1.0)
++    check("no water droplets while the room has no water", count() == c0, count() - c0)
++    wf32(ra + 0x7240, 1.0)
++    local c1 = count()
++    gaper:SpawnWaterImpactEffects(pos, Vector(3, 1), 1.0)
++    local n1 = count() - c1
++    check("SpawnWaterImpactEffects spawns 8..13 droplets over water", n1 >= 8 and n1 <= 13, n1)
++    local c2 = count()
++    gaper:SpawnWaterImpactEffects(pos, nil, 1.0)
++    local n2 = count() - c2
++    check("SpawnWaterImpactEffects without a velocity", n2 >= 8 and n2 <= 13, n2)
++    local bad = false
++    for _, e in ipairs(Isaac.FindByType(1000, 99)) do if e.Position.X ~= e.Position.X then bad = true end end
++    check("no NaN positions", not bad)
++    wf32(ra + 0x7240, old)
++  end)
++
++  try("loot preview", function()
++    local ch = Isaac.Spawn(5, 50, 1, pos + Vector(-160, 0), Vector(0, 0), nil):ToPickup()
++    local list = ch:GetLootList(false)
++    note("chest loot entries: " .. #list:GetEntries())
++    local ll = LootList()
++    ll:PushEntry(5, 100, 1, 12345)
++    ll:PushEntry(5, 20, 1, 777)
++    local n0 = #Isaac.FindByType(1000, 191)
++    local eff = EntityEffect.CreateLootPreview(ll, pos + Vector(-160, -60), ch, nil)
++    check("CreateLootPreview answers an EntityEffect", eff ~= nil and eff.Type == 1000, eff and (eff.Type .. "." .. eff.Variant))
++    check("CreateLootPreview made a variant 191 effect", eff ~= nil and eff.Variant == 191)
++    check("the effect is in the room", #Isaac.FindByType(1000, 191) == n0 + 1, #Isaac.FindByType(1000, 191) - n0)
++    if eff then
++      check("the effect sits at the position", math.abs(eff.Position.X - (pos.X - 160)) < 1 and math.abs(eff.Position.Y - (pos.Y - 60)) < 1,
++        eff.Position.X .. "," .. eff.Position.Y)
++      local again = EntityEffect.CreateLootPreview(list, pos + Vector(-100, -60), ch, eff)
++      check("CreateLootPreview reuses a given effect", again ~= nil and again.InitSeed == eff.InitSeed)
++    end
++  end)
++end
++
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  if not started then return end
++  frame = frame + 1
++  if frame == 3 then try("names", names) end
++  if frame == 10 then try("checks", checks) end
++  if frame == 60 then B.log(string.format("lab_npc_entity_misc: DONE pass=%d fail=%d", pass, fail)) end
++end)
 diff --git a/scripts/recomp/rgon/lab_particle.lua b/scripts/recomp/rgon/lab_particle.lua
 new file mode 100644
 index 0000000..d513c6a
@@ -32490,6 +34920,109 @@ index 0000000..dccef45
 +    done = true
 +    B.log("lab_player_calls: DONE pass=" .. pass .. " fail=" .. fail)
 +  end
++end)
+diff --git a/scripts/recomp/rgon/lab_player_cooldowns.lua b/scripts/recomp/rgon/lab_player_cooldowns.lua
+new file mode 100644
+index 0000000..95b9baf
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_player_cooldowns.lua
+@@ -0,0 +1,97 @@
++-- lab_player_cooldowns.lua (development only; LAB=lab_player_cooldowns.lua): api_player_cooldowns.lua in the first room.
++-- Getters are read back, setters watched against the game's own countdown, SwapForgottenForm against the player type.
++-- Logs "lab_player_cooldowns: PASS/FAIL .." and a DONE line with the counts.
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab player cooldowns", 1)
++local pass, fail = 0, 0
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log("lab_player_cooldowns: " .. (ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++
++local plan = {}
++local function at(frame, name, f) plan[#plan + 1] = { frame = frame, name = name, f = f } end
++local frame = 0
++local saved = {}
++
++at(5, "exists", function(p)
++  for _, n in ipairs({ "GetItemStateCooldown", "SetItemStateCooldown", "GetForgottenSwapFormCooldown", "SetForgottenSwapFormCooldown",
++    "GetMaggySwingCooldown", "SetMaggySwingCooldown", "SwapForgottenForm" }) do
++    check("Implemented EntityPlayer." .. n, REPENTOGON.Implemented["EntityPlayer." .. n] == true)
++  end
++  check("GetMaxPocketItems is the game's own", type(p:GetMaxPocketItems()) == "number" and p:GetMaxPocketItems() >= 1, p:GetMaxPocketItems())
++  check("GetTearRangeModifier answers", type(p:GetTearRangeModifier()) == "number")
++  check("item state cooldown starts at 0", p:GetItemStateCooldown() == 0, p:GetItemStateCooldown())
++  p:SetItemStateCooldown(20)
++  check("SetItemStateCooldown reads back", p:GetItemStateCooldown() == 20, p:GetItemStateCooldown())
++  check("SetItemStateCooldown rejects a string", not pcall(p.SetItemStateCooldown, p, "x"))
++end)
++at(5, "item state is the game's word", function(p)
++  -- the item-state word counts down only while an item state is active; a write to a word of another use would not
++  saved.is = p:GetItemStateCooldown()
++end)
++at(15, "item state counts down", function(p)
++  local v = p:GetItemStateCooldown()
++  check("the game counts the item state cooldown down", v < 20, v)
++  p:SetItemStateCooldown(0)
++  p:ChangePlayerType(PlayerType.PLAYER_THEFORGOTTEN)
++end)
++
++at(25, "forgotten swap", function(p)
++  check("forgotten swap cooldown starts at 0", p:GetForgottenSwapFormCooldown() == 0, p:GetForgottenSwapFormCooldown())
++  saved.type0 = p:GetPlayerType()
++  check("player is The Forgotten", saved.type0 == PlayerType.PLAYER_THEFORGOTTEN, saved.type0)
++  p:SetForgottenSwapFormCooldown(12)
++  check("SetForgottenSwapFormCooldown reads back", p:GetForgottenSwapFormCooldown() == 12)
++  local ok = p:SwapForgottenForm(false, false)
++  check("a swap during the cooldown is refused", ok == false, ok)
++  p:SetForgottenSwapFormCooldown(0)
++  saved.ok = p:SwapForgottenForm(true, false)
++  check("a forced swap answers true", saved.ok == true, saved.ok)
++  saved.cd = p:GetForgottenSwapFormCooldown()
++  check("the swap sets the cooldown to 15", saved.cd == 15, saved.cd)
++  check("SwapForgottenForm rejects a number", not pcall(p.SwapForgottenForm, p, 1))
++end)
++at(28, "forgotten swap type", function(p)
++  local q = Isaac.GetPlayer(0)
++  local types = {}
++  for i = 0, Game():GetNumPlayers() - 1 do types[#types + 1] = Isaac.GetPlayer(i):GetPlayerType() end
++  B.log("lab_player_cooldowns: players after the swap: " .. table.concat(types, ","))
++  local swapped = false
++  for _, t in ipairs(types) do if t == PlayerType.PLAYER_THESOUL_B or t == PlayerType.PLAYER_THESOUL or t == 17 then swapped = true end end
++  check("a Soul exists after the swap", swapped)
++  check("the cooldown counts down", q:GetForgottenSwapFormCooldown() < 15, q:GetForgottenSwapFormCooldown())
++  q:SetForgottenSwapFormCooldown(0)
++end)
++
++at(40, "back to isaac, to maggy b", function(p)
++  Isaac.GetPlayer(0):ChangePlayerType(PlayerType.PLAYER_MAGDALENE_B)
++end)
++at(50, "maggy swing", function(p)
++  p = Isaac.GetPlayer(0)
++  B.log("lab_player_cooldowns: type now " .. p:GetPlayerType())
++  check("player is Tainted Magdalene", p:GetPlayerType() == PlayerType.PLAYER_MAGDALENE_B, p:GetPlayerType())
++  p:SetMaggySwingCooldown(8)
++  check("SetMaggySwingCooldown reads back", p:GetMaggySwingCooldown() == 8, p:GetMaggySwingCooldown())
++  check("SetMaggySwingCooldown rejects nil", not pcall(p.SetMaggySwingCooldown, p, nil))
++end)
++at(53, "maggy swing counts down", function(p)
++  p = Isaac.GetPlayer(0)
++  local v = p:GetMaggySwingCooldown()
++  check("the game counts the swing cooldown down, one a frame", v > 0 and v < 8, v)
++  p:SetMaggySwingCooldown(0)
++  check("SetMaggySwingCooldown(0) clears it", p:GetMaggySwingCooldown() == 0)
++end)
++
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frame = frame + 1
++  local p = Isaac.GetPlayer(0)
++  for _, s in ipairs(plan) do
++    if s.frame == frame then
++      local ok, err = pcall(s.f, p)
++      if not ok then check(s.name .. " ran", false, err) end
++    end
++  end
++  if frame == 80 then B.log(string.format("lab_player_cooldowns: DONE pass=%d fail=%d", pass, fail)) end
 +end)
 diff --git a/scripts/recomp/rgon/lab_player_death_cb.lua b/scripts/recomp/rgon/lab_player_death_cb.lua
 new file mode 100644
@@ -36396,6 +38929,248 @@ index 0000000..1eaa4b7
 +    if not ok then check("stage2", false, tostring(err)) B.log(string.format("lab_room_calls: DONE pass=%d fail=%d", pass, fail)) end
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_room_sets.lua b/scripts/recomp/rgon/lab_room_sets.lua
+new file mode 100644
+index 0000000..5dfb195
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_room_sets.lua
+@@ -0,0 +1,236 @@
++-- lab_room_sets.lua (development only; LAB=lab_room_sets.lua, wave 10 worker room-sets): RoomConfigStage:GetRoomSet, the RoomConfigSet class
++-- (Get, Size, #, AddRooms, LoadStb) and RoomConfig.AddRooms / LoadStb. The STB parser is proved against the game's own loader (every room of
++-- the vanilla basement file against the room the game made from the same file); an added room is proved by the game itself: the same lookups the
++-- game uses find it, and `goto s.treasure.<variant>` enters it and spawns its grid entities. Lines "lab_room_sets: PASS|FAIL <what>", last "DONE n PASS m FAIL".
++local T = ...
++local B = T.B
++local r8, r16, r32, ri32, rf32 = B.r8, B.r16, B.r32, B.ri32, B.rf32
++local mod = RegisterMod("rgon lab room sets", 1)
++local pass, fail = 0, 0
++local function check(ok, what, detail)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log("lab_room_sets: " .. (ok and "PASS " or "FAIL ") .. what .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function note(s) B.log("lab_room_sets: note " .. s) end
++local function try(what, f)
++  local ok, err = pcall(f)
++  if not ok then check(false, what, "error: " .. tostring(err)) end
++end
++
++local VARIANT = 9999
++local ROOM = {
++  TYPE = RoomType.ROOM_TREASURE, VARIANT = VARIANT, SUBTYPE = 0, NAME = "rgon lab room", SHAPE = RoomShape.ROOMSHAPE_1x1, WEIGHT = 1.5, DIFFICULTY = 2,
++  { ISDOOR = true, EXISTS = true, GRIDX = -1, GRIDY = 3 },
++  { ISDOOR = true, EXISTS = true, SLOT = 1 },
++  { ISDOOR = true, EXISTS = false, SLOT = 2 },
++  { GRIDX = 2, GRIDY = 2, { TYPE = 1000, VARIANT = 0, SUBTYPE = 0, WEIGHT = 1 } },
++  { GRIDX = 10, GRIDY = 2, { TYPE = 1000, VARIANT = 0, SUBTYPE = 0, WEIGHT = 1 } },
++  { GRIDX = 2, GRIDY = 4, { TYPE = 1000, VARIANT = 0, SUBTYPE = 0, WEIGHT = 1 } },
++  { GRIDX = 10, GRIDY = 4, { TYPE = 1000, VARIANT = 0, SUBTYPE = 0, WEIGHT = 1 } },
++  { GRIDX = 6, GRIDY = 3, { TYPE = 1500, VARIANT = 0, SUBTYPE = 0, WEIGHT = 1 }, { TYPE = 1500, VARIANT = 0, SUBTYPE = 0, WEIGHT = 2 } },
++}
++
++local function spawns_of(a)   -- raw spawn list of the room at address a
++  local out, sp, n = {}, r32(a + 0x40), r16(a + 0x44)
++  for i = 0, n - 1 do
++    local q = sp + i * 0x10
++    local s = { x = r16(q), y = r16(q + 2), sum = rf32(q + 0xc), entries = {} }
++    local en = r32(q + 4)
++    for j = 0, r8(q + 8) - 1 do
++      local p = en + j * 0xc
++      s.entries[#s.entries + 1] = { type = r32(p), variant = r16(p + 4), subtype = r16(p + 6), weight = rf32(p + 8) }
++    end
++    out[#out + 1] = s
++  end
++  return out
++end
++
++local function same_room(a, r)   -- address a (the game's room) against a parsed room table r: nil when equal, else what differs
++  if r32(a + 8) ~= r.type or r32(a + 0xc) ~= r.variant then return "id" end
++  if B.stdstr(a + 0x14) ~= r.name then return "name" end
++  if r32(a + 0x10) ~= r.subtype then return "subtype" end
++  if r8(a + 0x2c) ~= r.difficulty then return "difficulty" end
++  if math.abs(rf32(a + 0x30) - r.weight) > 1e-6 then return "weight" end
++  if r8(a + 0x46) ~= r.width or r8(a + 0x47) ~= r.height or r32(a + 0x48) ~= r.shape then return "size/shape" end
++  if r32(a + 0x38) ~= r.doors then return string.format("doors %x vs %x", r32(a + 0x38), r.doors) end
++  if r32(a + 0x3c) ~= r.quest then return string.format("quest doors %x vs %x", r32(a + 0x3c), r.quest) end
++  local sp = spawns_of(a)
++  if #sp ~= #r.spawns then return "spawn count" end
++  for i, s in ipairs(sp) do
++    local t = r.spawns[i]
++    if s.x ~= t.x or s.y ~= t.y or #s.entries ~= #t.entries or math.abs(s.sum - t.sum) > 1e-4 then return "spawn " .. i end
++    for j, e in ipairs(s.entries) do
++      local u = t.entries[j]
++      if e.type ~= u.type or e.variant ~= u.variant or e.subtype ~= u.subtype or math.abs(e.weight - u.weight) > 1e-6 then return "entry " .. i .. "." .. j end
++    end
++  end
++  return nil
++end
++
++local function phase_static()
++  for _, n in ipairs({ "CcpContainer_RoomConfigSet.Get", "CcpContainer_RoomConfigSet.AddRooms", "CcpContainer_RoomConfigSet.LoadStb", "CcpContainer_RoomConfigSet.Size",
++    "RoomConfigStage.GetRoomSet", "RoomConfig.AddRooms", "RoomConfig.LoadStb", "RoomConfigHolder.AddRooms", "RoomConfigHolder.LoadStb" }) do
++    check(REPENTOGON.Implemented[n] == true, "Implemented " .. n)
++  end
++  local game = r32(0x00c71678)
++  local stage1 = RoomConfig.GetStage(1)
++  local set = stage1:GetRoomSet(0)
++  local srec = game + 0x18910 + 1 * 0xc4 + 0x64
++  check(set.Size == r32(srec + 0x1c) and set.Size > 100 and #set == set.Size, "Size and # equal the game's count", set.Size)
++  check(stage1:GetRoomSet() ~= nil and stage1:GetRoomSet().Size == set.Size, "GetRoomSet() defaults to mode 0")
++  check(not pcall(stage1.GetRoomSet, stage1, 2) and not pcall(stage1.GetRoomSet, stage1, -1), "GetRoomSet(2) and (-1) are errors")
++  local greed = stage1:GetRoomSet(1)
++  check(greed.Size > 0 and r8(game + 0x18910 + 0xc4 + 0x64 + 0x2c + 0x28) == 1, "the greed set is loaded by GetRoomSet(1)", greed.Size)
++  local r0, rl = set:Get(0), set:Get(set.Size - 1)
++  check(r0 ~= nil and r0.StageID == 1, "Get(0) is a basement room", r0 and r0.Name)
++  check(rl ~= nil and set:Get(set.Size) == nil and set:Get(-1) == nil and set:Get(1e6) == nil, "Get past the end and negative are nil")
++  check(r0 ~= nil and B.ptr(r0) == r32(srec + 0x18), "Get(0) is the first room of the game's array")
++  check(not pcall(set.Get, set, "x") and not pcall(set.Get, {}, 0), "Get with a bad argument is an error")
++  -- the parser against the game's own loader
++  local bytes = T.read_file("rooms/01.basement.stb")
++  check(bytes ~= nil and bytes:sub(1, 4) == "STB1", "the vanilla basement file is readable", bytes and #bytes)
++  if bytes then
++    local list = T.parse_stb(bytes, "basement")
++    local byid = {}
++    local arr = r32(srec + 0x18)
++    for i = 0, set.Size - 1 do byid[r32(arr + i * 0x5c + 8) .. ":" .. r32(arr + i * 0x5c + 0xc)] = arr + i * 0x5c end
++    local missing, bad, shown = 0, 0, 0
++    for _, r in ipairs(list) do
++      local a = byid[r.type .. ":" .. r.variant]
++      if not a then missing = missing + 1
++      else
++        local d = same_room(a, r)
++        if d then
++          bad = bad + 1
++          if shown < 8 then shown = shown + 1 note("parser vs game: room " .. r.type .. ":" .. r.variant .. " '" .. r.name .. "' differs in " .. d) end
++        end
++      end
++    end
++    check(#list > 100, "the parser read the file", #list)
++    check(bad == 0, "every parsed room equals the game's own (type, variant, name, doors, spawns, entries, weights)", string.format("%d rooms, %d missing in the set, %d differ", #list, missing, bad))
++  end
++  return set, stage1
++end
++
++local function phase_add(set)
++  local n0 = set.Size
++  local added = RoomConfig.AddRooms(StbType.SPECIAL_ROOMS, 0, { ROOM })
++  local sp = RoomConfig.GetStage(0):GetRoomSet(0)
++  local n1 = sp.Size
++  check(type(added) == "table" and #added == 1 and added[1] ~= nil, "RoomConfig.AddRooms returns the placed room")
++  local room = added[1]
++  check(room ~= nil and room.Variant == VARIANT and room.Type == RoomType.ROOM_TREASURE and room.StageID == 0 and room.Name == "rgon lab room", "the added room reads back", room and room.Variant)
++  check(room ~= nil and room.Shape == 1 and room.Subtype == 0 and room.Difficulty == 2 and math.abs(room.Weight - 1.5) < 1e-6, "shape, subtype, difficulty, weight read back")
++  check(room ~= nil and room.Doors == 3 and room.Width == 13 and room.Height == 7, "doors (slots 0 and 1; the not-existing door is ignored), width and height", room and room.Doors)
++  check(room ~= nil and room.SpawnCount == 5, "five spawns", room and room.SpawnCount)
++  local found = RoomConfig.GetRoomByStageTypeAndVariant(0, RoomType.ROOM_TREASURE, VARIANT, 0)
++  check(found ~= nil and B.ptr(found) == B.ptr(room), "the game's own lookup finds it")
++  check(RoomConfigHolder.GetRoomByStageTypeAndVariant(0, RoomType.ROOM_TREASURE, VARIANT, 0) ~= nil, "and so does RoomConfigHolder")
++  local hits = 0
++  for s = 1, 20 do
++    local r = RoomConfig.GetRandomRoom(s * 7919, false, 0, RoomType.ROOM_TREASURE, RoomShape.ROOMSHAPE_1x1, VARIANT, VARIANT, 0, 10, 0, -1, 0)
++    if r ~= nil and r.Variant == VARIANT then hits = hits + 1 end
++  end
++  check(hits == 20, "GetRandomRoom (the game's picker) returns it for a filter that only it fits", hits)
++  local ent = spawns_of(B.ptr(room))
++  check(#ent == 5 and ent[5].x == 6 and ent[5].y == 3 and #ent[5].entries == 2 and ent[5].entries[2].type == 1500 and math.abs(ent[5].sum - 3) < 1e-6,
++    "spawn 5 holds two entries with the summed weight 3")
++  local again = sp:AddRooms({ ROOM, "nope", ROOM })
++  check(#sp == n1 + 2 and again[1] ~= nil and again[2] == nil and again[3] ~= nil, "a second AddRooms with an invalid entry: nil in its place, order kept")
++  check(again[1].Variant ~= VARIANT and again[3].Variant ~= again[1].Variant and again[1].Variant > VARIANT, "colliding variants are moved to a new unique one", again[1].Variant .. "," .. again[3].Variant)
++  check(sp:Get(n1 - 1).Variant == VARIANT and sp:Get(n1) ~= nil, "Get reaches the added rooms in order")
++  check(not pcall(RoomConfig.AddRooms, 1, 0, 5) and not pcall(RoomConfig.AddRooms, 37, 0, {}) and not pcall(RoomConfig.AddRooms, 1, 2, {}) and not pcall(RoomConfig.AddRooms, 1, 0),
++    "AddRooms argument errors")
++  check(#RoomConfig.AddRooms(1, 0, {}) == 0, "an empty table adds nothing")
++  -- a stage without a record in this build gives an empty table
++  check(#RoomConfig.AddRooms(20, 0, { ROOM }) == 0 and #RoomConfig.LoadStb(20, 0, "x.stb") == 0, "a stage with no record in this build is an empty result, not a crash")
++  -- the same set stays usable after many appends (capacity growth)
++  local grow = {}
++  for i = 1, 150 do grow[i] = { TYPE = 1, VARIANT = 20000 + i, NAME = "grow " .. i, SHAPE = 1, WEIGHT = 0.5, { GRIDX = 1, GRIDY = 1, { TYPE = 1000, VARIANT = 0 } } } end
++  local g = RoomConfig.AddRooms(StbType.BASEMENT, 0, grow)
++  local okg = #g == 150
++  for i = 1, 150 do if g[i] == nil or g[i].Variant ~= 20000 + i then okg = false end end
++  check(okg, "150 rooms in one call (the array grows)")
++  check(RoomConfig.GetRoomByStageTypeAndVariant(1, 1, 20150, 0) ~= nil and RoomConfig.GetRoomByStageTypeAndVariant(1, 1, 5, 0) ~= nil, "added and vanilla rooms are both found after the growth")
++  check(set.Size == n0 + 150, "the basement set grew by 150", set.Size - n0)
++  return room
++end
++
++local function phase_stb(set)
++  -- the enabled mods' own copies of rooms/01.basement.stb (Fiend Folio is disabled in the test support folder, so its ff_crossover files are not reached)
++  local NAME = "01.basement.stb"
++  local expect, files = {}, 0
++  for _, m in ipairs(T.mods()) do
++    if m.enabled then
++      local b = T.read_file("mods/" .. m.dir .. "/content-repentogon/rooms/" .. NAME) or T.read_file("mods/" .. m.dir .. "/content/rooms/" .. NAME)
++      if b then
++        files = files + 1
++        for _, r in ipairs(T.parse_stb(b, m.dir) or {}) do expect[#expect + 1] = r end
++      end
++    end
++  end
++  note("enabled mods with rooms/" .. NAME .. ": " .. files .. ", rooms " .. #expect)
++  local n0 = set.Size
++  local none = RoomConfig.LoadStb(StbType.BASEMENT, 0, "no/such/file.stb")
++  check(type(none) == "table" and #none == 0 and set.Size == n0, "LoadStb of a missing file: an empty table")
++  check(not pcall(RoomConfig.LoadStb, 1, 0) and not pcall(RoomConfig.LoadStb, 99, 0, "x") and not pcall(RoomConfig.LoadStb, 1, 5, "x"), "LoadStb argument errors")
++  check(not pcall(set.LoadStb, set) and not pcall(set.LoadStb, set, 5), "the set's LoadStb needs a string")
++  if #expect == 0 then note("no enabled mod has that file: LoadStb with a real file is not run") return end
++  local rooms = RoomConfig.LoadStb(StbType.BASEMENT, 0, NAME)
++  local cnt, ok = 0, true
++  for _, r in pairs(rooms) do cnt = cnt + 1 if r.StageID ~= 1 or r.Type < 1 then ok = false end end
++  check(cnt > 0 and ok and set.Size == n0 + cnt, "LoadStb of a mod file adds its rooms to the set", cnt)
++  check(cnt == #expect, "as many rooms as the mod files hold", #expect)
++  local bad = 0
++  for i, r in ipairs(expect) do
++    local ro = rooms[i]
++    if ro then
++      local t = setmetatable({ variant = ro.Variant }, { __index = r })
++      if same_room(B.ptr(ro), t) then bad = bad + 1 end
++    end
++  end
++  check(bad == 0, "each added room equals its file entry", bad)
++  local s2 = RoomConfig.GetStage(1):GetRoomSet(0)
++  local more = s2:LoadStb(NAME)
++  check(#more == cnt and s2.Size == n0 + 2 * cnt, "the set object's LoadStb works too and appends again")
++  local g = RoomConfig.LoadStb(StbType.BASEMENT, 1, "greed/" .. NAME)
++  note("greed mod rooms: " .. #g)
++end
++
++local stage = 0
++local frames = 0
++local set, added
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frames = frames + 1
++  if frames == 20 then
++    try("static phase", function() local s = phase_static() set = s end)
++    if set then
++      try("add phase", function() added = phase_add(set) end)
++      try("stb phase", function() phase_stb(set) end)
++    end
++    -- the game enters the added room
++    local ok, err = pcall(function() Isaac.ExecuteCommand("goto s.treasure." .. VARIANT) end)
++    check(ok, "goto s.treasure." .. VARIANT .. " runs", err)
++  elseif frames == 140 then
++    try("room phase", function()
++      local g = Game()
++      local desc = g:GetLevel():GetCurrentRoomDesc()
++      local data = desc.Data
++      check(data ~= nil and data.Variant == VARIANT and data.Name == "rgon lab room", "the game entered the added room", data and (data.Variant .. " " .. data.Name))
++      local room = g:GetRoom()
++      check(room:GetType() == RoomType.ROOM_TREASURE and room:GetRoomShape() == 1, "room type and shape")
++      local function gt(x, y) local e = room:GetGridEntity(y * 13 + x + 0) return e and e:GetType() or -1 end
++      -- the grid index of a 1x1 room is y * 15 + x + 16 (a wall ring); try both layouts
++      local function at(x, y)
++        local e = room:GetGridEntity((y + 1) * 15 + x + 1)
++        return e and e:GetType() or -1
++      end
++      local rocks = at(2, 2) == GridEntityType.GRID_ROCK and at(10, 2) == GridEntityType.GRID_ROCK and at(2, 4) == GridEntityType.GRID_ROCK and at(10, 4) == GridEntityType.GRID_ROCK
++      check(rocks, "the four rocks spawned at their grid positions", at(2, 2) .. "," .. at(10, 2) .. "," .. at(2, 4) .. "," .. at(10, 4))
++      check(at(6, 3) == GridEntityType.GRID_POOP, "the poop spawned at the centre", at(6, 3))
++      note("room shot frame: " .. g:GetFrameCount())
++    end)
++  elseif frames == 150 then
++    B.log(string.format("lab_room_sets: DONE %d PASS %d FAIL", pass, fail))
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_roomconfig_test.lua b/scripts/recomp/rgon/lab_roomconfig_test.lua
 new file mode 100644
 index 0000000..6e5765e
@@ -37151,10 +39926,10 @@ index 0000000..5badc18
 +end)
 diff --git a/scripts/recomp/rgon/lab_shape_test.lua b/scripts/recomp/rgon/lab_shape_test.lua
 new file mode 100644
-index 0000000..af06d89
+index 0000000..cdd4554
 --- /dev/null
 +++ b/scripts/recomp/rgon/lab_shape_test.lua
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,87 @@
 +-- lab_shape_test.lua (development only; ISAAC_RGON_LAB=lab_shape_test.lua, census batch B2): Capsule constructor and
 +-- getters, Shape (DebugRenderer.Get), Isaac.FindInCapsule. Logs "lab_shape_test: PASS/FAIL ..", then a final count line.
 +local T = ...
@@ -37178,9 +39953,6 @@ index 0000000..af06d89
 +  for _, n in ipairs({ "Capsule", "Capsule.Capsule", "Capsule.GetPosition", "Capsule.GetDirection", "Capsule.GetF1", "Capsule.GetF2",
 +    "Capsule.GetVec2", "Capsule.GetVec3", "Isaac.FindInCapsule" }) do
 +    check("Implemented " .. n, REPENTOGON.Implemented[n] == true)
-+  end
-+  for _, n in ipairs({ "Shape", "Shape.Capsule", "Shape.Circle", "Shape.GetTimeout", "Shape.SetTimeout", "DebugRenderer", "DebugRenderer.Get" }) do
-+    check("stand-in not Implemented " .. n, REPENTOGON.Implemented[n] == nil)
 +  end
 +
 +  -- three-argument form: start, end, radius
@@ -37221,7 +39993,7 @@ index 0000000..af06d89
 +
 +  -- Shape
 +  local sh = DebugRenderer.Get(1234, true)
-+  check("Shape timeout starts at 0", sh:GetTimeout() == 0)
++  check("Shape timeout of a fresh shape is the game's 5", sh:GetTimeout() == 5, sh:GetTimeout())
 +  sh:SetTimeout(45)
 +  check("Shape SetTimeout/GetTimeout", sh:GetTimeout() == 45 and DebugRenderer.Get(1234, false):GetTimeout() == 45)
 +  check("Shape:Capsule accepts a capsule", pcall(sh.Capsule, sh, c))
@@ -38965,7 +41737,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..c88b582 100644
+index 4175f07..b572c7e 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -39024,7 +41796,7 @@ index 4175f07..c88b582 100644
    rearm = function() arm(nil) end,
  }
 -for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_hooks.lua" }) do
-+for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_beam.lua", "api_player_fields.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_ambush.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_entity_more.lua", "api_player_health.lua", "api_npc.lua", "api_tears_more.lua", "api_eid.lua", "api_pickup_more.lua", "api_player_items.lua", "api_game_misc.lua", "api_rooms_more.lua", "api_cacheflags.lua", "api_hooks.lua", "api_hooks_hud.lua", "api_framectx.lua", "api_render.lua", "api_weapons.lua", "api_room_hooks.lua", "api_leftovers.lua", "api_charsel.lua", "api_throw_loot.lua", "api_gfx.lua", "api_isaac_misc.lua", "api_misc_b.lua", "api_locate.lua", "api_modhot.lua", "api_stage_config.lua", "api_data_values.lua", "api_challenge_param.lua", "api_familiar_pickup.lua", "api_player_calls.lua", "api_npc_blood.lua", "api_player_easy.lua", "api_cb_grid_one.lua", "api_cb_lua.lua", "api_locate_more.lua", "api_engine_names.lua", "api_console.lua", "api_entity_config.lua", "api_player_rest.lua", "api_room_calls.lua", "api_grid_npc.lua", "api_host_misc.lua", "api_score_isaac.lua", "api_level_game.lua", "api_menus_stats.lua", "api_render_misc.lua", "api_menus_rest.lua", "api_cb_level.lua", "api_cb_pocket.lua" }) do
++for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_beam.lua", "api_player_fields.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_ambush.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_entity_more.lua", "api_player_health.lua", "api_npc.lua", "api_tears_more.lua", "api_eid.lua", "api_pickup_more.lua", "api_player_items.lua", "api_game_misc.lua", "api_rooms_more.lua", "api_cacheflags.lua", "api_hooks.lua", "api_hooks_hud.lua", "api_framectx.lua", "api_render.lua", "api_weapons.lua", "api_room_hooks.lua", "api_leftovers.lua", "api_charsel.lua", "api_throw_loot.lua", "api_gfx.lua", "api_isaac_misc.lua", "api_misc_b.lua", "api_locate.lua", "api_modhot.lua", "api_stage_config.lua", "api_data_values.lua", "api_challenge_param.lua", "api_familiar_pickup.lua", "api_player_calls.lua", "api_npc_blood.lua", "api_player_easy.lua", "api_cb_grid_one.lua", "api_cb_lua.lua", "api_locate_more.lua", "api_engine_names.lua", "api_console.lua", "api_entity_config.lua", "api_player_rest.lua", "api_room_calls.lua", "api_grid_npc.lua", "api_host_misc.lua", "api_score_isaac.lua", "api_level_game.lua", "api_menus_stats.lua", "api_render_misc.lua", "api_menus_rest.lua", "api_cb_level.lua", "api_cb_pocket.lua", "api_level_itempool_misc.lua", "api_room_sets.lua", "api_npc_entity_misc.lua", "api_player_cooldowns.lua", "api_menus_more.lua", "api_cb_entity.lua", "api_image_render.lua", "api_cb_hud.lua" }) do
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)
@@ -39398,7 +42170,7 @@ index 1a209cf..8d72794 100644
      else if (GL.has(name)) { used++; if (!HAVECLASS.has(name)) missing.push(name); }
      else if (name.startsWith('MC_')) { const id = CB.get(name); if (id >= 1000) { used++; if (!HAVEID.has(id)) missing.push(name); } }
 diff --git a/scripts/recomp/rgon/tools/hook_table.py b/scripts/recomp/rgon/tools/hook_table.py
-index 0d1d8bd..4615db3 100644
+index 0d1d8bd..dc03836 100644
 --- a/scripts/recomp/rgon/tools/hook_table.py
 +++ b/scripts/recomp/rgon/tools/hook_table.py
 @@ -68,7 +68,7 @@ HOOKS = [
@@ -39410,7 +42182,7 @@ index 0d1d8bd..4615db3 100644
      (21, "Game::RestoreState", 0x006bb790, "sig", None, ""),
      (22, "Room::SpawnGridEntity", 0x007ebca0, "reg", None, ""),
      (23, "GridEntity::Init", 0x00709db0, "sig", None, ""),
-@@ -206,6 +206,242 @@ HOOKS = [
+@@ -206,6 +206,257 @@ HOOKS = [
       "character it sets [this+5] from Menu_Character_Entry::IsCharacterAvailable (0x0094d64a, 0x0094d657) and "
       "shows layers 4..15 or 16 of the big page; for a mod's (selected id [this+0x10] >= 0x12, 0x0094d62d) it "
       "always sets [this+5] = 1 (0x0094d700)"),
@@ -39644,16 +42416,31 @@ index 0d1d8bd..4615db3 100644
 +     "answers the bool in AL; eight `ret 0xc` (0x007ef1c8 ... 0x007ef417); callers Room::SaveState (0x007efdbf, 0x007efdd4, 0x007efe97), 0x005c1039, 0x006e16a7, 0x006eb617"),
 +    (336, "Room::restore_entity", 0x007ef420, "asm", 8, "thiscall(Entity* [ebp+8], EntitySaveState* [ebp+0xc]) on the room; callers Room::RestoreState (0x007effe1, 0x007f0091), 0x005c11d5, 0x00802dd5; "
 +     "eight `ret 8` (0x007ef697 ... 0x007efa43)"),
++    # worker cb-entity (wave 10, slots 360-364): entity colour, status effect target, familiar charm / multiplier, NPC target
++    (360, "Entity::SetColor", 0x006b2fa0, "asm", 0x14, "virtual (Entity vtable 0x00b6730c slot 15, the slot of the Lua registration thunk 0x008c5ccf for \"SetColor\", also in 13 subclass vtables, no direct caller); "
++     "thiscall(ColorMod* [ebp+8], int duration [ebp+0xc], int priority [ebp+0x10], bool fadeOut [ebp+0x14], bool share [ebp+0x18]); the priority list is [this+0x1ac] (0x3c-byte entries); one `ret 0x14` (0x006b319e)"),
++    (361, "Entity::GetStatusEffectTarget", 0x006a89f0, "asm", 0, "REPENTOGON's `8bd1e8????????84c0` matches once; thiscall no arguments, follows the [this+0x3bc] chain while Entity::DoesEntityShareStatus (0x006a8db0) says so, the Entity* in eax; "
++     "one `ret` (0x006a8a13); 14 direct callers (Entity::GetHitListIndex 0x006b62b0 among them); the game also inlines the lookup in places, those are not covered"),
++    (362, "Entity_Familiar::CanCharm", 0x0060dae0, "asm", 0, "REPENTOGON's `8b41??3d84030000` matches twice; this is the function (the other, 0x007b1f69, is the middle of another function, an inlined copy); "
++     "thiscall no arguments on the familiar (variant [this+0x2c]), the bool in al; five plain `ret`; callers 0x0058e50e (the familiar count), 0x0058ff33, 0x005e1045"),
++    (363, "Entity_NPC::GetPlayerTarget", 0x006be840, "asm", 0, "REPENTOGON's signature matches once; thiscall no arguments, the Entity* target in eax; three plain `ret` (0x006beacd, 0x006bec0e, 0x006bec31); about 650 direct callers (hot)"),
++    (364, "Entity_Familiar::GetMultiplier", 0x0060dc40, "asm", 0, "thiscall no arguments, the float multiplier in xmm0, one plain `ret` (0x0060ddc6); REPENTOGON patches the end of it, the same as an after handler "
++     "(host_rgon.c: xmm() is valid in an after handler, bridge flag XMMPOST); the other signature match 0x009afc70 is not a GetMultiplier; about 40 direct callers"),
 +    (338, "Room::ShopRestockFull", 0x00815ae0, "asm", 0, "Room::ShopRestockFull, thiscall no arguments; one `ret` (0x00815ffb); called from the Restock item and the restock machine (0x0065d1f0, 0x006647e8)"),
 +    (339, "Room::ShopRestockPartial", 0x008158a0, "asm", 0, "Room::ShopRestockPartial, thiscall no arguments; two plain `ret` (0x00815ab9, 0x00815ad0)"),
 +    (340, "ItemPool::ForceAddPillEffect", 0x00736ba0, "asm", 4, "ItemPool::ForceAddPillEffect(int id), returns the pill colour in eax; one `ret 4` (0x00736c28)"),
 +    (341, "Entity_Pickup::GetCoinValue", 0x006e8380, "asm", 0, "Entity_Pickup::GetCoinValue(), the value in eax; two plain `ret` (0x006e8398, 0x006e839b); other uses are inlined"),
 +    (342, "Room::TriggerEffectRemoved", 0x007ea1a0, "asm", 8, "Room::TriggerEffectRemoved(ItemConfig_Item* item, int unused); two `ret 8` (0x007ea1e9, 0x007ea255)"),
-+    (343, "RoomTransition::Render", 0x00832850, "asm", 0, "RoomTransition::Render, thiscall no arguments, ecx = game+0x1b83c; its one caller (0x006fc0a1 in Game::Render) calls it only while the game state is 2 or 3 (a transition); six plain `ret` (0x00832be9 .. 0x0083300e). The retired slot 12 note (a false signature match for the zhl Render) was about the signature, not this address"),
++    (377, "Minimap::Update", 0x0098dba0, "asm", 0, "Minimap::Update, thiscall no arguments, ecx = game+0x25ecc; one plain `ret` (0x0098dfb4); Game::Update calls it at 0x006fb521 and 0x006fb918; it sets the shake duration at +0x61c and the shake offset at +0x620"),
++    (378, "Minimap::Render", 0x0098e4d0, "asm", 0, "Minimap::Render, thiscall no arguments, ecx = game+0x25ecc; two plain `ret` (0x0098e615, 0x0098ef25); HUD::Render calls it at 0x009a41a2 while [game+0x26614] < 2; it calls RenderIcons 0x0098e170 (ret 4)"),
++    (379, "PlayerHUD::RenderInventory", 0x00848d20, "asm", 4, "PlayerHUD::RenderInventory(Vector* pos, float scale in xmm2); one `ret 4` (0x0084950a); HUD::Render calls it at 0x009a7384 and 0x009a78f2 for player type 0x15 (Tainted Isaac); scale 1.0 and `this` = the PlayerHUD slot"),
++    (380, "PlayerHUD::RenderSpellQueue", 0x0084a3e0, "asm", 4, "PlayerHUD::RenderSpellQueue(Vector* pos, float scale in xmm2); one `ret 4` (0x0084a86d); HUD::Render calls it at 0x009a73cb and 0x009a7941 for player type 0x19 (Tainted ???)"),
++    (381, "PlayerHUD::RenderCraftingTable", 0x00849510, "asm", 4, "PlayerHUD::RenderCraftingTable(Vector* pos, float scale in xmm2); one `ret 4` (0x0084a3cf); called at 0x008483ff and 0x0084850c from the pocket-item render 0x008471c0 right after a collectible test for 0x2c6 (Bag of Crafting, 710)"),
++    (343, "RoomTransition::Render", 0x00832850, "asm", 0,"RoomTransition::Render, thiscall no arguments, ecx = game+0x1b83c; its one caller (0x006fc0a1 in Game::Render) calls it only while the game state is 2 or 3 (a transition); six plain `ret` (0x00832be9 .. 0x0083300e). The retired slot 12 note (a false signature match for the zhl Render) was about the signature, not this address"),
  ]
  # the entity classes' virtual functions: slots 100 + 12 * k + class index
  _k = 0
-@@ -213,7 +449,7 @@ for _fn in ("Init", "Update", "Render", "TakeDamage", "HandleCollision"):
+@@ -213,7 +464,7 @@ for _fn in ("Init", "Update", "Render", "TakeDamage", "HandleCollision"):
      for _i, _cls in enumerate(ENTITY_CLASSES):
          HOOKS.append((100 + 12 * _k + _i, "%s::%s" % (_cls, _fn), None, "vt", None, ""))
      _k += 1
@@ -39662,7 +42449,7 @@ index 0d1d8bd..4615db3 100644
  
  # Round 110: instruction hooks (lift_patches.py RGON_INSN_HOOKS): a handler right
  # before one instruction inside a function, which reads and writes the registers
-@@ -280,6 +516,211 @@ INSN_HOOKS = [
+@@ -280,6 +531,211 @@ INSN_HOOKS = [
       "before 0x008f89c4, which every way reaches (the target of `jb` at 0x008f8994), and drawn after it "
       "(0x008f8a10..). Called by the wheel 0x0094bee0 (return address 0x0094c44a) and by 0x00982100 "
       "(0x0098256a). REPENTOGON's signature for its RenderCustomCharacterPortraits matches nothing here"),
@@ -39874,7 +42661,7 @@ index 0d1d8bd..4615db3 100644
  ]
  
  
-@@ -293,7 +734,8 @@ def check_insn(pe_root, taken):
+@@ -293,7 +749,8 @@ def check_insn(pe_root, taken):
          seen.add(slot)
          f = run_pequery(pe_root, "func", "0x%08x" % iva)
          m = re.search(r"start 0x([0-9a-f]+)\s+end 0x([0-9a-f]+)", f)

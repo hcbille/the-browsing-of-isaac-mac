@@ -872,6 +872,23 @@ def rule_familiar_pickup_names_in_lab(fs):
     if 'call(0x0071b410' in src and 'backdrop & 0xffffffff, 0)' not in src:
         yield (RGON + '/api_familiar_pickup.lua', 0, 'call GridEntityRock SpawnDrops (0x0071b410) with five stack words (variant, seed, unk, backdrop, source Entity* or 0): '
                'this build\'s function reads a fifth that REPENTOGON\'s signature does not list')
+def rule_npc_entity_misc_names_in_lab(fs):
+    """Every name api_npc_entity_misc.lua registers is named in lab_npc_entity_misc.lua, and no Lua-only name is registered for a behaviour that needs a game hook (wave 10, worker npc-entity-misc: EntityNPC Set/Get/ClearFlyingOverride only mean something when Entity::IsFlying obeys the override, so a table of overrides without a hook is an inert stand-in)."""
+    src = text_of(RGON + '/api_npc_entity_misc.lua')
+    lab = text_of(RGON + '/lab_npc_entity_misc.lua')
+    if src is None or lab is None:
+        return
+    names = set(re.findall(r'method\("(\w+)", "(\w+)"', src))
+    names |= set(re.findall(r'static\(\w+, "(\w+)", "(\w+)"', src))
+    names |= set(('EntityNPC', n) for n in re.findall(r'npc_loot\("(\w+)"', src))
+    for cls, name in sorted(names):
+        if '"%s.%s"' % (cls, name) not in lab:
+            yield (RGON + '/lab_npc_entity_misc.lua', 0, 'add "%s.%s" to the Implemented list of names() and a check that calls it (getter by read-back, '
+                   'setter by effect, action by the game\'s reaction), or leave the name out of api_npc_entity_misc.lua' % (cls, name))
+    if 'FlyingOverride' in src.replace('FlyingOverride left', ''):
+        yield (RGON + '/api_npc_entity_misc.lua', 0, 'leave Set/Get/ClearFlyingOverride unregistered until a hook on Entity::IsFlying makes the override take effect')
+
+
 def rule_player_calls_names_in_lab(fs):
     """Every name api_player_calls.lua registers is named in lab_player_calls.lua, and a std::string argument is built with make_stdstr (wave 8, worker player-calls: the game's costume-animation functions take a std::string reference, so a Lua string or a bare char pointer reads garbage)."""
     src = text_of(RGON + '/api_player_calls.lua')
@@ -1007,6 +1024,22 @@ def rule_grid_npc_names_in_lab(fs):
 
 
 
+def rule_room_sets_names_in_lab(fs):
+    """Every name api_room_sets.lua registers is named in lab_room_sets.lua, and memory the game later frees is made with the game's own operator new (wave 10, worker room-sets: the room array, spawn arrays and entry arrays of a room set are freed by the game's unload with its tracked delete, so a B.alloc block would be a foreign pointer there)."""
+    src = text_of(RGON + '/api_room_sets.lua')
+    lab = text_of(RGON + '/lab_room_sets.lua')
+    if src is None or lab is None:
+        return
+    for name in ('CcpContainer_RoomConfigSet.Get', 'CcpContainer_RoomConfigSet.AddRooms', 'CcpContainer_RoomConfigSet.LoadStb',
+                 'CcpContainer_RoomConfigSet.Size', 'RoomConfigStage.GetRoomSet', 'RoomConfig.AddRooms', 'RoomConfig.LoadStb'):
+        if '"%s"' % name not in lab:
+            yield (RGON + '/lab_room_sets.lua', 0, 'add "%s" to the Implemented list the lab checks, and a check that calls it' % name)
+    for n, line in enumerate(src.splitlines(), 1):
+        if 'B.alloc(' in line and not line.lstrip().startswith('--'):
+            yield (RGON + '/api_room_sets.lua', n, 'allocate room, spawn and entry arrays with call(NEW, bytes) (the game\'s operator new at 0x00a0f4e0), '
+                   'not B.alloc: the game frees them itself when the Game object is destroyed')
+
+
 def rule_menus_rest_names_in_lab(fs):
     """Every name api_menus_rest.lua registers (put("Class", "Name"...) or def("Name") of GenericPrompt) is named in lab_menus_rest.lua, and the special seeds menu's selection is the word at +0xc (wave 9, worker menus-b: REPENTOGON's +4 holds a float position in this build, which a round trip alone passed; only the Down key's reaction showed it)."""
     src = text_of(RGON + '/api_menus_rest.lua')
@@ -1021,10 +1054,67 @@ def rule_menus_rest_names_in_lab(fs):
                    'action by the game\'s reaction), or leave the name out of api_menus_rest.lua' % (cls, name))
     if re.search(r'"SpecialSeedsMenu", 0x251c, 0x1c, 4,', src):
         yield (RGON + '/api_menus_rest.lua', 0, 'the special seeds menu\'s selected element is at base+0xc in this build (+4 is a float position): use 0xc')
+def rule_image_render_names_in_lab(fs):
+    """Every name api_image_render.lua registers (R.Implemented["Class.Name"] = true) is named in lab_image_render.lua, and api_shapes.lua keeps no Lua stand-in for Shape / DebugRenderer (wave 10, worker image-render: the stand-in kept a timeout of 0 in a Lua table while the game's own fresh shape starts at 5, and Shape:Circle / Capsule drew nothing; the game's DebugRenderer::Get 0x0042eb10 and Shape functions 0x0042ede0 / 0x0042eef0 are called now)."""
+    src = text_of(RGON + '/api_image_render.lua')
+    lab = text_of(RGON + '/lab_image_render.lua')
+    if src is not None and lab is not None:
+        names = set(re.findall(r'Implemented\["(\w+\.\w+)"\]\s*=\s*true', src))
+        for name in sorted(names):
+            if '"%s"' % name not in lab:
+                yield (RGON + '/lab_image_render.lua', 0, 'add "%s" to the Implemented list and a check that calls it (getter by read-back, '
+                       'setter by effect, action by the game\'s reaction), or leave the name out of api_image_render.lua' % name)
+    shapes = text_of(RGON + '/api_shapes.lua')
+    if shapes is not None and re.search(r'rawset\(_G, "DebugRenderer"|Sh\.__type = "Shape"', shapes):
+        yield (RGON + '/api_shapes.lua', 0, 'Shape and DebugRenderer.Get are the game\'s own objects (api_image_render.lua): do not make a Lua stand-in here')
+
+def rule_player_cooldowns_names_in_lab(fs):
+    """Every name api_player_cooldowns.lua registers (method(P, "X") or the Get/Set loop's names) is called in lab_player_cooldowns.lua, and the lab sets the player type the mechanic needs (wave 10, worker player-cooldowns: wave 9 called the Maggy swing, Forgotten swap and item state cooldown words 'no reaction' because the probes ran as Isaac; the game only touches them for Tainted Magdalene 0x16, The Forgotten 0x10 / Soul 0x11, and while an item state runs)."""
+    src = text_of(RGON + '/api_player_cooldowns.lua')
+    lab = text_of(RGON + '/lab_player_cooldowns.lua')
+    if src is None or lab is None:
+        return
+    names = set(re.findall(r'method\(P, "(\w+)"', src))
+    for key in re.findall(r'\b(\w+) = 0x1[0-9a-f]{3}', src):
+        names |= {'Get%sCooldown' % key, 'Set%sCooldown' % key}
+    for name in sorted(names):
+        if name not in lab:
+            yield (RGON + '/lab_player_cooldowns.lua', 0, 'add a check that calls "%s" (getter by read-back, setter by the game\'s countdown, '
+                   'action by the game\'s reaction), or leave the name out of api_player_cooldowns.lua' % name)
+    for needle in ('PLAYER_MAGDALENE_B', 'PLAYER_THEFORGOTTEN'):
+        if needle not in lab:
+            yield (RGON + '/lab_player_cooldowns.lua', 0, 'the lab must run as %s: the cooldown words only move for that character' % needle)
+
+
+def rule_stride_divisibility_only(fs):
+    """A record vector's stride was taken as 0x50 because the 720-byte vector divided evenly (wave 9 cb-level; the real stride is 0x48 and 720 divides by both, so GetAllRooms returned garbage records and a wrong count). A lab never decides a stride, or a count, from `bytes % stride == 0`: read the first records at each candidate stride (fields must be sane and the index field run 0..n-1) and compare the record count with a count the game gives independently (Level:GetRooms():Size(), a room found at each record's grid cell). Mark a deliberate divisibility test `-- count-checked`."""
+    for f in fs:
+        if not (f.startswith(RGON + '/') and f.endswith('.lua')):
+            continue
+        for n, line in enumerate((text_of(f) or '').splitlines(), 1):
+            code = line.split('--')[0]
+            if re.search(r'(?:\w\s*-\s*\w[^%]*|bytes[^%]*|size[^%]*)%\s*(0x[0-9a-fA-F]{2,}|\d{2,})\s*==\s*0', code) and 'count-checked' not in line:
+                yield (f, n, 'a record count must not be decided by `bytes % stride == 0`: read the first records at each candidate stride and compare the count with an independent one (Level:GetRooms():Size(), a room at each record\'s cell), then mark the line -- count-checked')
 
 
 
-RULES = [rule_home_paths, rule_layer_files_loaded, rule_frame_line_prefix, rule_part_loads_part, rule_lab_prints_done, rule_inert_not_implemented, rule_ctor_implemented_name, rule_host_math_header, rule_image_render_not_registered, rule_layer_setsize_is_scale, rule_hurt_func_source, rule_global_pointer_plus_offset, rule_status_files_in_notes, rule_flip_default, rule_const_table_fallback, rule_lua_vararg_middle, rule_lua_mixed_table_index, rule_room_transition_stand_in, rule_roomconfig_both_tables, rule_orphan_starts_packed, rule_fast_setjmp, rule_gate_class_aware, rule_backlog_narrowing, rule_backlog_class_alias, rule_census_false_positives, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_entity_methods_in_lab, rule_tears_methods_in_lab, rule_read_of_call_result, rule_type_of_callback_result, rule_item_name_is_a_key, rule_conception_pairing, rule_health_field_offsets, rule_cacheflag_literals, rule_lua_format_options, rule_host_string_to_guest, rule_pgrep_game_by_name, rule_web_host_mem_base, rule_insn_hook_giant_entry, rule_stdstring_read, rule_add_cache_flags_one_arg, rule_misc_b_methods_in_lab, rule_data_values_names_in_lab, rule_host_misc_names_in_lab, rule_scan_global_assignment, rule_locate_names_in_lab, rule_familiar_pickup_names_in_lab, rule_player_calls_names_in_lab, rule_console_box_drawn_in_console_hook, rule_free_only_own_string_buffers, rule_console_game_lines_whitelisted, rule_lua_keyword_table_key, rule_misnamed_collectible_enums, rule_player_rest_names_in_lab, rule_lab_check_never_fails, rule_grid_npc_names_in_lab, rule_menus_rest_names_in_lab]
+
+
+def rule_menus_more_names_in_lab(fs):
+    """Every name api_menus_more.lua registers is named in lab_menus_more.lua, and the lab checks it against the game's own key reaction (wave 10, worker menus-c: DailyChallengeMenu, KeyConfigMenu and ControllerSelectMenu stayed unregistered because no key moved them; a round trip alone proves nothing)."""
+    src = text_of(RGON + '/api_menus_more.lua')
+    lab = text_of(RGON + '/lab_menus_more.lua')
+    if src is None or lab is None:
+        return
+    for cls, name in sorted(set(re.findall(r'put\("(\w+)", "(\w+)"', src))):
+        if '"%s.%s"' % (cls, name) not in lab:
+            yield (RGON + '/lab_menus_more.lua', 0, 'add "%s.%s" to NAMES and a check (getter by read-back, setter by the game moving on from the written value under a key), '
+                   'or leave the name out of api_menus_more.lua' % (cls, name))
+
+
+
+
+RULES = [rule_home_paths, rule_layer_files_loaded, rule_frame_line_prefix, rule_part_loads_part, rule_lab_prints_done, rule_inert_not_implemented, rule_ctor_implemented_name, rule_host_math_header, rule_image_render_not_registered, rule_layer_setsize_is_scale, rule_hurt_func_source, rule_global_pointer_plus_offset, rule_status_files_in_notes, rule_flip_default, rule_const_table_fallback, rule_lua_vararg_middle, rule_lua_mixed_table_index, rule_room_transition_stand_in, rule_roomconfig_both_tables, rule_orphan_starts_packed, rule_fast_setjmp, rule_gate_class_aware, rule_backlog_narrowing, rule_backlog_class_alias, rule_census_false_positives, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_entity_methods_in_lab, rule_tears_methods_in_lab, rule_read_of_call_result, rule_type_of_callback_result, rule_item_name_is_a_key, rule_conception_pairing, rule_health_field_offsets, rule_cacheflag_literals, rule_lua_format_options, rule_host_string_to_guest, rule_pgrep_game_by_name, rule_web_host_mem_base, rule_insn_hook_giant_entry, rule_stdstring_read, rule_add_cache_flags_one_arg, rule_misc_b_methods_in_lab, rule_data_values_names_in_lab, rule_host_misc_names_in_lab, rule_scan_global_assignment, rule_locate_names_in_lab, rule_familiar_pickup_names_in_lab, rule_npc_entity_misc_names_in_lab, rule_player_calls_names_in_lab, rule_console_box_drawn_in_console_hook, rule_free_only_own_string_buffers, rule_console_game_lines_whitelisted, rule_lua_keyword_table_key, rule_misnamed_collectible_enums, rule_player_rest_names_in_lab, rule_lab_check_never_fails, rule_grid_npc_names_in_lab, rule_room_sets_names_in_lab, rule_menus_rest_names_in_lab, rule_image_render_names_in_lab, rule_player_cooldowns_names_in_lab, rule_stride_divisibility_only, rule_menus_more_names_in_lab]
 
 def main():
     if '--list' in sys.argv:
