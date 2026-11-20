@@ -316,7 +316,7 @@ index 98869fc..641d6c5 100644
 -#endif /* ISAAC_WEB */
 +#endif /* ISAAC_WEB || ISAAC_NATIVE */
 diff --git a/scripts/recomp/host/src/host_lua.c b/scripts/recomp/host/src/host_lua.c
-index d845225..e36075f 100644
+index d845225..8c57d01 100644
 --- a/scripts/recomp/host/src/host_lua.c
 +++ b/scripts/recomp/host/src/host_lua.c
 @@ -41,6 +41,7 @@
@@ -558,7 +558,23 @@ index d845225..e36075f 100644
  LUA_SHIM(lua_rotate)     { lua_rotate(L_ARG(0), I_ARG(1), I_ARG(2)); cpu->EAX = 0; }
  LUA_SHIM(lua_copy)       { lua_copy(L_ARG(0), I_ARG(1), I_ARG(2)); cpu->EAX = 0; }
  LUA_SHIM(lua_pushvalue)  { lua_pushvalue(L_ARG(0), I_ARG(1)); cpu->EAX = 0; }
-@@ -1348,7 +1535,7 @@ LUA_SHIM(lua_isstring)    { cpu->EAX = (uint32_t)lua_isstring(L_ARG(0), I_ARG(1)
+@@ -1341,14 +1528,23 @@ LUA_SHIM(lua_pushfstring) {
+ 
+ /* get / to */
+ LUA_SHIM(lua_type)        { cpu->EAX = (uint32_t)lua_type(L_ARG(0), I_ARG(1)); }
++/* lua_typename answers a C literal in the Host image ("boolean"), outside the Guest region: hand the Guest a
++ * Guest copy (guest_str, further down). Without it EntityPlayer:GetBombVariant's argument check died with
++ * "Host pointer ... outside the Guest region" (2026-11-19). */
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++static uint32_t guest_str(const char *s);
++LUA_SHIM(lua_typename)    { cpu->EAX = guest_str(lua_typename(L_ARG(0), I_ARG(1))); }
++#else
++/* host-string-ok: in the web build a C literal is in the guest's linear memory already */
+ LUA_SHIM(lua_typename)    { ret_ptr(cpu, lua_typename(L_ARG(0), I_ARG(1))); }
++#endif
+ LUA_SHIM(lua_toboolean)   { cpu->EAX = (uint32_t)lua_toboolean(L_ARG(0), I_ARG(1)); }
+ LUA_SHIM(lua_touserdata)  { ret_ptr(cpu, lua_touserdata(L_ARG(0), I_ARG(1))); }
+ LUA_SHIM(lua_isstring)    { cpu->EAX = (uint32_t)lua_isstring(L_ARG(0), I_ARG(1)); }
  LUA_SHIM(lua_isuserdata)  { cpu->EAX = (uint32_t)lua_isuserdata(L_ARG(0), I_ARG(1)); }
  LUA_SHIM(lua_iscfunction) { cpu->EAX = (uint32_t)lua_iscfunction(L_ARG(0), I_ARG(1)); }
  LUA_SHIM(lua_rawequal)    { cpu->EAX = (uint32_t)lua_rawequal(L_ARG(0), I_ARG(1), I_ARG(2)); }
@@ -567,7 +583,7 @@ index d845225..e36075f 100644
  LUA_SHIM(lua_tolstring)   {
      uint32_t lenp = isaac_arg(cpu, 2);
      size_t n = 0;
-@@ -1367,7 +1554,7 @@ LUA_SHIM(lua_rawset)      { lua_rawset(L_ARG(0), I_ARG(1)); cpu->EAX = 0; }
+@@ -1367,7 +1563,7 @@ LUA_SHIM(lua_rawset)      { lua_rawset(L_ARG(0), I_ARG(1)); cpu->EAX = 0; }
  LUA_SHIM(lua_rawgetp)     { cpu->EAX = (uint32_t)lua_rawgetp(L_ARG(0), I_ARG(1), P_ARG(2)); }
  LUA_SHIM(lua_rawsetp)     { lua_rawsetp(L_ARG(0), I_ARG(1), P_ARG(2)); cpu->EAX = 0; }
  /* lua_rawgeti(L, int idx, lua_Integer n): 4 + 4 + 8 = 16-byte argument area. */
@@ -576,7 +592,7 @@ index d845225..e36075f 100644
  LUA_SHIM(lua_len)         { lua_len(L_ARG(0), I_ARG(1)); cpu->EAX = 0; }
  LUA_SHIM(lua_getglobal)   { cpu->EAX = (uint32_t)lua_getglobal(L_ARG(0), S_ARG(1)); }
  LUA_SHIM(lua_setglobal)   { lua_setglobal(L_ARG(0), S_ARG(1)); cpu->EAX = 0; }
-@@ -1663,7 +1850,22 @@ static void gc_cycle_ended(lua_State *L) {
+@@ -1663,7 +1859,22 @@ static void gc_cycle_ended(lua_State *L) {
          isaac_log("[isaac][lua] collector: cycle %u ended at %d KB; %u step(s) asked, %u deferred",
                    g_gc_cycles, g_gc_base_kb, g_gc_asked, g_gc_deferred);
  }
@@ -599,7 +615,7 @@ index d845225..e36075f 100644
      if (g_gc_pct < 0) {
          const char *e = getenv("ISAAC_LUA_GC");
          int v = (e && *e) ? atoi(e) : ISAAC_GC_DEFAULT_PCT;
-@@ -1737,10 +1939,76 @@ int isaac_lua_gc(lua_State *L, int what, int data) {
+@@ -1737,10 +1948,76 @@ int isaac_lua_gc(lua_State *L, int what, int data) {
      return r;
  }
  LUA_SHIM(lua_gc)      { cpu->EAX = (uint32_t)isaac_lua_gc(L_ARG(0), I_ARG(1), I_ARG(2)); }
@@ -676,7 +692,7 @@ index d845225..e36075f 100644
  
  /* auxiliary */
  LUA_SHIM(luaL_checkinteger) { ret_int(cpu, luaL_checkinteger(L_ARG(0), I_ARG(1))); }
-@@ -1820,8 +2088,15 @@ LUA_SHIM(luaL_loadfilex) {
+@@ -1820,8 +2097,15 @@ LUA_SHIM(luaL_loadfilex) {
       * sites; the buffer loader below has one, the console's). The layer boots
       * before the first of them that is a mod's. */
      isaac_rgon_before_chunk(L_ARG(0), S_ARG(1));
@@ -760,7 +776,7 @@ index f083c69..5b5b9b0 100644
   * without marking the object for finalization: lapi.c lua_setmetatable's
   * LUA_TUSERDATA case less its luaC_checkfinalizer call (the index is read as
 diff --git a/scripts/recomp/host/src/host_rgon.c b/scripts/recomp/host/src/host_rgon.c
-index 25bd680..2a94bbb 100644
+index 25bd680..eb0505a 100644
 --- a/scripts/recomp/host/src/host_rgon.c
 +++ b/scripts/recomp/host/src/host_rgon.c
 @@ -39,7 +39,7 @@
@@ -768,7 +784,7 @@ index 25bd680..2a94bbb 100644
  #include <string.h>
  
 -#define RGON_HOOKS 192
-+#define RGON_HOOKS 224
++#define RGON_HOOKS 320
  
  /* read by the lift's wrappers: slot -> a handler is installed */
  uint8_t g_rgon_hook_on[RGON_HOOKS];
@@ -1762,7 +1778,7 @@ index 6aa6b68..133df95 100644
        > ISAAC_GUARD_VA) {
      printf("  FAIL shim tokens overrun the guard\n");
 diff --git a/scripts/recomp/lift/lift_patches.py b/scripts/recomp/lift/lift_patches.py
-index 659f7ce..507e8b0 100644
+index 659f7ce..679027f 100644
 --- a/scripts/recomp/lift/lift_patches.py
 +++ b/scripts/recomp/lift/lift_patches.py
 @@ -1339,7 +1339,7 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
@@ -1774,7 +1790,7 @@ index 659f7ce..507e8b0 100644
      (22, 0x007ebca0, "Room::SpawnGridEntity"),    # ret 0x14; reg Room.SpawnGridEntity; sig Room::SpawnGridEntity
      (23, 0x00709db0, "GridEntity::Init"),    # ret 0x4; sig GridEntity::Init
      (24, 0x0082f1c0, "RoomTransition::StartBossIntro"),    # ret 0x8; sig RoomTransition::StartBossIntro
-@@ -1419,6 +1419,33 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
+@@ -1419,6 +1419,50 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
      (98, 0x004199d0, "Room::RenderEntityPass_004199d0"),    # ret 0x8; asm
      (99, 0x008151e0, "Room::GetShopItemPrice"),    # ret 0x10; asm
      (169, 0x0094d500, "Menu_Character::UpdateRotations"),    # ret 0x0; sig Menu_Character::UpdateRotations
@@ -1805,19 +1821,36 @@ index 659f7ce..507e8b0 100644
 +    (214, 0x00709fb0, "GridEntity::hurt_func"),    # ret 0x14; asm (worker cb-c)
 +    (221, 0x006ee200, "Entity_Pickup::CanReroll"),    # ret 0x0; asm (worker cb-c)
 +    (222, 0x007ebe20, "Room::GetItemPool"),    # ret 0x0; asm (worker cb-c)
++    (224, 0x00843df0, "PlayerHUD::RenderHearts"),    # ret 0x18; asm (worker cb-d)
++    (225, 0x004252f0, "CompletionWidget::Render"),    # ret 0x8; sig (worker cb-d)
++    (226, 0x009a3ac0, "HUD::ShowFortuneText"),    # ret 0x4; asm (worker cb-d)
++    (227, 0x0083ac20, "HistoryHUD::Render"),    # ret 0x8; asm (worker cb-d)
++    (228, 0x0083b280, "HistoryHUD::Recompute"),    # ret 0x8; asm (worker cb-d)
++    (229, 0x0095a7b0, "Manager::RecordPlayerCompletion"),    # ret 0x4; asm (worker cb-d)
++    (230, 0x00929b40, "PersistentGameData::IncreaseEventCounter"),    # ret 0x8; sig (worker cb-d)
++    (231, 0x00840b00, "HUD_Message::Show"),    # ret 0x10; asm (worker cb-d)
++    (232, 0x009a34a0, "HUD::ShowStackedItemTextCustomUTF16"),    # ret 0x10; sig (worker cb-d)
++    (272, 0x009f3540, "Weapon::Fire"),    # ret 0xc; asm (worker cb-e)
++    (273, 0x009f7930, "Weapon::TriggerTearFired"),    # ret 0x8; asm (worker cb-e)
++    (274, 0x0097e3c0, "Entity_Laser::DoDamage"),    # ret 0x4; asm (worker cb-e)
++    (275, 0x007ae030, "Entity_Player::FireBoneClub"),    # ret 0x10; asm (worker cb-e)
++    (276, 0x009f6c50, "Weapon::FireSword"),    # ret 0x18; asm (worker cb-e)
++    (277, 0x00638c10, "Entity_Familiar::FireBrimstone"),    # ret 0x8; asm (worker cb-e)
++    (278, 0x00613c20, "Entity_Familiar::FireTechLaser"),    # ret 0x4; asm (worker cb-e)
++    (279, 0x00a01020, "Weapon_Brimstone::do_baby_brimstone_burst"),    # ret 0xc; asm (worker cb-e)
      (100, 0x006a93a0, "Entity::Init"),    # ret 0x10; sig Init; vtable 0x00b6730c slot 1
      (101, 0x00755470, "Entity_Player::Init"),    # ret 0x10; vtable 0x00b6bdd0 slot 1
      (102, 0x006b8b20, "Entity_NPC::Init"),    # ret 0x10; vtable 0x00b67468 slot 1
-@@ -1523,7 +1550,7 @@ if len({_s for _s, _, _ in RGON_HOOKS}) != len(RGON_HOOKS) or len({_v for _, _v,
+@@ -1523,7 +1567,7 @@ if len({_s for _s, _, _ in RGON_HOOKS}) != len(RGON_HOOKS) or len({_v for _, _v,
  # reaches it: spill, set the trampoline's next block, return.
  #
  # Each entry: (slot, function VA, instruction VA, name, (redirect targets...)).
 -# The slot space is RGON_HOOKS's (host_rgon.c's 192), shared and never reused.
-+# The slot space is RGON_HOOKS's (host_rgon.c's 224), shared and never reused.
++# The slot space is RGON_HOOKS's (host_rgon.c's 320), shared and never reused.
  # The table is checked by scripts/recomp/rgon/tools/hook_table.py, which prints
  # it (`--write`); edit it there. A build error, never a silent skip: the
  # function not in exactly one TU, the marker not exactly once in it, a target
-@@ -1539,8 +1566,34 @@ RGON_INSN_HOOKS: list[tuple[int, int, int, str, tuple[int, ...]]] = [
+@@ -1539,8 +1583,36 @@ RGON_INSN_HOOKS: list[tuple[int, int, int, str, tuple[int, ...]]] = [
      (167, 0x00676be0, 0x006770c2, "Entity_Tear::Collision_00676be0@ParasiteSplit", ()),    # 0x006770c2  mov eax, dword ptr [ebp - 0x64]
      (168, 0x00676be0, 0x00677498, "Entity_Tear::Collision_00676be0@BoneSplit", ()),    # 0x00677498  mov eax, dword ptr [ebp - 0x60]
      (170, 0x008f8860, 0x008f89c4, "ModManager::RenderCharacterPortrait_008f8860@Frame", ()),    # 0x008f89c4  mov edx, dword ptr [edi + 0x138]
@@ -1847,12 +1880,34 @@ index 659f7ce..507e8b0 100644
 +    (219, 0x006a9c90, 0x006aa85e, "Entity::GridCollision@Walls", ()),    # 0x006aa85e  cmp eax, 4
 +    (220, 0x006ab440, 0x006ab77b, "Entity_Player::CollideWithGrid@Cell", (0x006ab9de,)),    # 0x006ab77b  cmp byte ptr [ebx + 8], 0
 +    (223, 0x009688d0, 0x0096a936, "Entity_Knife::update_bone_swing@HitboxInit", ()),    # 0x0096a936  movzx eax, word ptr [esi + 0x4ee]
++    (280, 0x00971810, 0x009720b5, "Entity_Laser::damage_entities@PreSampleCollision", (0x0097207c,)),    # 0x009720b5  mov ecx, dword ptr [eax + 0x28]
++    (281, 0x00971810, 0x00973201, "Entity_Laser::damage_entities@PreCollision", (0x00973651,)),    # 0x00973201  movss xmm2, dword ptr [ebp - 0xd4]
  ]
 -RGON_SLOTS = 192            # host_rgon.c RGON_HOOKS
-+RGON_SLOTS = 224            # host_rgon.c RGON_HOOKS
++RGON_SLOTS = 320            # host_rgon.c RGON_HOOKS
  INSN_REGS = ("EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI")
  _RE_INSN_BLOCK = re.compile(
      r"^[ \t]*/\* LIFT-PATCH insn 0x([0-9a-f]{8}) slot (\d+) begin[^\n]*\n.*?"
+@@ -1715,6 +1787,19 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
+         spans = _fn_spans(t, fva)
+         if not spans:
+             raise SystemExit("insn hook %s: %s has no body in %s" % (what, name, tu.name))
++        # A target the lifter gave no label (no jump of the game goes there: it is the fall-through of a
++        # conditional branch) gets one, right after its instruction's marker, as the lifter writes it
++        for tgt in targets:
++            tl = "\nL_%08x: ;" % tgt
++            if any(t.find(tl, a, b) >= 0 for _, a, b in spans):
++                continue
++            tm = re.compile(r"^  RECOMP_VA\(0x%xu\);[ \t]*\r?\n" % tgt, re.M)
++            th = [m for _, a, b in spans for m in tm.finditer(t, a, b)]
++            if len(th) == 1:
++                t = t[:th[0].end()] + "L_%08x: ;%s" % (tgt, nl) + t[th[0].end():]
++                texts[tu] = t
++                changed.add(tu)
++                spans = _fn_spans(t, fva)
+         marker = re.compile(r"^  RECOMP_VA\(0x%xu\);[ \t]*\r?\n" % iva, re.M)
+         hits = [(sn, a, b, m) for sn, a, b in spans for m in marker.finditer(t, a, b)]
+         if len(hits) != 1:
 diff --git a/scripts/recomp/lift/orphan_starts.py b/scripts/recomp/lift/orphan_starts.py
 index 1b71718..9be2182 100644
 --- a/scripts/recomp/lift/orphan_starts.py
@@ -6056,6 +6111,372 @@ index 92f9c5b..4266bf8 100644
      if res ~= nil then pre_collision_answered = true end
      return res
    end
+diff --git a/scripts/recomp/rgon/api_hooks_hud.lua b/scripts/recomp/rgon/api_hooks_hud.lua
+new file mode 100644
+index 0000000..c05a644
+--- /dev/null
++++ b/scripts/recomp/rgon/api_hooks_hud.lua
+@@ -0,0 +1,360 @@
++-- api_hooks_hud.lua -- callbacks of the HUD, completion marks and item text (worker cb-d, hook slots 224-232).
++-- Same contract as api_hooks.lua: a handler before or after a game function (hook_slots.lua names them), reading
++-- the call's arguments off the guest stack ([esp] the return address, [esp+4] the first argument, `self` = ECX).
++-- What each callback passes and accepts follows REPENTOGON's documentation of it; the code is this layer's.
++--
++--   224 PlayerHUD::RenderHearts       MC_PRE_PLAYERHUD_RENDER_HEARTS (1118), MC_POST_PLAYERHUD_RENDER_HEARTS (1091)
++--   225 CompletionWidget::Render      MC_PRE_COMPLETION_MARKS_RENDER (1216), MC_POST_COMPLETION_MARKS_RENDER (1217)
++--   226 HUD::ShowFortuneText          MC_PRE_FORTUNE_DISPLAY (1483)
++--   227 HistoryHUD::Render            MC_PRE_HISTORYHUD_RENDER (1027), MC_POST_HISTORYHUD_RENDER (1028)
++--   228 HistoryHUD::Recompute         MC_POST_HISTORYHUD_RECOMPUTE (1029)
++--   229 Manager::RecordPlayerCompletion   MC_PRE_COMPLETION_EVENT (1049), MC_POST_COMPLETION_EVENT (1052), and for a mod's
++--                                     characters MC_COMPLETION_MARK_GET (1047), MC_POST_COMPLETION_MARK_GET (1048)
++--   230 PersistentGameData::IncreaseEventCounter   1047 / 1048 for the game's own characters (their marks are event counters)
++--   231 HUD_Message::Show, 232 HUD::ShowStackedItemTextCustomUTF16   MC_PRE_ITEM_TEXT_DISPLAY (1484)
++
++local T = ...
++local B, R, wrap, listening = T.B, T.R, T.wrap, T.listening
++local r8, r16, r32, ri32, rf32, w32, ptr, log = B.r8, B.r16, B.r32, B.ri32, B.rf32, B.w32, B.ptr, B.log
++local type, pairs, ipairs, rawget, rawset, tostring, setmetatable = type, pairs, ipairs, rawget, rawset, tostring, setmetatable
++local mathtype = math.type
++local M = ModCallbacks
++
++local SLOTS
++do
++  local chunk, why = B.load("hook_slots.lua")
++  if not chunk then log("api_hooks_hud: no hook_slots.lua (" .. tostring(why) .. ")") return end
++  SLOTS = chunk()
++end
++if B.HOOKS < 233 then log("api_hooks_hud: this engine has " .. B.HOOKS .. " hook slots; the callbacks here need 233") return end
++
++local function slot_of(name)
++  local s = SLOTS[name]
++  if not s then log("api_hooks_hud: no hook slot for " .. name) return nil end
++  return s[1], s[2]
++end
++local function run(...) return T.run(...) end
++local function bool_at(a) return r8(a) ~= 0 end
++local function vec_at(a) return Vector(rf32(a), rf32(a + 4)) end
++local told = {}
++local function said(key, what)
++  if told[key] then return end
++  told[key] = true
++  log(what)
++end
++local function wrong(what, a)
++  said(what, string.format("api_hooks_hud: %s was handed 0x%08x, which is not what it should be; the call goes on unwatched", what, a))
++end
++
++-- a C string, or nil for a null pointer
++local function cstr_at(a)
++  if a == 0 then return nil end
++  local ok, s = pcall(B.str, a)
++  return ok and s or nil
++end
++-- a UTF-16 string (the game's wchar_t), as UTF-8; nil for a null pointer
++local function wstr_at(a)
++  if a == 0 then return nil end
++  local out, n = {}, 0
++  local ok = pcall(function()
++    while n < 1024 do
++      local c = r16(a + 2 * n)
++      if c == 0 then break end
++      n = n + 1
++      if c >= 0xd800 and c < 0xdc00 then
++        local d = r16(a + 2 * n)
++        if d >= 0xdc00 and d < 0xe000 then
++          n = n + 1
++          c = 0x10000 + ((c - 0xd800) << 10) + (d - 0xdc00)
++        end
++      end
++      out[#out + 1] = utf8.char(c)
++    end
++  end)
++  if not ok then return nil end
++  return table.concat(out)
++end
++
++------------------------------------------------------------------------------
++-- PlayerHUD::RenderHearts(Vector* offset, ANM2* sprite, int layout, float scale, Vector pos), ret 0x18 (slot 224)
++------------------------------------------------------------------------------
++-- `this` is one of the HUD's eight 0x6dc-byte player slots (api_hooks.lua checks the same grid for RenderActiveItem): it must lie on that
++-- grid and hold the HUD (+4), its own index (+8) and a player (+0). The callbacks get (offset, hearts sprite, position, scale, player); the
++-- position handed over is moved down 34 for the compact Esau layout (index above 3 with layout 3), as REPENTOGON's is.
++-- PRE -> true: the hearts are not drawn.
++do
++  local PRE, POST = M.MC_PRE_PLAYERHUD_RENDER_HEARTS, M.MC_POST_PLAYERHUD_RENDER_HEARTS
++  local slot = slot_of("PlayerHUD::RenderHearts")
++  if slot and PRE and POST then
++    local SLOT_SIZE = 0x6dc
++    T.define(slot, { PRE, POST }, function(self, esp)
++      local hud = ptr(Game():GetHUD())
++      local off = self - hud
++      local index = off // SLOT_SIZE
++      if hud == 0 or off < 0 or off % SLOT_SIZE ~= 0 or index > 7 or r32(self + 4) ~= hud or r16(self + 8) ~= index then
++        wrong("PlayerHUD::RenderHearts", self)
++        return
++      end
++      local player = wrap("EntityPlayer", r32(self))
++      if not player then return end
++      local okg, ghost = pcall(player.IsCoopGhost, player)
++      if okg and ghost then return end
++      local offset_ptr, sprite_ptr, layout, scale = r32(esp + 4), r32(esp + 8), ri32(esp + 12), rf32(esp + 16)
++      local pos = Vector(rf32(esp + 20), rf32(esp + 24))
++      if index > 3 and layout == 3 then pos.Y = pos.Y + 34 end
++      local offset = offset_ptr ~= 0 and vec_at(offset_ptr) or Vector(0, 0)
++      local sprite = wrap("Sprite", sprite_ptr)
++      if listening[PRE] then
++        local res = run(PRE, nil, offset, sprite, Vector(pos.X, pos.Y), scale, player)
++        if res == true then return true, 0, 0x18 end
++      end
++      return { offset, sprite, pos, scale, player }
++    end, function(self, esp, eax, k)
++      if k and listening[POST] then run(POST, nil, k[1], k[2], k[3], k[4], k[5]) end
++    end)
++  end
++end
++
++------------------------------------------------------------------------------
++-- CompletionWidget::Render(Vector* pos, Vector* scale), ret 8 (slot 225)
++------------------------------------------------------------------------------
++-- The widget is { int characterId @ +0, ANM2 @ +4 } (read back by lab_cb_d.lua). Called by the character menu and the pause screen.
++-- PRE (sprite, position, scale, character id) -> true: not drawn.
++do
++  local PRE, POST = M.MC_PRE_COMPLETION_MARKS_RENDER, M.MC_POST_COMPLETION_MARKS_RENDER
++  local slot = slot_of("CompletionWidget::Render")
++  if slot and PRE and POST then
++    T.define(slot, { PRE, POST }, function(self, esp)
++      local pos_ptr, scale_ptr = r32(esp + 4), r32(esp + 8)
++      if pos_ptr == 0 or scale_ptr == 0 then return end
++      local sprite, pos, scale, id = wrap("Sprite", self + 4), vec_at(pos_ptr), vec_at(scale_ptr), ri32(self)
++      if listening[PRE] then
++        local res = run(PRE, nil, sprite, pos, scale, id)
++        if res == true then return true, 0, 8 end
++      end
++      return { sprite, pos, scale, id }
++    end, function(self, esp, eax, k)
++      if k and listening[POST] then run(POST, nil, k[1], k[2], k[3], k[4]) end
++    end)
++  end
++end
++
++------------------------------------------------------------------------------
++-- HUD::ShowFortuneText(list), ret 4 (slot 226): MC_PRE_FORTUNE_DISPLAY () -> false: the fortune is not shown
++------------------------------------------------------------------------------
++do
++  local PRE = M.MC_PRE_FORTUNE_DISPLAY
++  local slot = slot_of("HUD::ShowFortuneText")
++  if slot and PRE then
++    T.define(slot, { PRE }, function()
++      if run(PRE, nil) == false then return true, 0, 4 end
++    end, nil)
++  end
++end
++
++------------------------------------------------------------------------------
++-- HistoryHUD (the item history down the left side): Render(Vector* pos, bool mini) ret 8 (slot 227),
++-- Recompute(int player, bool immediate) ret 8 (slot 228). The object the callbacks get is the game's, by address; it has no methods yet
++-- (GetCollectibles and the others are not implemented), so it is only to tell which one it is.
++------------------------------------------------------------------------------
++local HistoryHUD = rawget(_G, "HistoryHUD")
++if HistoryHUD == nil then
++  HistoryHUD = { __type = "HistoryHUD", __name = "HistoryHUD" }
++  HistoryHUD.__index = HistoryHUD
++  rawset(_G, "HistoryHUD", HistoryHUD)
++end
++local huds = setmetatable({}, { __mode = "v" })
++local function history_at(a)
++  local h = huds[a]
++  if not h then
++    h = setmetatable({ address = a }, HistoryHUD)
++    huds[a] = h
++  end
++  return h
++end
++T.history_hud = history_at
++do
++  local PRE, POST = M.MC_PRE_HISTORYHUD_RENDER, M.MC_POST_HISTORYHUD_RENDER
++  local slot = slot_of("HistoryHUD::Render")
++  if slot and PRE and POST then
++    T.define(slot, { PRE, POST }, function(self, esp)
++      local pos_ptr = r32(esp + 4)
++      if pos_ptr == 0 then return end
++      local hud, pos, mini = history_at(self), vec_at(pos_ptr), bool_at(esp + 8)
++      if listening[PRE] then
++        local res = run(PRE, nil, hud, Vector(pos.X, pos.Y), mini)
++        if res == false then return true, 0, 8 end
++        if type(res) == "table" then
++          said("hist_table", "accepted, not supported in the browser: a table returned from MC_PRE_HISTORYHUD_RENDER (HideCollectibles/HideTrinkets; every item is drawn)")
++        end
++      end
++      return { hud, pos, mini }
++    end, function(self, esp, eax, k)
++      if k and listening[POST] then run(POST, nil, k[1], k[2], k[3]) end
++    end)
++  end
++end
++do
++  local POST = M.MC_POST_HISTORYHUD_RECOMPUTE
++  local slot = slot_of("HistoryHUD::Recompute")
++  if slot and POST then
++    T.define(slot, { POST }, function(self, esp)
++      local idx = ri32(esp + 4)
++      -- the game does not expect -1 here (Strawman with Esau Jr.); REPENTOGON leaves the call out
++      if idx < 0 or idx > 1 then return true, 0, 8 end
++      return { idx, bool_at(esp + 8) }
++    end, function(self, esp, eax, k)
++      if k and k[2] and listening[POST] then run(POST, k[1], history_at(self), k[1]) end
++    end)
++  end
++end
++
++------------------------------------------------------------------------------
++-- completion events and marks
++------------------------------------------------------------------------------
++-- Manager::RecordPlayerCompletion(int event), static stdcall, ret 4 (slot 229): MC_PRE_COMPLETION_EVENT (event), param = event
++--   -> false: nothing is recorded; an integer 0..17: that event instead; any other integer: nothing is recorded.
++--   MC_POST_COMPLETION_EVENT (event) after the game's own recording.
++-- For each player of a mod's character (type above 40) whose mark for the event is lower than the run's (1 normal, 2 hard), the game
++-- has no place for it: MC_COMPLETION_MARK_GET (character, mark, character) may answer false, then Isaac.SetCompletionMark records it
++-- and MC_POST_COMPLETION_MARK_GET (character, mark, character) follows. The game's own characters' marks go through the event
++-- counters (slot 230).
++-- PersistentGameData::IncreaseEventCounter(event, amount), ret 8 (slot 230): the game's characters' marks are the counters
++-- PROGRESSION_KILL_<boss>_WITH_<character>, PROGRESSION_GREED_MODE_CLEARED_WITH_<character> and PROGRESSION_BOSSRUSH_CLEARED_WITH_<character>
++-- (EventCounter, enums). A positive amount on one of them runs MC_COMPLETION_MARK_GET (character, mark, character) before (false: the
++-- counter is not raised) and MC_POST_COMPLETION_MARK_GET after. Hard mode raises it twice (the game's own doing); the second call
++-- of a pair gets the first one's answer without asking again.
++local PRE_EVENT, POST_EVENT = M.MC_PRE_COMPLETION_EVENT, M.MC_POST_COMPLETION_EVENT
++local MARK_GET, MARK_POST = M.MC_COMPLETION_MARK_GET, M.MC_POST_COMPLETION_MARK_GET
++local CT = rawget(_G, "CompletionType")
++
++local function is_hard()
++  local g = Game()
++  local ok, hard = pcall(function() return g:IsHardMode() end)
++  if ok and type(hard) == "boolean" then return hard end
++  local okd, d = pcall(function() return g.Difficulty end)
++  return okd and mathtype(d) == "integer" and (d == 1 or d == 3) or false
++end
++
++do
++  local slot = slot_of("Manager::RecordPlayerCompletion")
++  if slot and PRE_EVENT and POST_EVENT then
++    local ids = { PRE_EVENT, POST_EVENT }
++    if MARK_GET and MARK_POST and type(Isaac.SetCompletionMark) == "function" then ids[3], ids[4] = MARK_GET, MARK_POST end
++    T.define(slot, ids, function(self, esp)
++      local event = ri32(esp + 4)
++      if listening[PRE_EVENT] then
++        local res = run(PRE_EVENT, event, event)
++        if res == false then return true, 0, 4 end
++        if mathtype(res) == "integer" then
++          if res >= 0 and res <= 17 then
++            event = res
++            w32(esp + 4, res)
++          else
++            return true, 0, 4
++          end
++        end
++      end
++      -- a mod's characters
++      if ids[3] and (listening[MARK_GET] or listening[MARK_POST]) and Game() and not Game():AchievementUnlocksDisallowed() then
++        local level = is_hard() and 2 or 1
++        for i = 0, Game():GetNumPlayers() - 1 do
++          local ok, pt = pcall(function() return Isaac.GetPlayer(i):GetPlayerType() end)
++          if ok and pt > 40 then
++            local okm, cur = pcall(Isaac.GetCompletionMark, pt, event)
++            if okm and cur < level then
++              if not listening[MARK_GET] or run(MARK_GET, pt, event, pt) ~= false then
++                Isaac.SetCompletionMark(pt, event, level)
++                if listening[MARK_POST] then run(MARK_POST, pt, event, pt) end
++              end
++            end
++          end
++        end
++      end
++      return { event }
++    end, function(self, esp, eax, k)
++      if k and listening[POST_EVENT] then run(POST_EVENT, k[1], k[1]) end
++    end)
++  end
++end
++
++do
++  local slot = slot_of("PersistentGameData::IncreaseEventCounter")
++  if slot and MARK_GET and MARK_POST and CT and rawget(_G, "EventCounter") then
++    -- character name in the counters' names -> player type (the base type of each character; marks of Lazarus II, Black Judas, Esau
++    -- and the other forms are their base character's)
++    local CHAR = { ISAAC = 0, MAGDALENE = 1, CAIN = 2, JUDAS = 3, BLUE_BABY = 4, EVE = 5, SAMSON = 6, AZAZEL = 7, LAZARUS = 8, EDEN = 9,
++                   THE_LOST = 10, LILITH = 13, KEEPER = 14, APOLLYON = 15, THE_FORGOTTEN = 16, BETHANY = 18, JACOB_AND_ESAU = 19 }
++    local base = { ISAAC = 21, MAGDALENE = 22, CAIN = 23, JUDAS = 24, BLUE_BABY = 25, EVE = 26, SAMSON = 27, AZAZEL = 28, LAZARUS = 29,
++                   EDEN = 30, THE_LOST = 31, LILITH = 32, KEEPER = 33, APOLLYON = 34, THE_FORGOTTEN = 35, BETHANY = 36, JACOB_AND_ESAU = 37 }
++    for name, v in pairs(base) do CHAR["T_" .. name] = v end
++    local BOSS = { MOMS_HEART = CT.MOMS_HEART, ISAAC = CT.ISAAC, SATAN = CT.SATAN, BLUE_BABY = CT.BLUE_BABY, LAMB = CT.LAMB,
++                   MEGA_SATAN = CT.MEGA_SATAN, HUSH = CT.HUSH, MOTHER = CT.MOTHER, DELIRIUM = CT.DELIRIUM, BEAST = CT.BEAST }
++    local map = {}                   -- event counter id -> { player type, completion type }
++    local function build()
++      for name, id in pairs(EventCounter) do
++        if mathtype(id) == "integer" then
++          local who = name:match("^PROGRESSION_GREED_MODE_CLEARED_WITH_(.+)$")
++          local kind = who and "greed"
++          if not who then who = name:match("^PROGRESSION_BOSSRUSH_CLEARED_WITH_(.+)$") kind = who and CT.BOSS_RUSH end
++          if not who then
++            local boss
++            boss, who = name:match("^PROGRESSION_KILL_(.-)_WITH_(.+)$")
++            kind = boss and BOSS[boss]
++          end
++          if who and CHAR[who] and kind then map[id] = { CHAR[who], kind } end
++        end
++      end
++    end
++    build()
++    local last, returned_false = -1, false
++    T.define(slot, { MARK_GET, MARK_POST }, function(self, esp)
++      local event, amount = ri32(esp + 4), ri32(esp + 8)
++      local m = amount > 0 and map[event]
++      if not m then return end
++      local hard = is_hard()
++      if hard and last == event and amount == 1 then
++        if returned_false then
++          returned_false = false
++          return true, 0, 8
++        end
++        return
++      end
++      local kind = m[2]
++      if kind == "greed" then kind = (Game().Difficulty == 3) and CT.ULTRA_GREEDIER or CT.ULTRA_GREED end
++      if listening[MARK_GET] and run(MARK_GET, m[1], kind, m[1]) == false then
++        if hard and amount == 1 then last, returned_false = event, true end
++        return true, 0, 8
++      end
++      return { m[1], kind, hard and amount == 1, event }
++    end, function(self, esp, eax, k)
++      if not k then return end
++      if listening[MARK_POST] then run(MARK_POST, k[1], k[2], k[1]) end
++      if k[3] then last = k[4] end
++    end)
++  end
++end
++
++------------------------------------------------------------------------------
++-- MC_PRE_ITEM_TEXT_DISPLAY (1484): (title, subtitle, sticky, curse) -> false: the text is not shown
++------------------------------------------------------------------------------
++-- HUD_Message::Show(const char* title, const char* subtitle, bool autoHide, bool isCurse), ret 0x10 (slot 231): the stage name popup, custom
++-- text (HUD:ShowItemText with strings), co-op pickups. sticky is `not autoHide`.
++-- HUD::ShowStackedItemTextCustomUTF16(wchar_t* title, wchar_t* subtitle, bool, bool), ret 0x10 (slot 232): HUD::ShowItemText's item names.
++do
++  local PRE = M.MC_PRE_ITEM_TEXT_DISPLAY
++  local slot1 = slot_of("HUD_Message::Show")
++  if slot1 and PRE then
++    T.define(slot1, { PRE }, function(self, esp)
++      local title, subtitle = cstr_at(r32(esp + 4)), cstr_at(r32(esp + 8))
++      if run(PRE, nil, title, subtitle, not bool_at(esp + 12), bool_at(esp + 16)) == false then return true, 0, 0x10 end
++    end, nil)
++  end
++  local slot2 = slot_of("HUD::ShowStackedItemTextCustomUTF16")
++  if slot2 and PRE then
++    T.define(slot2, { PRE }, function(self, esp)
++      local title, subtitle = wstr_at(r32(esp + 4)), wstr_at(r32(esp + 8))
++      if run(PRE, nil, title, subtitle, false, false) == false then return true, 0, 0x10 end
++    end, nil)
++  end
++end
 diff --git a/scripts/recomp/rgon/api_item_fields.lua b/scripts/recomp/rgon/api_item_fields.lua
 new file mode 100644
 index 0000000..bfe5ed2
@@ -6556,7 +6977,7 @@ index 0000000..36b9c1c
 +  end
 +end
 diff --git a/scripts/recomp/rgon/api_misc.lua b/scripts/recomp/rgon/api_misc.lua
-index b34e4e1..7301240 100644
+index b34e4e1..679024a 100644
 --- a/scripts/recomp/rgon/api_misc.lua
 +++ b/scripts/recomp/rgon/api_misc.lua
 @@ -246,7 +246,11 @@ do
@@ -6572,7 +6993,7 @@ index b34e4e1..7301240 100644
      local function each(self, f)
        self._tl, self._tr, self._bl, self._br = f(self._tl), f(self._tr), f(self._bl), f(self._br)
      end
-@@ -286,9 +290,11 @@ do
+@@ -286,31 +290,45 @@ do
          return Vector(a.X + m[1][1] * x + m[1][2] * y + m[1][3], a.Y + m[2][1] * x + m[2][2] * y + m[2][3])
        end)
      end
@@ -6586,14 +7007,38 @@ index b34e4e1..7301240 100644
      end
      if extra then extra(Q) end
      local static_side = {}
-@@ -306,11 +312,16 @@ do
-       end }))
-       R.Implemented[name] = true
+-    function static_side.NewFromBounds(top_left, bottom_right)
++    function static_side.NewFromBounds(top_left, bottom_right, uv)
+       local tl, br = vec_arg(top_left, 1, "NewFromBounds"), vec_arg(bottom_right, 2, "NewFromBounds")
+-      return new(tl, Vector(br.X, tl.Y), Vector(tl.X, br.Y), br)
++      local q = new(tl, Vector(br.X, tl.Y), Vector(tl.X, br.Y), br)
++      if uv then q._uv = true end
++      return q
      end
-+    for _, m in ipairs({ "GetTopLeft", "GetTopRight", "GetBottomLeft", "GetBottomRight", "SetTopLeft", "SetTopRight",
-+      "SetBottomLeft", "SetBottomRight", "Copy", "Translate", "Flip" }) do
-+      R.Implemented[name .. "." .. m] = true
+-    function static_side.NewFromRectangle(top_left, width, height)
++    function static_side.NewFromRectangle(top_left, width, height, uv)
+       local tl = vec_arg(top_left, 1, "NewFromRectangle")
+-      return new(tl, Vector(tl.X + width, tl.Y), Vector(tl.X, tl.Y + height), Vector(tl.X + width, tl.Y + height))
++      local q = new(tl, Vector(tl.X + width, tl.Y), Vector(tl.X, tl.Y + height), Vector(tl.X + width, tl.Y + height))
++      if uv then q._uv = true end
++      return q
+     end
+     if rawget(_G, name) == nil then
+-      rawset(_G, name, setmetatable(static_side, { __call = function(_, tl, tr, bl, br)
+-        return new(vec_arg(tl, 1, name), vec_arg(tr, 2, name), vec_arg(bl, 3, name), vec_arg(br, 4, name))
++      rawset(_G, name, setmetatable(static_side, { __call = function(_, tl, tr, bl, br, uv)
++        local q = new(vec_arg(tl, 1, name), vec_arg(tr, 2, name), vec_arg(bl, 3, name), vec_arg(br, 4, name))
++        if uv then q._uv = true end
++        return q
+       end }))
+-      R.Implemented[name] = true
++      R.Implemented[name .. "." .. name] = true
 +    end
++    for _, m in ipairs({ "GetTopLeft", "GetTopRight", "GetBottomLeft", "GetBottomRight", "SetTopLeft", "SetTopRight",
++      "SetBottomLeft", "SetBottomRight", "Copy", "Translate", "Scale", "Rotate", "Shear", "ApplyMatrix", "Flip",
++      "NewFromBounds", "NewFromRectangle" }) do
++      R.Implemented[name .. "." .. m] = true
+     end
    end
    quad("DestinationQuad")
    quad("SourceQuad", function(Q)
@@ -6603,8 +7048,114 @@ index b34e4e1..7301240 100644
    end)
  end
  
+@@ -333,6 +351,7 @@ if rawget(_G, "Renderer") == nil then
+   function Image:GetPaddedWidth() return self._w end
+   function Image:GetPaddedHeight() return self._h end
+   function Image:GetName() return self._name end
++  function Image:GetTexelRegion() unsupported("Image:GetTexelRegion", "an Image's pixels are not readable here") return "" end
+   function Image:Render() unsupported("Image:Render", note) end
+   function Image:RenderWithShader() unsupported("Image:RenderWithShader", note) end
+   local Shader = {}
+@@ -343,7 +362,7 @@ if rawget(_G, "Renderer") == nil then
+   Rn.VertexAttributeFormat = { FLOAT = 1, VEC2 = 2, VEC3 = 3, VEC4 = 4, POSITION = 5, COLOR = 6, TEX_COORD = 7 }
+   function Rn.CreateImage(width, height, name)
+     unsupported("Renderer.CreateImage", note)
+-    return setmetatable({ _w = width or 0, _h = height or 0, _name = tostring(name or "") }, Image)
++    return setmetatable({ _w = width or 0, _h = height or 0, _name = tostring(name or ""), _created = true }, Image)
+   end
+   function Rn.LoadImage(path)
+     unsupported("Renderer.LoadImage", note)
+@@ -363,13 +382,62 @@ if rawget(_G, "Renderer") == nil then
+   rawset(_G, "Renderer", Rn)
+ end
+ 
++------------------------------------------------------------------------------
++-- Point
++------------------------------------------------------------------------------
++-- Point(position, spritesheetCoordinate, width = 1.0, color = white, isWorldSpace = false): one
++-- vertex of a Beam. A value of the Lua side: five fields with a getter and a setter each.
++do
++  local P = {}
++  P.__index = P
++  P.__type = "Point"
++  P.__name = "Point"
++  local function vec_of(v, n)
++    if type(v) ~= "userdata" or v.X == nil then error("bad argument #" .. n .. " to 'Point' (Vector expected, got " .. type(v) .. ")", 3) end
++    return Vector(v.X, v.Y)
++  end
++  local function num(v, n, what)
++    if type(v) ~= "number" then error("bad argument #" .. n .. " to '" .. what .. "' (number expected, got " .. type(v) .. ")", 3) end
++    return v + 0.0
++  end
++  function R.NewPoint(position, coordinate, width, color, world)
++    return setmetatable({
++      _pos = vec_of(position, 1), _coord = num(coordinate, 2, "Point"),
++      _width = width == nil and 1.0 or num(width, 3, "Point"),
++      _color = color == nil and Color(1, 1, 1, 1) or color, _world = world and true or false }, P)
++  end
++  R.Point = P
++  function P:GetPosition() return Vector(self._pos.X, self._pos.Y) end
++  function P:SetPosition(v) self._pos = vec_of(v, 1) end
++  function P:GetSpritesheetCoordinate() return self._coord end
++  function P:SetSpritesheetCoordinate(v) self._coord = num(v, 1, "SetSpritesheetCoordinate") end
++  function P:GetWidth() return self._width end
++  function P:SetWidth(v) self._width = num(v, 1, "SetWidth") end
++  function P:GetColor() return self._color end
++  function P:SetColor(c) self._color = c end
++  function P:GetIsWorldSpace() return self._world end
++  function P:SetIsWorldSpace(v) self._world = v and true or false end
++  function P.__tostring(self)
++    return string.format("Point[(%g, %g) coordinate %g width %g%s]", self._pos.X, self._pos.Y, self._coord, self._width, self._world and " world" or "")
++  end
++  if rawget(_G, "Point") == nil then
++    rawset(_G, "Point", setmetatable({}, { __call = function(_, position, coordinate, width, color, world)
++      return R.NewPoint(position, coordinate, width, color, world)
++    end }))
++  end
++  R.Implemented["Point.Point"] = true
++  for k, v in pairs(P) do
++    if type(v) == "function" and k:sub(1, 1) ~= "_" then R.Implemented["Point." .. k] = true end
++  end
++end
++
+ ------------------------------------------------------------------------------
+ -- Beam (accepted, not supported)
+ ------------------------------------------------------------------------------
+ -- Beam(sprite, layer, useOverlay, unkBool): a strip of a sprite's layer drawn
+ -- along a line of points (cords, chains, ropes), by the game's own beam
+ -- renderer. The object is here with everything a mod sets on it and reads
+--- back; Render() draws nothing yet.
++-- back; Render() draws nothing yet, so none of Beam is in REPENTOGON.Implemented.
+ if rawget(_G, "Beam") == nil then
+   local Bm = {}
+   Bm.__index = Bm
+@@ -381,8 +449,13 @@ if rawget(_G, "Beam") == nil then
+     end
+     return layer or 0
+   end
++  -- Add(position, coordinate, width = 1.0) or Add(point): the points are kept in the order they were added
+   function Bm:Add(position, coordinate, width, color)
+-    self._points[#self._points + 1] = { Position = position, SpritesheetCoordinate = coordinate, Width = width or 1.0, Color = color }
++    if type(position) == "table" and getmetatable(position) == R.Point then
++      self._points[#self._points + 1] = position
++    else
++      self._points[#self._points + 1] = R.NewPoint(position, coordinate, width, color, false)
++    end
+   end
+   function Bm:GetPoints() return self._points end
+   function Bm:SetPoints(points) self._points = type(points) == "table" and points or {} end
+@@ -404,6 +477,8 @@ if rawget(_G, "Beam") == nil then
+   end
+   rawset(_G, "Beam", setmetatable({}, { __call = function(_, sprite, layer, overlay, unk)
+     if type(sprite) ~= "userdata" then error("bad argument #1 to 'Beam' (Sprite expected, got " .. type(sprite) .. ")", 2) end
+-    return setmetatable({ _sprite = sprite, _layer = layer_of(sprite, layer), _overlay = overlay and true or false, _unk = unk and true or false, _points = {} }, Bm)
++    -- REPENTOGON keeps its own copy of the sprite (Beam:GetSprite hands it out)
++    local own = sprite.Copy and sprite:Copy() or sprite
++    return setmetatable({ _sprite = own, _layer = layer_of(own, layer), _overlay = overlay and true or false, _unk = unk and true or false, _points = {} }, Bm)
+   end }))
+ end
 diff --git a/scripts/recomp/rgon/api_more.lua b/scripts/recomp/rgon/api_more.lua
-index 468ce51..f952a0a 100644
+index 468ce51..e156f69 100644
 --- a/scripts/recomp/rgon/api_more.lua
 +++ b/scripts/recomp/rgon/api_more.lua
 @@ -376,6 +376,7 @@ do
@@ -6615,30 +7166,12 @@ index 468ce51..f952a0a 100644
    local function at(self)
      local p = B.ptr(self)
      if p == 0 then error("rgon: PlayerHUD method called without its object", 3) end
-@@ -547,3 +548,23 @@ method("Entity", "ToDelirium", function(self)
+@@ -547,3 +548,5 @@ method("Entity", "ToDelirium", function(self)
  end)
  R.Unsupported = R.Unsupported or {}
  R.Unsupported["Entity:ToDelirium"] = "answers with the NPC; Delirium's own functions are not there"
 +
-+------------------------------------------------------------------------------
-+-- Sprite:Continue([continueOverlay = true]) (REPENTOGON): resume the current animation from the frame it
-+-- is on, after SetFrame or Stop left it paused (Epiphany's Tarnished page: SetFrame("Appear", 1) then
-+-- Continue(), epiphany_menu.lua:288; without it the page swap stops there). Done with the game's own
-+-- functions only: Play(name, true) starts the animation at frame 0, Update() moves it one frame, so the
-+-- frame it was on is reached again with the animation playing. An animation that is already playing is
-+-- left alone. The overlay is restarted the same way when it was not playing (its frame is not kept: only
-+-- the main animation's frame is walked back to).
-+------------------------------------------------------------------------------
-+method("Sprite", "Continue", function(self, continueOverlay)
-+  local anim = self:GetAnimation()
-+  if anim and anim ~= "" and not self:IsPlaying(anim) then
-+    local f = self:GetFrame()
-+    local ov = continueOverlay ~= false and self.GetOverlayAnimation and self:GetOverlayAnimation() or ""
-+    self:Play(anim, true)
-+    if ov ~= "" and not self:IsOverlayPlaying(ov) then self:PlayOverlay(ov, true) end
-+    for _ = 1, math.max(0, math.min(f, 10000)) do self:Update() end
-+  end
-+end)
++-- Sprite:Continue / ContinueOverlay / Stop / StopOverlay are in api_render.lua
 diff --git a/scripts/recomp/rgon/api_npc.lua b/scripts/recomp/rgon/api_npc.lua
 new file mode 100644
 index 0000000..cf09d8d
@@ -7942,6 +8475,382 @@ index 0000000..a7e598c
 +  else
 +    B.log("api_pocket_item: no EntityPlayer class; GetPocketItem is left as the game has it")
 +  end
++end
+diff --git a/scripts/recomp/rgon/api_render.lua b/scripts/recomp/rgon/api_render.lua
+new file mode 100644
+index 0000000..6d05091
+--- /dev/null
++++ b/scripts/recomp/rgon/api_render.lua
+@@ -0,0 +1,370 @@
++-- api_render.lua -- sprite state and the render-side value classes (wave 4, chunk 8).
++--
++--   Sprite:Stop([stopOverlay]), :StopOverlay, :Continue([continueOverlay]), :ContinueOverlay
++--   Sprite:IsOverlayEventTriggered, :WasOverlayEventTriggered, :Copy
++--   Font validation wrappers, EntityConfig.GetBaby and EntityConfigBaby
++--   stand-ins (NOT in REPENTOGON.Implemented): Sprite/LayerState GetSpritesheet, SetSpritesheet and the custom
++--   shader functions. Images and shaders of a mod's own need render targets and shader programs inside the engine.
++--
++-- Measured in this build (lab_render_probe.lua, notes/render.md): a sprite's animation state at +0x30 (main) and
++-- +0x50 (overlay) is 0x20 bytes: +0x04 the animation record, +0x08 the per-layer frame indices, +0x10 the frame
++-- (a float), +0x14 a byte that is 1 while the animation plays. The game's own Stop() clears the main byte only
++-- (the overlay byte stays 1); writing 1 back makes IsPlaying true and the next Update moves the frame on; a finished
++-- animation stays finished when the byte is written (frame 56 of Death stayed 56).
++
++local T = ...
++local B, R, this = T.B, T.R, T.this
++local ptr, r8, r32, w8, w32, rf32, wf32, ri32, log = B.ptr, B.r8, B.r32, B.w8, B.w32, B.rf32, B.wf32, B.ri32, B.log
++local cfn, stdstr = B.cfn, B.stdstr
++local type, pairs, ipairs, tostring, rawget, rawset, setmetatable, pcall = type, pairs, ipairs, tostring, rawget, rawset, setmetatable, pcall
++local mathtype = math.type
++
++local unsupported = T.unsupported or function() end
++
++local STATE, OVERLAY = 0x30, 0x50
++local PLAYING = 0x14                       -- inside a state block
++local FRAME = 0x10
++
++-- a method of the class that replaces what is there (the game's own, or an earlier part's)
++local function define(cls, name, f)
++  local c, const = T.class_tables(cls)
++  if not c then log("api_render: no class " .. cls .. " for " .. name) return end
++  local wrapped = cfn(f)
++  rawset(c, name, wrapped)
++  if const and const ~= c then rawset(const, name, wrapped) end
++  R.Implemented[cls .. "." .. name] = true
++end
++local function argerr(n, fname, want, v)
++  error("bad argument #" .. n .. " to '" .. fname .. "' (" .. want .. " expected, got " .. type(v) .. ")", 3)
++end
++
++------------------------------------------------------------------------------
++-- Stop / Continue (and their overlay twins)
++------------------------------------------------------------------------------
++do
++  local sc = T.class_tables("Sprite")
++  local game_stop = rawget(sc, "Stop")
++  local function has_animation(a, state) return r32(a + state + 4) ~= 0 end
++
++  -- Sprite:Stop(stopOverlay = true): the game's own Stop halts the main animation; the overlay goes with it unless false
++  define("Sprite", "Stop", function(self, stopOverlay)
++    local a = this(self, "Stop")
++    if game_stop then game_stop(self) else w8(a + STATE + PLAYING, 0) end
++    if stopOverlay ~= false and has_animation(a, OVERLAY) then w8(a + OVERLAY + PLAYING, 0) end
++  end)
++  define("Sprite", "StopOverlay", function(self)
++    local a = this(self, "StopOverlay")
++    if has_animation(a, OVERLAY) then w8(a + OVERLAY + PLAYING, 0) end
++  end)
++
++  -- The game's IsFinished(name) is also true while the animation is only stopped, so "finished" is worked out from the
++  -- animation's own data: a looping animation never finishes, any other has when its frame reaches its last.
++  local function finished(self, overlay)
++    local ad = overlay and self:GetOverlayAnimationData() or self:GetCurrentAnimationData()
++    if ad == nil then return true end
++    if ad:IsLoopingAnimation() then return false end
++    local frame = overlay and self:GetOverlayFrame() or self:GetFrame()
++    return frame >= ad:GetLength() - 1
++  end
++  -- Continue: an animation that has not finished plays again from the frame it is on. A finished one is left alone.
++  define("Sprite", "Continue", function(self, continueOverlay)
++    local a = this(self, "Continue")
++    if has_animation(a, STATE) and not finished(self, false) then w8(a + STATE + PLAYING, 1) end
++    if continueOverlay ~= false and has_animation(a, OVERLAY) and not finished(self, true) then w8(a + OVERLAY + PLAYING, 1) end
++  end)
++  define("Sprite", "ContinueOverlay", function(self)
++    local a = this(self, "ContinueOverlay")
++    if has_animation(a, OVERLAY) and not finished(self, true) then w8(a + OVERLAY + PLAYING, 1) end
++  end)
++end
++
++------------------------------------------------------------------------------
++-- ReplaceSpritesheet(layer, png, loadGraphics = false), SetOverlayFrame(frame)
++------------------------------------------------------------------------------
++-- REPENTOGON's two changes to the game's functions: ReplaceSpritesheet can load the graphics at once, and
++-- SetOverlayFrame has an overload of one number that sets the frame of the overlay animation that is playing without
++-- stopping it (the game's own call with an animation name stops it).
++do
++  local sc = T.class_tables("Sprite")
++  local game_replace, game_set_overlay = rawget(sc, "ReplaceSpritesheet"), rawget(sc, "SetOverlayFrame")
++  if game_replace then
++    define("Sprite", "ReplaceSpritesheet", function(self, layer, png, load)
++      this(self, "ReplaceSpritesheet")
++      if mathtype(layer) ~= "integer" then argerr(1, "ReplaceSpritesheet", "number", layer) end
++      if type(png) ~= "string" then argerr(2, "ReplaceSpritesheet", "string", png) end
++      game_replace(self, layer, png)
++      if load then self:LoadGraphics() end
++    end)
++  end
++  if game_set_overlay then
++    define("Sprite", "SetOverlayFrame", function(self, a1, a2)
++      local a = this(self, "SetOverlayFrame")
++      if a2 == nil and type(a1) == "number" then
++        if r32(a + OVERLAY + 4) == 0 then return end        -- no overlay animation: nothing to set
++        local playing = r8(a + OVERLAY + PLAYING)
++        game_set_overlay(self, self:GetOverlayAnimation(), a1)
++        w8(a + OVERLAY + PLAYING, playing)
++        return
++      end
++      return game_set_overlay(self, a1, a2)
++    end)
++  end
++end
++
++------------------------------------------------------------------------------
++-- IsOverlayEventTriggered / WasOverlayEventTriggered
++------------------------------------------------------------------------------
++-- The game answers for the main animation only. The overlay's state block has the same layout, so the two blocks
++-- (8 words each) are swapped, the game's own answer is asked, and they are swapped back; nothing else runs in between.
++do
++  local sc = T.class_tables("Sprite")
++  local function overlay_answer(game_fn, fname)
++    return function(self, name)
++      local a = this(self, fname)
++      if type(name) ~= "string" then argerr(1, fname, "string", name) end
++      if game_fn == nil or r32(a + OVERLAY + 4) == 0 then return false end
++      local main, ov = {}, {}
++      for i = 0, 7 do main[i], ov[i] = r32(a + STATE + 4 * i), r32(a + OVERLAY + 4 * i) end
++      for i = 0, 7 do w32(a + STATE + 4 * i, ov[i]) end
++      local ok, res = pcall(game_fn, self, name)
++      for i = 0, 7 do w32(a + STATE + 4 * i, main[i]) end
++      if not ok then error(res, 2) end
++      return res
++    end
++  end
++  define("Sprite", "IsOverlayEventTriggered", overlay_answer(rawget(sc, "IsEventTriggered"), "IsOverlayEventTriggered"))
++  define("Sprite", "WasOverlayEventTriggered", overlay_answer(rawget(sc, "WasEventTriggered"), "WasOverlayEventTriggered"))
++end
++
++------------------------------------------------------------------------------
++-- Sprite:Copy()
++------------------------------------------------------------------------------
++-- A new sprite of the same file with the same animations playing at the same frames, the same spritesheets, the
++-- same Sprite fields (offset, scale, rotation, colour, flips, speed, render flags) and the same state of every layer.
++do
++  local function copy_words(from, to, n) for i = 0, n - 4, 4 do w32(to + i, r32(from + i)) end end
++  define("Sprite", "Copy", function(self)
++    local a = this(self, "Copy")
++    local file = self:GetFilename()
++    local new = Sprite()
++    if file == "" then return new end            -- nothing loaded: nothing to copy
++    new:Load(file, false)
++    local b = ptr(new)
++    -- layer state first: the spritesheets, then the graphics are loaded once
++    local mine, theirs = self:GetAllLayers(), new:GetAllLayers()
++    for i, l in ipairs(mine) do
++      local n = theirs[i]
++      if n then
++        local path = l:GetSpritesheetPath()
++        if n:GetSpritesheetPath():lower() ~= path:lower() then new:ReplaceSpritesheet(l:GetLayerID(), path) end
++      end
++    end
++    new:LoadGraphics()
++    for i, l in ipairs(mine) do
++      local n = theirs[i]
++      if n then
++        local la, na = ptr(l), ptr(n)
++        copy_words(la + 0x28, na + 0x28, 0x74 - 0x28 + 4)      -- wrap modes .. visible (flip, size, rotation, position, colour)
++        copy_words(la + 0x78, na + 0x78, 0x14)                  -- blend mode
++        copy_words(la + 0x8c, na + 0x8c, 0x98 - 0x8c)           -- render flags, crop offset
++      end
++    end
++    -- the sprite's own fields: offset 0x94, scale 0x9c, rotation 0xa4, colour 0xa8 (11 floats), flips 0x100/0x101, speed 0x104
++    copy_words(a + 0x94, b + 0x94, 0xd4 - 0x94)
++    w8(b + 0x100, r8(a + 0x100)) w8(b + 0x101, r8(a + 0x101))
++    w32(b + 0x104, r32(a + 0x104))
++    new:SetRenderFlags(self:GetRenderFlags())
++    -- animations: the frame, then the float frame and the playing byte
++    local anim = self:GetAnimation()
++    if anim ~= "" then
++      new:SetFrame(anim, self:GetFrame())
++      w32(b + STATE + FRAME, r32(a + STATE + FRAME))
++      w8(b + STATE + PLAYING, r8(a + STATE + PLAYING))
++    end
++    local ov = self:GetOverlayAnimation()
++    if ov ~= "" then
++      new:SetOverlayFrame(ov, self:GetOverlayFrame())
++      w32(b + OVERLAY + FRAME, r32(a + OVERLAY + FRAME))
++      w8(b + OVERLAY + PLAYING, r8(a + OVERLAY + PLAYING))
++    end
++    return new
++  end)
++end
++
++------------------------------------------------------------------------------
++-- Font: the draw and width functions with their arguments checked
++------------------------------------------------------------------------------
++-- The game's main.lua gives Font its legacy functions in Lua (DrawString with a KColor, DrawStringScaled, the UTF8 pair)
++-- over its native DrawString; a Font object finds them through a function __index. REPENTOGON's change to all of them
++-- is input validation: a nil colour, or a number where the string goes, crashes the game. The check goes in front of
++-- that __index, so every name is covered whichever side of the game defines it.
++do
++  local ok, f = pcall(Font)
++  local mt = ok and f ~= nil and getmetatable(f)
++  local orig = type(mt) == "table" and rawget(mt, "__index")
++  local function is_color(c) return type(c) == "userdata" and pcall(function() return c.Red end) end
++  local function str_arg(n, fname, v) if type(v) ~= "string" then argerr(n, fname, "string", v) end end
++  local function num_arg(n, fname, v) if type(v) ~= "number" then argerr(n, fname, "number", v) end end
++  local function draw(fname, scaled)
++    return function(_, str, x, y, a4, a5, a6, a7)
++      str_arg(1, fname, str) num_arg(2, fname, x) num_arg(3, fname, y)
++      if scaled then
++        num_arg(4, fname, a4) num_arg(5, fname, a5)
++        if not is_color(a6) then argerr(6, fname, "KColor", a6) end
++        if a7 ~= nil and type(a7) ~= "number" then argerr(7, fname, "number", a7) end
++      elseif type(a4) == "userdata" or a4 == nil then       -- the legacy call; a number is the game's new call (scale first)
++        if not is_color(a4) then argerr(4, fname, "KColor", a4) end
++        if a5 ~= nil and type(a5) ~= "number" then argerr(5, fname, "number", a5) end
++      end
++    end
++  end
++  local CHECK = {
++    DrawString = draw("DrawString", false), DrawStringUTF8 = draw("DrawStringUTF8", false),
++    DrawStringScaled = draw("DrawStringScaled", true), DrawStringScaledUTF8 = draw("DrawStringScaledUTF8", true),
++    GetStringWidth = function(_, str) str_arg(1, "GetStringWidth", str) end,
++    GetStringWidthUTF8 = function(_, str) str_arg(1, "GetStringWidthUTF8", str) end,
++  }
++  if type(orig) == "function" then
++    local wrapped = setmetatable({}, { __mode = "k" })       -- the game's function -> the checked one
++    rawset(mt, "__index", function(self, key)
++      local v = orig(self, key)
++      local check = CHECK[key]
++      if check and type(v) == "function" then
++        local w = wrapped[v]
++        if not w then
++          w = function(me, ...) check(me, ...) return v(me, ...) end
++          wrapped[v] = w
++        end
++        return w
++      end
++      return v
++    end)
++    for name in pairs(CHECK) do R.Implemented["Font." .. name] = true end
++  else
++    log("api_render: Font's __index is not a function; its argument checks are left out")
++  end
++end
++
++------------------------------------------------------------------------------
++-- EntityConfig.GetBaby / EntityConfigBaby
++------------------------------------------------------------------------------
++-- resources/babies.xml: <babies root="gfx/Characters/Player2/"><baby id= name= skin= />. A mod's babies.xml entries
++-- (content/babies.xml) follow the game's, numbered on from the last id of the game's.
++do
++  local EC = rawget(_G, "EntityConfig")
++  local nodes_of = T.nodes_of
++  if type(EC) == "table" and nodes_of then
++    local EB = {}
++    EB.__index = EB
++    EB.__type = "EntityConfigBaby"
++    EB.__name = "EntityConfigBaby"
++    function EB:GetID() return self._id end
++    function EB:GetName() return self._x.name or "" end
++    function EB:GetSpritesheetPath() return (self._root or "") .. (self._x.skin or "") end
++    function EB:GetAchievementID()
++      local ach = tonumber(self._x.achievement)
++      return ach and math.tointeger(ach) or -1
++    end
++    local babies
++    local function load_babies()
++      babies = {}
++      local last = -1
++      for _, node in ipairs(nodes_of("babies.xml", { "baby" })) do
++        local id = tonumber(node.attr.id)
++        if not node.source and id then
++          if id > last then last = id end
++        elseif node.source then
++          last = last + 1
++          id = last
++        end
++        if id then
++          babies[math.tointeger(id) or id] = setmetatable({ _id = math.tointeger(id) or id, _x = node.attr, _root = node.parent and node.parent.attr and node.parent.attr.root }, EB)
++        end
++      end
++    end
++    local GB = {}
++    function GB.GetBaby(id)
++      if mathtype(id) ~= "integer" then argerr(1, "GetBaby", "integer", id) end
++      if not babies then load_babies() end
++      return babies[id]
++    end
++    if rawget(EC, "GetBaby") == nil then
++      rawset(EC, "GetBaby", GB.GetBaby)
++      R.Implemented["EntityConfig.GetBaby"] = true
++      for k, v in pairs(EB) do
++        if type(v) == "function" and k:sub(1, 2) ~= "__" then R.Implemented["EntityConfigBaby." .. k] = true end
++      end
++    end
++  end
++end
++
++------------------------------------------------------------------------------
++-- stand-ins, not in REPENTOGON.Implemented
++------------------------------------------------------------------------------
++-- A custom shader or a spritesheet Image of a mod's own is drawn by REPENTOGON's renderer (render targets, shader
++-- programs); the Layer has no such renderer, so these are accepted, said once, and do nothing. SetSpritesheet with an
++-- Image made by Renderer.LoadImage(path) is the one case the game can do itself: the layer's graphics are replaced by
++-- that file's. An Image from CreateImage (drawn into at run time) is not.
++do
++  -- LayerState is the Layer's own class (rgon.lua, GetLayer): its methods are the __index table of its metatable
++  local layer_methods
++  do
++    local ok, l = pcall(function() local s = Sprite() s:Load("gfx/001.000_player.anm2", true) return s:GetLayer(0) end)
++    local mt = ok and l ~= nil and getmetatable(l)
++    layer_methods = type(mt) == "table" and type(rawget(mt, "__index")) == "table" and rawget(mt, "__index") or nil
++    if not layer_methods then log("api_render: the LayerState class was not found; its stand-ins are left out") end
++  end
++  local function standin(cls, name, f)
++    if cls == "LayerState" then
++      if layer_methods and rawget(layer_methods, name) == nil then
++        rawset(layer_methods, name, f)
++        R.Unsupported = R.Unsupported or {}
++        R.Unsupported["LayerState:" .. name] = R.Unsupported["LayerState:" .. name] or "a mod's shader or spritesheet Image on a layer"
++      end
++      return
++    end
++    local c, const = T.class_tables(cls)
++    if not c or rawget(c, name) ~= nil then return end
++    local wrapped = cfn(f)
++    rawset(c, name, wrapped)
++    if const and const ~= c and rawget(const, name) == nil then rawset(const, name, wrapped) end
++    R.Unsupported = R.Unsupported or {}
++    R.Unsupported[cls .. ":" .. name] = R.Unsupported[cls .. ":" .. name] or "a mod's shader or spritesheet Image on a sprite"
++  end
++  for _, cls in ipairs({ "LayerState" }) do
++    standin(cls, "HasCustomShader", function() return false end)
++    standin(cls, "HasCustomChampionShader", function() return false end)
++    standin(cls, "SetCustomShader", function(_, path) unsupported("LayerState:SetCustomShader", "a mod's shader on a layer (" .. tostring(path) .. ")") end)
++    standin(cls, "SetCustomChampionShader", function(_, path) unsupported("LayerState:SetCustomChampionShader", "a mod's shader on a layer (" .. tostring(path) .. ")") end)
++    standin(cls, "ClearCustomShader", function() end)
++    standin(cls, "ClearCustomChampionShader", function() end)
++  end
++  local function image_of(path)
++    local img = Renderer.LoadImage(path)       -- the stand-in: it holds the name, not the pixels
++    return img
++  end
++  local function layer_sheet(layer) return image_of(layer:GetSpritesheetPath()) end
++  local function apply(sprite, layer_id, image)
++    if type(image) ~= "table" or image._created or image._name == nil then
++      unsupported("SetSpritesheet", "an Image that was drawn into at run time")
++      return
++    end
++    sprite:ReplaceSpritesheet(layer_id, image._name)
++    sprite:LoadGraphics()
++  end
++  standin("Sprite", "GetSpritesheet", function(self, layer_id)
++    if mathtype(layer_id) ~= "integer" then argerr(1, "GetSpritesheet", "integer", layer_id) end
++    local l = self:GetLayer(layer_id)
++    return l and layer_sheet(l) or nil
++  end)
++  standin("Sprite", "SetSpritesheet", function(self, layer_id, image)
++    if mathtype(layer_id) ~= "integer" then argerr(1, "SetSpritesheet", "integer", layer_id) end
++    apply(self, layer_id, image)
++  end)
++  standin("LayerState", "GetSpritesheet", function(self) return layer_sheet(self) end)
++  -- a layer state points back at its sprite (+4, checked by rgon.lua's GetLayer)
++  standin("LayerState", "SetSpritesheet", function(self, image)
++    local la = this(self, "SetSpritesheet")
++    apply(T.wrap("Sprite", r32(la + 4)), self:GetLayerID(), image)
++  end)
 +end
 diff --git a/scripts/recomp/rgon/api_roomconfig.lua b/scripts/recomp/rgon/api_roomconfig.lua
 new file mode 100644
@@ -9559,6 +10468,214 @@ index 0000000..bd7c0ae
 +  end
 +end
 +
+diff --git a/scripts/recomp/rgon/api_weapons.lua b/scripts/recomp/rgon/api_weapons.lua
+new file mode 100644
+index 0000000..2f9a1a7
+--- /dev/null
++++ b/scripts/recomp/rgon/api_weapons.lua
+@@ -0,0 +1,202 @@
++-- api_weapons.lua -- the weapon, laser and knife callbacks (worker cb-e). Each is a hook on a game function
++-- (tools/hook_table.py rows 272-281, hook_slots.lua); a handler reads the call's arguments off the guest
++-- stack as api_hooks.lua does: [esp] is the return address, [esp+4] the first stack argument, `self` the object.
++--   1098 MC_POST_TRIGGER_WEAPON_FIRED   Weapon::TriggerTearFired(const Vector& pos, int amount), ret 8
++--   1105 MC_POST_WEAPON_FIRE            Weapon::Fire(const Vector& pos, bool shooting, bool interpolated), ret 0xc
++--   1248 MC_PRE_LASER_COLLISION         two instruction hooks in Entity_Laser::damage_entities
++--   1249 MC_POST_LASER_COLLISION        Entity_Laser::DoDamage(Entity*), ret 4
++--   1254 MC_POST_FIRE_BONE_CLUB         Entity_Player::FireBoneClub, ret 0x10: answers the knife
++--   1257 MC_POST_FIRE_KNIFE             Entity_Player::FireKnife (slot 68): answers the knife
++--   1258 MC_POST_FIRE_SWORD             Weapon::FireSword, ret 0x18: answers the knife
++--   1261/1262 MC_POST_FAMILIAR_FIRE_BRIMSTONE / _TECH_LASER: the familiar's functions answer the laser
++--   1036/1037 MC_PRE/POST_BRIMSTONE_SNEEZE  Weapon_Brimstone::do_baby_brimstone_burst(Vector*, Vector* dir, int), ret 0xc,
++--                                       damageScale in xmm3
++local T = ...
++local B, R, wrap, listening = T.B, T.R, T.wrap, T.listening
++local r32, ri32, rf32, log = B.r32, B.ri32, B.rf32, B.log
++local M = ModCallbacks
++local mathtype = math.type
++local function run(...) return T.run(...) end
++
++local SLOTS
++do
++  local chunk = B.load("hook_slots.lua")
++  if not chunk then return end
++  SLOTS = chunk()
++end
++if B.HOOKS < 282 then log("api_weapons: this engine has " .. B.HOOKS .. " hook slots; the callbacks here need a newer one") return end
++
++local VT = T.VTABLE
++if not VT then log("api_weapons: api_hooks.lua's class table is missing") return end
++local E_VARIANT = 0x2c
++local W_OWNER, W_TYPE = 4, 0x30
++
++local told = {}
++local function wrong(what, a)
++  if told[what] then return end
++  told[what] = true
++  log(string.format("api_weapons: %s was handed 0x%08x, which is not what it should be; the call goes on unwatched", what, a))
++end
++local function vt_of(a)
++  if mathtype(a) ~= "integer" or a < 0x1000 then return nil end
++  local ok, v = pcall(r32, a)
++  return ok and v or nil
++end
++-- a Lua object of class `cls` for the entity at `a` (nil for 0), or false when it is not one
++local function as(cls, a, what)
++  if a == 0 then return nil end
++  if vt_of(a) == VT[cls] then return wrap(cls, a) end
++  wrong(what, a)
++  return false
++end
++local ANY = {}
++for _, v in pairs(VT) do ANY[v] = true end
++local function any_entity(a, what)
++  if a == 0 then return nil end
++  if ANY[vt_of(a)] then return wrap("Entity", a) end
++  wrong(what, a)
++  return false
++end
++local function vec_at(a) return Vector(rf32(a), rf32(a + 4)) end
++local function bool_at(a) return (r32(a) & 0xff) ~= 0 end
++
++local function slot_of(name)
++  local s = SLOTS[name]
++  if type(s) ~= "table" then log("api_weapons: no hook slot for " .. name) return nil end
++  return s[1], s[3]
++end
++-- callbacks answering a laser or knife the function returned
++local function answers(name, id, cls, param_of)
++  if not id then return end
++  local slot = slot_of(name)
++  if not slot then return end
++  T.define(slot, { id }, nil, function(self, esp, eax)
++    if eax == 0 then return end
++    local param = param_of and param_of(self) or nil
++    if param_of and not T.wants(id, param) then return end
++    local e = as(cls, eax, name .. " (what it answered)")
++    if e then run(id, param, e) end
++  end)
++end
++
++answers("Entity_Player::FireBoneClub", M.MC_POST_FIRE_BONE_CLUB, "EntityKnife")
++answers("Entity_Player::FireKnife", M.MC_POST_FIRE_KNIFE, "EntityKnife")
++answers("Weapon::FireSword", M.MC_POST_FIRE_SWORD, "EntityKnife")
++local function fam_variant(self)
++  if vt_of(self) ~= VT.EntityFamiliar then return nil end
++  return r32(self + E_VARIANT)
++end
++local function fam_answers(name, id)
++  if not id then return end
++  local slot = slot_of(name)
++  if not slot then return end
++  T.define(slot, { id }, nil, function(self, esp, eax)
++    local v = fam_variant(self)
++    if eax == 0 or not v or not T.wants(id, v) then return end
++    local l = as("EntityLaser", eax, name .. " (what it answered)")
++    if l then run(id, v, l) end
++  end)
++end
++fam_answers("Entity_Familiar::FireBrimstone", M.MC_POST_FAMILIAR_FIRE_BRIMSTONE)
++fam_answers("Entity_Familiar::FireTechLaser", M.MC_POST_FAMILIAR_FIRE_TECH_LASER)
++
++-- the Weapon object a callback gets
++local function weapon_obj(a)
++  if T.Weapon and a ~= 0 then return T.Weapon.new(a) end
++end
++
++-- MC_POST_TRIGGER_WEAPON_FIRED (1098): (direction, fireAmount, owner, weapon), param = the weapon type
++do
++  local id = M.MC_POST_TRIGGER_WEAPON_FIRED
++  local slot = id and slot_of("Weapon::TriggerTearFired")
++  if slot then
++    T.define(slot, { id }, function(self, esp)
++      local wt = ri32(self + W_TYPE)
++      if not T.wants(id, wt) then return end
++      return { wt, vec_at(r32(esp + 4)), ri32(esp + 8) }
++    end, function(self, esp, eax, k)
++      if not k then return end
++      local owner = any_entity(r32(self + W_OWNER), "Weapon::TriggerTearFired (the owner)")
++      run(id, k[1], k[2], k[3], owner or nil, weapon_obj(self))
++    end)
++  end
++end
++
++-- MC_POST_WEAPON_FIRE (1105): (weapon, direction, isShooting, isInterpolated), param = the weapon type
++do
++  local id = M.MC_POST_WEAPON_FIRE
++  local slot = id and slot_of("Weapon::Fire")
++  if slot then
++    T.define(slot, { id }, function(self, esp)
++      local wt = ri32(self + W_TYPE)
++      if not T.wants(id, wt) then return end
++      return { wt, vec_at(r32(esp + 4)), bool_at(esp + 8), bool_at(esp + 12) }
++    end, function(self, esp, eax, k)
++      if not k then return end
++      run(id, k[1], weapon_obj(self), k[2], k[3], k[4])
++    end)
++  end
++end
++
++-- MC_PRE_BRIMSTONE_SNEEZE (1036) / MC_POST_BRIMSTONE_SNEEZE (1037): (source, direction, damageScale)
++do
++  local PRE, POST = M.MC_PRE_BRIMSTONE_SNEEZE, M.MC_POST_BRIMSTONE_SNEEZE
++  local slot = PRE and POST and slot_of("Weapon_Brimstone::do_baby_brimstone_burst")
++  if slot and B.xmm then
++    T.define(slot, { PRE, POST }, function(self, esp)
++      if not (listening[PRE] or listening[POST]) then return end
++      local owner = any_entity(r32(self + W_OWNER), "Weapon_Brimstone::do_baby_brimstone_burst (the owner)")
++      local at = r32(esp + 8)
++      if owner == false or at == 0 then return end
++      local k = { owner, vec_at(at), B.xmm(3) }
++      if listening[PRE] then run(PRE, nil, k[1], k[2], k[3]) end
++      return k
++    end, function(self, esp, eax, k)
++      if k and listening[POST] then run(POST, nil, k[1], k[2], k[3]) end
++    end)
++  end
++end
++
++-- MC_POST_LASER_COLLISION (1249): (laser, collider), param = the laser variant, after Entity_Laser::DoDamage
++do
++  local id = M.MC_POST_LASER_COLLISION
++  local slot = id and slot_of("Entity_Laser::DoDamage")
++  if slot then
++    T.define(slot, { id }, function(self, esp)
++      local v = r32(self + E_VARIANT)
++      if vt_of(self) ~= VT.EntityLaser or not T.wants(id, v) then return end
++      return { v, r32(esp + 4) }
++    end, function(self, esp, eax, k)
++      if not k then return end
++      local laser = as("EntityLaser", self, "Entity_Laser::DoDamage")
++      local ent = any_entity(k[2], "Entity_Laser::DoDamage (the entity)")
++      if laser and ent then run(id, k[1], laser, ent) end
++    end)
++  end
++end
++
++-- MC_PRE_LASER_COLLISION (1248): (laser, collider), param = the laser variant -> true: the laser ignores the entity.
++-- Entity_Laser::damage_entities 0x00971810: the sample lasers at 0x009720b5 (entity = eax, laser [ebp-0x7c]; ignoring
++-- goes to 0x0097207c, the next sample), the straight ones at 0x00973201 (laser edi, entity esi; ignoring goes to 0x00973651).
++if B.INSN and B.reg and M.MC_PRE_LASER_COLLISION then
++  local id, reg = M.MC_PRE_LASER_COLLISION, B.reg
++  local function point(name, laser_of, entity_of, skip_to)
++    local slot, va = slot_of(name)
++    if not slot then return end
++    T.define(slot, { id }, function(at_va, esp, ebp)
++      if at_va ~= va then wrong(name .. " (its address)", at_va) return end
++      local la = laser_of(ebp)
++      local v = vt_of(la) == VT.EntityLaser and r32(la + E_VARIANT) or nil
++      if not v or not T.wants(id, v) then return end
++      local laser = as("EntityLaser", la, name)
++      local ent = any_entity(entity_of(ebp), name .. " (the collider)")
++      if not laser or not ent then return end
++      if not told[name .. v] then told[name .. v] = true log("api_weapons: " .. name .. " ran its first callback, laser variant " .. v) end
++      if run(id, v, laser, ent) == true then return skip_to end
++    end, nil)
++  end
++  point("Entity_Laser::damage_entities@PreSampleCollision", function(ebp) return r32(ebp - 0x7c) end,
++    function() return reg("eax") end, 0x0097207c)
++  point("Entity_Laser::damage_entities@PreCollision", function() return reg("edi") end,
++    function() return reg("esi") end, 0x00973651)
++end
 diff --git a/scripts/recomp/rgon/gate_names.lua b/scripts/recomp/rgon/gate_names.lua
 index 3b6d51e..3d51ce3 100644
 --- a/scripts/recomp/rgon/gate_names.lua
@@ -10018,10 +11135,10 @@ index 3b6d51e..3d51ce3 100644
  ]],
  }
 diff --git a/scripts/recomp/rgon/hook_slots.lua b/scripts/recomp/rgon/hook_slots.lua
-index 2187a0e..3600114 100644
+index 2187a0e..20e98e5 100644
 --- a/scripts/recomp/rgon/hook_slots.lua
 +++ b/scripts/recomp/rgon/hook_slots.lua
-@@ -100,6 +100,33 @@ return {
+@@ -100,6 +100,42 @@ return {
    ["Room::RenderEntityPass_004199d0"] = { 98, 0x8 },
    ["Room::GetShopItemPrice"] = { 99, 0x10 },
    ["Menu_Character::UpdateRotations"] = { 169, 0x0 },
@@ -10052,10 +11169,34 @@ index 2187a0e..3600114 100644
 +  ["GridEntity::hurt_func"] = { 214, 0x14 },
 +  ["Entity_Pickup::CanReroll"] = { 221, 0x0 },
 +  ["Room::GetItemPool"] = { 222, 0x0 },
++  ["PlayerHUD::RenderHearts"] = { 224, 0x18 },
++  ["CompletionWidget::Render"] = { 225, 0x8 },
++  ["HUD::ShowFortuneText"] = { 226, 0x4 },
++  ["HistoryHUD::Render"] = { 227, 0x8 },
++  ["HistoryHUD::Recompute"] = { 228, 0x8 },
++  ["Manager::RecordPlayerCompletion"] = { 229, 0x4 },
++  ["PersistentGameData::IncreaseEventCounter"] = { 230, 0x8 },
++  ["HUD_Message::Show"] = { 231, 0x10 },
++  ["HUD::ShowStackedItemTextCustomUTF16"] = { 232, 0x10 },
    ["Entity::Init"] = { 100, 0x10 },
    ["Entity_Player::Init"] = { 101, 0x10 },
    ["Entity_NPC::Init"] = { 102, 0x10 },
-@@ -170,4 +197,30 @@ return {
+@@ -159,6 +195,14 @@ return {
+   ["Entity_Knife::TakeDamage"] = "Entity::TakeDamage",
+   ["Entity_Projectile::TakeDamage"] = "Entity::TakeDamage",
+   ["Entity_Laser::HandleCollision"] = "Entity_Effect::HandleCollision",
++  ["Weapon::Fire"] = { 272, 0xc },
++  ["Weapon::TriggerTearFired"] = { 273, 0x8 },
++  ["Entity_Laser::DoDamage"] = { 274, 0x4 },
++  ["Entity_Player::FireBoneClub"] = { 275, 0x10 },
++  ["Weapon::FireSword"] = { 276, 0x18 },
++  ["Entity_Familiar::FireBrimstone"] = { 277, 0x8 },
++  ["Entity_Familiar::FireTechLaser"] = { 278, 0x4 },
++  ["Weapon_Brimstone::do_baby_brimstone_burst"] = { 279, 0xc },
+   -- instruction hooks (round 110): slot, false, the instruction's address
+   ["Entity_Player::EvaluateItems@TearsUp"] = { 160, false, 0x00764864 },
+   ["Entity_Player::EvaluateItems@FlatTears"] = { 161, false, 0x00764f2e },
+@@ -170,4 +214,32 @@ return {
    ["Entity_Tear::Collision_00676be0@ParasiteSplit"] = { 167, false, 0x006770c2 },
    ["Entity_Tear::Collision_00676be0@BoneSplit"] = { 168, false, 0x00677498 },
    ["ModManager::RenderCharacterPortrait_008f8860@Frame"] = { 170, false, 0x008f89c4 },
@@ -10085,6 +11226,8 @@ index 2187a0e..3600114 100644
 +  ["Entity::GridCollision@Walls"] = { 219, false, 0x006aa85e },
 +  ["Entity_Player::CollideWithGrid@Cell"] = { 220, false, 0x006ab77b },
 +  ["Entity_Knife::update_bone_swing@HitboxInit"] = { 223, false, 0x0096a936 },
++  ["Entity_Laser::damage_entities@PreSampleCollision"] = { 280, false, 0x009720b5 },
++  ["Entity_Laser::damage_entities@PreCollision"] = { 281, false, 0x00973201 },
  }
 diff --git a/scripts/recomp/rgon/lab_ambush_test.lua b/scripts/recomp/rgon/lab_ambush_test.lua
 new file mode 100644
@@ -12230,12 +13373,624 @@ index 0000000..b04e2f0
 +  local ok, err = pcall(f)
 +  if not ok then check(false, "step " .. i .. " raised: " .. tostring(err)) end
 +end)
+diff --git a/scripts/recomp/rgon/lab_cb_d.lua b/scripts/recomp/rgon/lab_cb_d.lua
+new file mode 100644
+index 0000000..40e1098
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_cb_d.lua
+@@ -0,0 +1,229 @@
++-- lab_cb_d.lua (development only; ISAAC_RGON_LAB=lab_cb_d.lua, worker cb-d)
++-- Fires the HUD / completion / text callbacks (hook slots 224-232) and checks their arguments and what an answer does.
++-- Prints "lab_cb_d: DONE n PASS m FAIL". Steps run one after another on MC_POST_UPDATE.
++local T = ...
++local B = T.B
++local M = ModCallbacks
++local mod = RegisterMod("rgon lab cb-d", 1)
++local pass, fail = 0, 0
++local function say(s) B.log("lab_cb_d: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_cb_d: %s %s", ok and "PASS" or "FAIL", what))
++end
++local rec, beh = {}, {}
++local function count(n) return #(rec[n] or {}) end
++local function last(n) local l = rec[n] return l and l[#l] end
++local function reset(n) rec[n] = {} end
++local function tos(v)
++  if type(v) == "userdata" then
++    local ok, t = pcall(function()
++      if v.X ~= nil then return string.format("vec:%.0f,%.0f", v.X, v.Y) end
++      if v.GetFilename then return "sprite:" .. v:GetFilename() end
++      if v.GetPlayerType then return "player:" .. v:GetPlayerType() end
++      return "userdata"
++    end)
++    return ok and t or "userdata"
++  end
++  if type(v) == "table" then return "table:" .. tostring(v.__type or v.__name) end
++  return tostring(v)
++end
++local NAMES = {
++  "MC_PRE_PLAYERHUD_RENDER_HEARTS", "MC_POST_PLAYERHUD_RENDER_HEARTS", "MC_PRE_COMPLETION_MARKS_RENDER", "MC_POST_COMPLETION_MARKS_RENDER",
++  "MC_PRE_FORTUNE_DISPLAY", "MC_PRE_HISTORYHUD_RENDER", "MC_POST_HISTORYHUD_RENDER", "MC_POST_HISTORYHUD_RECOMPUTE",
++  "MC_PRE_COMPLETION_EVENT", "MC_POST_COMPLETION_EVENT", "MC_COMPLETION_MARK_GET", "MC_POST_COMPLETION_MARK_GET", "MC_PRE_ITEM_TEXT_DISPLAY",
++}
++for _, n in ipairs(NAMES) do
++  local id = M[n]
++  if not id then
++    check(false, n .. " has a ModCallbacks number")
++  else
++    mod:AddCallback(id, function(_, ...)
++      local a = {}
++      for i = 1, select("#", ...) do a[#a + 1] = tos((select(i, ...))) end
++      local l = rec[n] or {}
++      rec[n] = l
++      local r = { n = select("#", ...), ... }
++      r.text = table.concat(a, ",")
++      l[#l + 1] = r
++      if #l <= 3 then say(string.format("%s #%d (%s)", n, #l, r.text)) end
++      local f = beh[n]
++      if f then return f(...) end
++    end)
++  end
++end
++
++local game = Game()
++local function pl() return Isaac.GetPlayer(0) end
++local base = {}
++local steps = {}
++local function step(f) steps[#steps + 1] = f end
++local waiting, wait_left, wait_what, wait_cond
++local function wait(what, frames, cond) waiting, wait_left, wait_what, wait_cond = true, frames, what, cond end
++
++-- 1. the hearts, every frame
++step(function()
++  wait("hearts callbacks", 60, function() return count("MC_PRE_PLAYERHUD_RENDER_HEARTS") > 0 and count("MC_POST_PLAYERHUD_RENDER_HEARTS") > 0 end)
++end)
++step(function()
++  local r = last("MC_PRE_PLAYERHUD_RENDER_HEARTS")
++  check(r ~= nil and r.n == 5, "PRE hearts: five arguments")
++  if r then
++    check(type(r[1]) == "userdata" and r[1].X ~= nil, "PRE hearts: offset is a Vector (" .. r.text .. ")")
++    check(type(r[2]) == "userdata" and tostring(r.text):find("sprite:", 1, true) ~= nil, "PRE hearts: a Sprite")
++    check(type(r[3]) == "userdata" and r[3].X > 0 and r[3].Y > 0, "PRE hearts: position is on screen")
++    check(type(r[4]) == "number" and r[4] > 0, "PRE hearts: scale is " .. tostring(r[4]))
++    check(type(r[5]) == "userdata" and r[5]:GetPlayerType() == pl():GetPlayerType(), "PRE hearts: the player")
++  end
++  local pr = last("MC_POST_PLAYERHUD_RENDER_HEARTS")
++  check(pr ~= nil and pr.n == 5, "POST hearts: five arguments")
++  base.pre, base.post = count("MC_PRE_PLAYERHUD_RENDER_HEARTS"), count("MC_POST_PLAYERHUD_RENDER_HEARTS")
++  beh.MC_PRE_PLAYERHUD_RENDER_HEARTS = function() return true end
++  wait("render frames", 20, function() return false end)
++end)
++step(function()
++  local pre, post = count("MC_PRE_PLAYERHUD_RENDER_HEARTS"), count("MC_POST_PLAYERHUD_RENDER_HEARTS")
++  check(pre > base.pre, "PRE hearts keeps firing while it cancels")
++  check(post == base.post, "POST hearts does not fire while PRE cancels (" .. base.post .. " -> " .. post .. ")")
++  beh.MC_PRE_PLAYERHUD_RENDER_HEARTS = nil
++end)
++
++-- 2. the history HUD (drawn only with the extra HUD on: Options.ExtraHUDStyle above 0)
++step(function()
++  base.extra = Options.ExtraHUDStyle
++  Options.ExtraHUDStyle = 1
++  wait("history render", 60, function() return count("MC_PRE_HISTORYHUD_RENDER") > 0 and count("MC_POST_HISTORYHUD_RENDER") > 0 end)
++end)
++step(function()
++  local r = last("MC_PRE_HISTORYHUD_RENDER")
++  check(r ~= nil and r.n == 3 and type(r[1]) == "table" and r[2].X ~= nil and type(r[3]) == "boolean", "PRE history render: (HistoryHUD, Vector, bool) (" .. (r and r.text or "none") .. ")")
++  base.hpre, base.hpost = count("MC_PRE_HISTORYHUD_RENDER"), count("MC_POST_HISTORYHUD_RENDER")
++  beh.MC_PRE_HISTORYHUD_RENDER = function() return false end
++  wait("render frames", 20, function() return false end)
++end)
++step(function()
++  check(count("MC_PRE_HISTORYHUD_RENDER") > base.hpre, "PRE history keeps firing while it cancels")
++  check(count("MC_POST_HISTORYHUD_RENDER") == base.hpost, "POST history does not fire while PRE cancels")
++  beh.MC_PRE_HISTORYHUD_RENDER = nil
++  reset("MC_POST_HISTORYHUD_RECOMPUTE")
++  -- the game's own call (immediate) on the history HUD of the HUD object, for the first player
++  local hud = B.ptr(game:GetHUD())
++  B.call(0x0083b280, hud + 0x5c54, 0, 1)
++  local r = last("MC_POST_HISTORYHUD_RECOMPUTE")
++  check(r ~= nil and r.n == 2 and type(r[1]) == "table" and r[2] == 0, "POST history recompute: (HistoryHUD, index 0) (" .. (r and r.text or "none") .. ")")
++  local n = count("MC_POST_HISTORYHUD_RECOMPUTE")
++  B.call(0x0083b280, B.ptr(game:GetHUD()) + 0x5c54, 0, 0)
++  check(count("MC_POST_HISTORYHUD_RECOMPUTE") == n, "recompute that is not immediate: no callback")
++  Options.ExtraHUDStyle = base.extra
++end)
++
++-- 3. fortune text and item text, through the game's own Lua functions
++step(function()
++  local hud = game:GetHUD()
++  reset("MC_PRE_FORTUNE_DISPLAY")
++  local ok, err = pcall(function() hud:ShowFortuneText("lab fortune", "second line") end)
++  check(ok, "HUD:ShowFortuneText runs (" .. tostring(err) .. ")")
++  check(count("MC_PRE_FORTUNE_DISPLAY") == 1, "MC_PRE_FORTUNE_DISPLAY fired once by it (" .. count("MC_PRE_FORTUNE_DISPLAY") .. ")")
++  beh.MC_PRE_FORTUNE_DISPLAY = function() return false end
++  pcall(function() hud:ShowFortuneText("cancelled", "line") end)
++  check(count("MC_PRE_FORTUNE_DISPLAY") == 2, "MC_PRE_FORTUNE_DISPLAY fired for a second one that it cancels")
++  beh.MC_PRE_FORTUNE_DISPLAY = nil
++  reset("MC_PRE_ITEM_TEXT_DISPLAY")
++  local ok2, err2 = pcall(function() hud:ShowItemText("Lab Title", "Lab Subtitle") end)
++  check(ok2, "HUD:ShowItemText(title, subtitle) runs (" .. tostring(err2) .. ")")
++  local r = last("MC_PRE_ITEM_TEXT_DISPLAY")
++  check(r ~= nil and r[1] == "Lab Title" and r[2] == "Lab Subtitle", "MC_PRE_ITEM_TEXT_DISPLAY title and subtitle read back (" .. (r and r.text or "none") .. ")")
++  check(r ~= nil and type(r[3]) == "boolean" and type(r[4]) == "boolean", "MC_PRE_ITEM_TEXT_DISPLAY sticky and curse are booleans")
++end)
++step(function()
++  -- a collectible's name goes through the UTF-16 path
++  reset("MC_PRE_ITEM_TEXT_DISPLAY")
++  local cfg = Isaac.GetItemConfig():GetCollectible(CollectibleType.COLLECTIBLE_SAD_ONION)
++  local ok, err = pcall(function() game:GetHUD():ShowItemText(pl(), cfg) end)
++  check(ok, "HUD:ShowItemText(player, item) runs (" .. tostring(err) .. ")")
++  local r = last("MC_PRE_ITEM_TEXT_DISPLAY")
++  check(r ~= nil and r[1] == "The Sad Onion", "MC_PRE_ITEM_TEXT_DISPLAY item name is The Sad Onion (" .. (r and r.text or "none") .. ")")
++end)
++
++-- 4. completion events and marks
++step(function()
++  local pgd = Isaac.GetPersistentGameData()
++  local c = EventCounter.PROGRESSION_KILL_ISAAC_WITH_ISAAC
++  local before = pgd:GetEventCounter(c)
++  reset("MC_COMPLETION_MARK_GET") reset("MC_POST_COMPLETION_MARK_GET")
++  pgd:IncreaseEventCounter(c, 1)
++  local r = last("MC_COMPLETION_MARK_GET")
++  check(r ~= nil and r[1] == CompletionType.ISAAC and r[2] == 0, "MC_COMPLETION_MARK_GET (ISAAC mark, Isaac) (" .. (r and r.text or "none") .. ")")
++  check(count("MC_POST_COMPLETION_MARK_GET") == 1 and pgd:GetEventCounter(c) == before + 1, "POST mark get fired and the counter rose")
++  beh.MC_COMPLETION_MARK_GET = function() return false end
++  local mid = pgd:GetEventCounter(c)
++  pgd:IncreaseEventCounter(c, 1)
++  check(pgd:GetEventCounter(c) == mid, "MC_COMPLETION_MARK_GET false: the counter did not rise")
++  beh.MC_COMPLETION_MARK_GET = nil
++  -- a counter that is no mark does not fire it
++  reset("MC_COMPLETION_MARK_GET")
++  pgd:IncreaseEventCounter(EventCounter.MOM_KILLS, 1)
++  check(count("MC_COMPLETION_MARK_GET") == 0, "a counter that is no completion mark does not fire MC_COMPLETION_MARK_GET")
++end)
++step(function()
++  reset("MC_PRE_COMPLETION_EVENT") reset("MC_POST_COMPLETION_EVENT")
++  B.call(0x0095a7b0, 0, 1)
++  local r = last("MC_PRE_COMPLETION_EVENT")
++  check(r ~= nil and r[1] == 1, "MC_PRE_COMPLETION_EVENT (event 1) (" .. (r and r.text or "none") .. ")")
++  check(count("MC_POST_COMPLETION_EVENT") == 1, "MC_POST_COMPLETION_EVENT fired after it")
++  beh.MC_PRE_COMPLETION_EVENT = function() return false end
++  B.call(0x0095a7b0, 0, 2)
++  check(count("MC_PRE_COMPLETION_EVENT") == 2 and count("MC_POST_COMPLETION_EVENT") == 1, "MC_PRE_COMPLETION_EVENT false: no POST")
++  beh.MC_PRE_COMPLETION_EVENT = nil
++end)
++
++-- 5. the completion widget, on the pause screen (Escape is injected). The game does not update while paused, so the render callback
++-- reads the result and prints the DONE line itself (the pause screen then stays up until the run ends).
++step(function()
++  base.pause = true
++  base.pause_render = true
++  reset("MC_PRE_COMPLETION_MARKS_RENDER") reset("MC_POST_COMPLETION_MARKS_RENDER")
++  wait("completion widget render", 600, function() return false end)
++end)
++mod:AddCallback(M.MC_POST_RENDER, function()
++  if not base.pause_render or count("MC_PRE_COMPLETION_MARKS_RENDER") == 0 or count("MC_POST_COMPLETION_MARKS_RENDER") == 0 then return end
++  base.pause_render, base.pause = false, false
++  local r = last("MC_PRE_COMPLETION_MARKS_RENDER")
++  check(r.n == 4, "PRE completion marks render: four arguments (" .. r.text .. ")")
++  check(type(r[1]) == "userdata" and r.text:find("completion_widget", 1, true) ~= nil, "PRE completion marks: the widget's Sprite is completion_widget.anm2 (offset +4)")
++  check(r[4] == pl():GetPlayerType(), "PRE completion marks: the character id is the player's (" .. tostring(r[4]) .. ")")
++  check(r[2].X < 0, "PRE completion marks: the pause screen's position (" .. tostring(r[2].X) .. ")")
++  check(count("MC_POST_COMPLETION_MARKS_RENDER") > 0, "POST completion marks render fired")
++  B.log(string.format("lab_cb_d: DONE %d PASS %d FAIL", pass, fail))
++end)
++mod:AddCallback(M.MC_INPUT_ACTION, function(_, ent, hook, action)
++  if not base.pause or action ~= ButtonAction.ACTION_PAUSE then return end
++  if hook == InputHook.IS_ACTION_TRIGGERED or hook == InputHook.IS_ACTION_PRESSED then return true end
++end)
++
++local frame, i = 0, 0
++mod:AddCallback(M.MC_POST_UPDATE, function()
++  frame = frame + 1
++  if frame < 5 then return end
++  if waiting then
++    if wait_cond() then
++      waiting = false
++    else
++      wait_left = wait_left - 1
++      if wait_left <= 0 then
++        waiting = false
++        if wait_what ~= "render frames" then check(false, "timed out waiting for " .. wait_what) end
++      else
++        return
++      end
++    end
++  end
++  if frame % 3 ~= 0 then return end
++  i = i + 1
++  local f = steps[i]
++  if not f then
++    return
++  end
++  local ok, err = pcall(f)
++  if not ok then check(false, "step " .. i .. " raised: " .. tostring(err)) end
++end)
+diff --git a/scripts/recomp/rgon/lab_cb_e.lua b/scripts/recomp/rgon/lab_cb_e.lua
+new file mode 100644
+index 0000000..ce4d487
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_cb_e.lua
+@@ -0,0 +1,371 @@
++-- lab_cb_e.lua (development only; ISAAC_RGON_LAB=lab_cb_e.lua, worker cb-e)
++-- Fires the weapon / laser / knife callbacks with real items and checks the counts and arguments the game itself produces:
++-- 1105 and 1098 (tears), 1257 (Mom's Knife), 1258 (Spirit Sword), 1254 (bone club), 1248/1249 (laser collision; a true answer
++-- on 1248 stops 1249), 1036/1037 (Hemoptysis sneeze), 1261/1262 (familiar brimstone / tech laser).
++-- Prints "lab_cb_e: DONE n PASS m FAIL". Steps run one after another on MC_POST_UPDATE; a step that waits has a frame limit.
++local T = ...
++local B = T.B
++local M = ModCallbacks
++local mod = RegisterMod("rgon lab cb-e", 1)
++local pass, fail = 0, 0
++local function say(s) B.log("lab_cb_e: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_cb_e: %s %s", ok and "PASS" or "FAIL", what))
++end
++
++local rec, beh = {}, {}
++local function count(n) return #(rec[n] or {}) end
++local function last(n) local l = rec[n] return l and l[#l] end
++local function reset(n) rec[n] = {} end
++local function tos(v)
++  if type(v) == "userdata" then
++    local ok, t = pcall(function()
++      if v.Type ~= nil and v.Variant ~= nil and v.GetData then return "ent:" .. v.Type .. "." .. v.Variant end
++      if v.X ~= nil then return string.format("vec:%.2f,%.2f", v.X, v.Y) end
++      if v.GetWeaponType then return "weapon:" .. v:GetWeaponType() end
++      return "userdata"
++    end)
++    return ok and t or "userdata"
++  end
++  return tostring(v)
++end
++local NAMES = { "MC_POST_TRIGGER_WEAPON_FIRED", "MC_POST_WEAPON_FIRE", "MC_PRE_LASER_COLLISION", "MC_POST_LASER_COLLISION",
++  "MC_POST_FIRE_BONE_CLUB", "MC_POST_FIRE_KNIFE", "MC_POST_FIRE_SWORD", "MC_POST_FAMILIAR_FIRE_BRIMSTONE",
++  "MC_POST_FAMILIAR_FIRE_TECH_LASER", "MC_PRE_BRIMSTONE_SNEEZE", "MC_POST_BRIMSTONE_SNEEZE" }
++for _, n in ipairs(NAMES) do
++  local id = M[n]
++  if not id then
++    check(false, n .. " has a ModCallbacks number")
++  else
++    mod:AddCallback(id, function(_, ...)
++      local a = {}
++      for i = 1, select("#", ...) do a[#a + 1] = tos((select(i, ...))) end
++      local l = rec[n] or {}
++      rec[n] = l
++      local r = { n = select("#", ...), ... }
++      r.text = table.concat(a, ",")
++      l[#l + 1] = r
++      if #l <= 3 then say(string.format("%s #%d (%s)", n, #l, r.text)) end
++      local f = beh[n]
++      if f then return f(...) end
++    end)
++  end
++end
++
++local game = Game()
++local function pl() return Isaac.GetPlayer(0) end
++local base = {}
++local steps = {}
++local function step(f) steps[#steps + 1] = f end
++local waiting, wait_left, wait_what, wait_cond
++local function wait(what, frames, cond) waiting, wait_left, wait_what, wait_cond = true, frames, what, cond end
++local function clear_all() for _, n in ipairs(NAMES) do reset(n) beh[n] = nil end end
++local function item(name) return CollectibleType[name] end
++local function give(name)
++  local id = item(name)
++  if not id then check(false, "CollectibleType." .. name .. " exists") return false end
++  pl():AddCollectible(id, 0, false)
++  return true
++end
++local function take(name)
++  local id = item(name)
++  if id and pl():HasCollectible(id) then pl():RemoveCollectible(id) end
++  pl():AddCacheFlags(CacheFlag.CACHE_ALL) pl():EvaluateItems()
++end
++local function shoot(on) base.shoot = on end
++local function enemy()
++  for _, e in ipairs(Isaac.GetRoomEntities()) do
++    if e:IsActiveEnemy(false) then e:Remove() end
++  end
++  local e = Isaac.Spawn(EntityType.ENTITY_MONSTRO, 0, 0, pl().Position + Vector(160, 0), Vector(0, 0), nil)
++  e:AddEntityFlags(EntityFlag.FLAG_FREEZE)
++end
++
++-- 0. tears: POST_WEAPON_FIRE and POST_TRIGGER_WEAPON_FIRED
++step(function()
++  clear_all()
++  Isaac.ExecuteCommand("debug 3")
++  shoot(true)
++  wait("tears fired", 120, function() return count("MC_POST_TRIGGER_WEAPON_FIRED") > 0 and count("MC_POST_WEAPON_FIRE") > 0 end)
++end)
++step(function()
++  shoot(false)
++  local f, t = last("MC_POST_WEAPON_FIRE"), last("MC_POST_TRIGGER_WEAPON_FIRED")
++  check(f ~= nil and f.n == 4 and f[2].X ~= nil, "MC_POST_WEAPON_FIRE (weapon, dir, shooting, interpolated): " .. tostring(f and f.text))
++  check(f ~= nil and type(f[3]) == "boolean" and type(f[4]) == "boolean", "its last two arguments are booleans")
++  check(f ~= nil and f[1]:GetWeaponType() == WeaponType.WEAPON_TEARS, "the Weapon handed over is a tears weapon")
++  check(f ~= nil and f[1]:GetOwner().Type == 1, "the Weapon's owner is the player")
++  check(t ~= nil and t.n == 4 and t[2] == 1 and t[3].Type == 1, "MC_POST_TRIGGER_WEAPON_FIRED (dir, amount 1, player, weapon): " .. tostring(t and t.text))
++  check(t ~= nil and t[1].X ~= nil and (t[1].X ~= 0 or t[1].Y ~= 0), "its direction is a non-zero Vector (the aim)")
++  -- a filter on the weapon type
++  local hit_other = 0
++  local m2 = RegisterMod("rgon lab cb-e param", 1)
++  m2:AddCallback(M.MC_POST_WEAPON_FIRE, function() hit_other = hit_other + 1 end, WeaponType.WEAPON_LASER)
++  reset("MC_POST_WEAPON_FIRE")
++  shoot(true)
++  wait("frames", 25, function() return false end)
++  base.m2 = m2 base.hit_other = function() return hit_other end
++end)
++step(function()
++  shoot(false)
++  check(count("MC_POST_WEAPON_FIRE") > 0 and base.hit_other() == 0, "a WEAPON_LASER filter does not hear tears: " .. count("MC_POST_WEAPON_FIRE") .. " tears fires, " .. base.hit_other() .. " laser hears")
++end)
++
++-- 1. Mom's Knife -> POST_FIRE_KNIFE
++step(function()
++  clear_all()
++  if give("COLLECTIBLE_MOMS_KNIFE") then
++    shoot(true)
++    wait("knife fired", 150, function() return count("MC_POST_FIRE_KNIFE") > 0 end)
++  end
++end)
++step(function()
++  shoot(false)
++  local k = last("MC_POST_FIRE_KNIFE")
++  check(k ~= nil and k.n == 1 and k[1].Type == 8, "MC_POST_FIRE_KNIFE gets an EntityKnife: " .. tostring(k and k.text))
++  take("COLLECTIBLE_MOMS_KNIFE")
++end)
++
++-- 2. Spirit Sword -> POST_FIRE_SWORD
++step(function()
++  clear_all()
++  if give("COLLECTIBLE_SPIRIT_SWORD") then
++    shoot(true)
++    wait("sword swung", 150, function() return count("MC_POST_FIRE_SWORD") > 0 end)
++  end
++end)
++step(function()
++  shoot(false)
++  local k = last("MC_POST_FIRE_SWORD")
++  check(k ~= nil and k.n == 1 and k[1].Type == 8, "MC_POST_FIRE_SWORD gets an EntityKnife: " .. tostring(k and k.text))
++  take("COLLECTIBLE_SPIRIT_SWORD")
++end)
++
++-- 3. a straight laser (Technology) hits an enemy: PRE and POST_LASER_COLLISION, and a true answer stops both
++step(function()
++  clear_all()
++  enemy()
++  if give("COLLECTIBLE_TECHNOLOGY") then
++    shoot(true)
++    wait("tech laser hits", 200, function() return count("MC_POST_LASER_COLLISION") > 0 end)
++  end
++end)
++step(function()
++  shoot(false)
++  local a, b = last("MC_PRE_LASER_COLLISION"), last("MC_POST_LASER_COLLISION")
++  check(count("MC_PRE_LASER_COLLISION") > 0, "MC_PRE_LASER_COLLISION fired (straight laser): " .. count("MC_PRE_LASER_COLLISION"))
++  check(a ~= nil and a.n == 2 and a[1].Type == 7 and a[2].Type ~= nil, "PRE gets (laser, collider): " .. tostring(a and a.text))
++  check(b ~= nil and b.n == 2 and b[1].Type == 7, "POST gets (laser, collider): " .. tostring(b and b.text))
++  check(count("MC_PRE_LASER_COLLISION") >= count("MC_POST_LASER_COLLISION"), "PRE runs at least as often as POST: " .. count("MC_PRE_LASER_COLLISION") .. " / " .. count("MC_POST_LASER_COLLISION"))
++  -- the answer true ignores the collision: POST stays quiet
++  beh.MC_PRE_LASER_COLLISION = function() return true end
++  reset("MC_POST_LASER_COLLISION") reset("MC_PRE_LASER_COLLISION")
++  shoot(true)
++  wait("frames", 60, function() return false end)
++end)
++step(function()
++  shoot(false)
++  check(count("MC_PRE_LASER_COLLISION") > 0 and count("MC_POST_LASER_COLLISION") == 0,
++    "answering true on PRE: " .. count("MC_PRE_LASER_COLLISION") .. " PRE, " .. count("MC_POST_LASER_COLLISION") .. " POST (none)")
++  beh.MC_PRE_LASER_COLLISION = nil
++  take("COLLECTIBLE_TECHNOLOGY")
++end)
++
++-- 3b. a straight-only laser (Technology 2)
++step(function()
++  clear_all()
++  enemy()
++  if give("COLLECTIBLE_TECHNOLOGY_2") then
++    shoot(true)
++    wait("tech 2 hits", 300, function() return count("MC_POST_LASER_COLLISION") > 0 end)
++  end
++end)
++step(function()
++  shoot(false)
++  local a = last("MC_PRE_LASER_COLLISION")
++  check(count("MC_PRE_LASER_COLLISION") > 0 and count("MC_POST_LASER_COLLISION") > 0, "tech 2: PRE " .. count("MC_PRE_LASER_COLLISION") .. ", POST " .. count("MC_POST_LASER_COLLISION"))
++  beh.MC_PRE_LASER_COLLISION = function() return true end
++  reset("MC_POST_LASER_COLLISION") reset("MC_PRE_LASER_COLLISION")
++  shoot(true)
++  wait("frames", 60, function() return false end)
++end)
++step(function()
++  shoot(false)
++  check(count("MC_PRE_LASER_COLLISION") > 0 and count("MC_POST_LASER_COLLISION") == 0,
++    "tech 2, answer true on PRE: " .. count("MC_PRE_LASER_COLLISION") .. " PRE, " .. count("MC_POST_LASER_COLLISION") .. " POST (none)")
++  beh.MC_PRE_LASER_COLLISION = nil
++  take("COLLECTIBLE_TECHNOLOGY_2")
++end)
++
++-- 3c. every laser variant shot at the enemy with EntityLaser.ShootAngle: which collision path each takes is in the log
++-- ("api_weapons: ... ran its first callback, laser variant N")
++step(function()
++  clear_all()
++  enemy()
++  base.shot = 0
++  for v = 1, 14 do
++    local ok, l = pcall(EntityLaser.ShootAngle, v, pl().Position, 0, 20, Vector(0, 0), pl())
++    if ok and l then base.shot = base.shot + 1 end
++  end
++  wait("frames", 40, function() return false end)
++end)
++step(function()
++  say("lasers shot: " .. tostring(base.shot) .. ", PRE " .. count("MC_PRE_LASER_COLLISION") .. " POST " .. count("MC_POST_LASER_COLLISION"))
++  check(base.shot > 0 and count("MC_PRE_LASER_COLLISION") > 0, "ShootAngle lasers of every variant: PRE " .. count("MC_PRE_LASER_COLLISION"))
++end)
++
++-- 4. Brimstone (a laser with a sample curve in vanilla) hits the enemy
++step(function()
++  clear_all()
++  enemy()
++  if give("COLLECTIBLE_BRIMSTONE") then
++    shoot(true)
++    wait("brimstone hits", 200, function() return count("MC_POST_LASER_COLLISION") > 0 end)
++  end
++end)
++step(function()
++  shoot(false)
++  local a, b = last("MC_PRE_LASER_COLLISION"), last("MC_POST_LASER_COLLISION")
++  check(count("MC_PRE_LASER_COLLISION") > 0 and count("MC_POST_LASER_COLLISION") > 0, "brimstone: PRE " .. count("MC_PRE_LASER_COLLISION") .. ", POST " .. count("MC_POST_LASER_COLLISION"))
++  check(a ~= nil and a[1].Type == 7, "brimstone PRE gets a laser: " .. tostring(a and a.text))
++  beh.MC_PRE_LASER_COLLISION = function() return true end
++  reset("MC_POST_LASER_COLLISION") reset("MC_PRE_LASER_COLLISION")
++  shoot(true)
++  wait("frames", 60, function() return false end)
++end)
++step(function()
++  shoot(false)
++  check(count("MC_PRE_LASER_COLLISION") > 0 and count("MC_POST_LASER_COLLISION") == 0,
++    "brimstone, answer true on PRE: " .. count("MC_PRE_LASER_COLLISION") .. " PRE, " .. count("MC_POST_LASER_COLLISION") .. " POST (none)")
++  beh.MC_PRE_LASER_COLLISION = nil
++  take("COLLECTIBLE_BRIMSTONE")
++end)
++
++-- 6. familiars: Incubus with Brimstone, Lil Brimstone, Incubus with Technology
++step(function()
++  clear_all()
++  local ok = give("COLLECTIBLE_LIL_BRIMSTONE")
++  if ok then
++    pl():AddCacheFlags(CacheFlag.CACHE_FAMILIARS) pl():EvaluateItems()
++    shoot(true)
++    wait("lil brimstone", 250, function() return count("MC_POST_FAMILIAR_FIRE_BRIMSTONE") > 0 end)
++  end
++end)
++step(function()
++  shoot(false)
++  local a = last("MC_POST_FAMILIAR_FIRE_BRIMSTONE")
++  check(a ~= nil and a.n == 1 and a[1].Type == 7, "MC_POST_FAMILIAR_FIRE_BRIMSTONE gets an EntityLaser: " .. tostring(a and a.text))
++  take("COLLECTIBLE_LIL_BRIMSTONE")
++end)
++step(function()
++  clear_all()
++  local a, b = give("COLLECTIBLE_ROBO_BABY_2"), true
++  if a and b then
++    local hits = 0
++    RegisterMod("rgon lab cb-e v53", 1):AddCallback(M.MC_POST_FAMILIAR_FIRE_TECH_LASER, function() hits = hits + 1 end, 53)
++    base.v53 = function() return hits end
++    pl():AddCacheFlags(CacheFlag.CACHE_FAMILIARS) pl():EvaluateItems()
++    shoot(true)
++    wait("robo-baby 2.0 tech laser", 400, function() return count("MC_POST_FAMILIAR_FIRE_TECH_LASER") > 0 end)
++  end
++end)
++step(function()
++  shoot(false)
++  local a = last("MC_POST_FAMILIAR_FIRE_TECH_LASER")
++  check(a ~= nil and a.n == 1 and a[1].Type == 7, "MC_POST_FAMILIAR_FIRE_TECH_LASER (Robo-Baby 2.0, variant 53) gets an EntityLaser: " .. tostring(a and a.text))
++  check(base.v53 and base.v53() > 0, "a filter on the familiar variant 53 (Robo-Baby 2.0) hears it: " .. tostring(base.v53 and base.v53()))
++  -- the straight laser path (Robo-Baby 2.0's laser takes it): a true answer on PRE stops the POST
++  clear_all()
++  beh.MC_PRE_LASER_COLLISION = function() return true end
++  shoot(true)
++  wait("frames", 300, function() return false end)
++end)
++step(function()
++  shoot(false)
++  check(count("MC_PRE_LASER_COLLISION") > 0 and count("MC_POST_LASER_COLLISION") == 0,
++    "Robo-Baby 2.0, answer true on PRE: " .. count("MC_PRE_LASER_COLLISION") .. " PRE, " .. count("MC_POST_LASER_COLLISION") .. " POST (none)")
++  beh.MC_PRE_LASER_COLLISION = nil
++  take("COLLECTIBLE_ROBO_BABY_2")
++end)
++
++-- 7. the bone club: The Forgotten's club
++step(function()
++  clear_all()
++  Isaac.ExecuteCommand("restart 16")
++  wait("restart", 120, function() return false end)
++end)
++step(function()
++  say("player type " .. tostring(pl():GetPlayerType()))
++  Isaac.ExecuteCommand("debug 3")
++  shoot(true)
++  wait("bone club", 200, function() return count("MC_POST_FIRE_BONE_CLUB") > 0 end)
++end)
++step(function()
++  shoot(false)
++  local a = last("MC_POST_FIRE_BONE_CLUB")
++  check(a ~= nil and a.n == 1 and a[1].Type == 8, "MC_POST_FIRE_BONE_CLUB gets an EntityKnife: " .. tostring(a and a.text))
++end)
++
++-- 5. the sneeze: Hemoptysis, then (Tainted) Azazel
++local function sneeze_check(label)
++  local a, b = last("MC_PRE_BRIMSTONE_SNEEZE"), last("MC_POST_BRIMSTONE_SNEEZE")
++  check(count("MC_PRE_BRIMSTONE_SNEEZE") > 0 and count("MC_PRE_BRIMSTONE_SNEEZE") == count("MC_POST_BRIMSTONE_SNEEZE"),
++    label .. ": PRE " .. count("MC_PRE_BRIMSTONE_SNEEZE") .. " = POST " .. count("MC_POST_BRIMSTONE_SNEEZE"))
++  check(a ~= nil and a.n == 3 and a[1].Type == 1 and a[2].X ~= nil and type(a[3]) == "number" and a[3] > 0,
++    label .. " PRE (source player, direction, damage scale): " .. tostring(a and a.text))
++  check(b ~= nil and a ~= nil and b.text == a.text, label .. " POST gets the same arguments")
++end
++for _, ty in ipairs({ 28 }) do
++  step(function()
++    clear_all()
++    Isaac.ExecuteCommand("restart " .. ty)
++    wait("restart", 120, function() return false end)
++  end)
++  step(function()
++    say("player type " .. tostring(pl():GetPlayerType()))
++    Isaac.ExecuteCommand("debug 3")
++    enemy()
++    shoot(true)
++    wait("the sneeze of type " .. ty, 500, function() return count("MC_POST_BRIMSTONE_SNEEZE") > 0 end)
++  end)
++  step(function()
++    shoot(false)
++    sneeze_check("player type " .. ty)
++  end)
++end
++
++mod:AddCallback(M.MC_INPUT_ACTION, function(_, ent, hook, action)
++  if not base.shoot or not ent or ent.Type ~= 1 or action ~= ButtonAction.ACTION_SHOOTRIGHT then return end
++  if Isaac.GetFrameCount() % 120 >= 80 then return end   -- hold, then release: charged weapons fire on release
++  if hook == InputHook.IS_ACTION_PRESSED then return true end
++  if hook == InputHook.GET_ACTION_VALUE then return 1.0 end
++end)
++
++local frame, i = 0, 0
++mod:AddCallback(M.MC_POST_UPDATE, function()
++  frame = frame + 1
++  if frame < 5 then return end
++  if waiting then
++    if wait_cond() then
++      waiting = false
++    else
++      wait_left = wait_left - 1
++      if wait_left <= 0 then
++        waiting = false
++        if wait_what ~= "frames" and wait_what ~= "restart" then check(false, "timed out waiting for " .. wait_what) end
++      else
++        return
++      end
++    end
++  end
++  if frame % 3 ~= 0 then return end
++  i = i + 1
++  local f = steps[i]
++  if not f then
++    if i == #steps + 1 then B.log(string.format("lab_cb_e: DONE %d PASS %d FAIL", pass, fail)) end
++    return
++  end
++  local ok, err = pcall(f)
++  if not ok then check(false, "step " .. i .. " raised: " .. tostring(err)) end
++end)
 diff --git a/scripts/recomp/rgon/lab_census.lua b/scripts/recomp/rgon/lab_census.lua
 new file mode 100644
-index 0000000..04a9584
+index 0000000..a76e2e5
 --- /dev/null
 +++ b/scripts/recomp/rgon/lab_census.lua
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,118 @@
 +-- lab_census.lua (development only; ISAAC_RGON_LAB=lab_census.lua)
 +-- What the running Layer can reach, name by name: one log line "lab_census: E <Class>.<name>" for every
 +-- function and property found on a class or namespace table, plus the same "lab_names: I/C" lines
@@ -12288,6 +14043,7 @@ index 0000000..04a9584
 +    classes = classes + 1
 +    keys_of(v, cls)
 +    local mt = getmetatable(v)
++    if type(mt) == "table" and type(rawget(mt, "__call")) == "function" then emit(cls, cls) end   -- a constructor: Class.Class
 +    if type(mt) == "table" then
 +      from_class_table(rawget(mt, "__class"), cls)
 +      from_class_table(rawget(mt, "__const"), cls)
@@ -12318,6 +14074,9 @@ index 0000000..04a9584
 +-- objects of the Layer's own stand-in classes (not global tables: only a constructor or a factory makes them)
 +local made = {
 +  Beam = function() return Beam(Sprite(), 0, false, false) end,
++  Point = function() return Point(Vector(0, 0), 0) end,
++  Font = function() return Font() end,
++  LayerState = function() local s = Sprite() s:Load("gfx/001.000_player.anm2", true) return s:GetLayer(0) end,
 +  Image = function() return Renderer.CreateImage(1, 1, "census") end,
 +  Shader = function() return Renderer.LoadShader("census") end,
 +}
@@ -12333,9 +14092,22 @@ index 0000000..04a9584
 +    if type(mt) == "table" then
 +      from_class_table(rawget(mt, "__class") or mt, cls)
 +      from_class_table(rawget(mt, "__const"), cls)
++      -- a Layer class (LayerState) keeps its methods in the __index table of its metatable
++      if type(rawget(mt, "__index")) == "table" then keys_of(rawget(mt, "__index"), cls) end
 +    end
 +  end
 +end
++-- Font's legacy functions are defined in the game's main.lua behind a function __index: probe the documented names
++do
++  local ok, f = pcall(Font)
++  if ok and f ~= nil then
++    for _, n in ipairs({ "DrawString", "DrawStringScaled", "DrawStringUTF8", "DrawStringScaledUTF8", "GetStringWidth", "GetStringWidthUTF8" }) do
++      local ok2, v = pcall(function() return f[n] end)
++      if ok2 and type(v) == "function" then emit("Font", n) end
++    end
++  end
++end
++
 +B.log("lab_census: END " .. count .. " names on " .. classes .. " global tables")
 diff --git a/scripts/recomp/rgon/lab_census_test.lua b/scripts/recomp/rgon/lab_census_test.lua
 new file mode 100644
@@ -17132,6 +18904,594 @@ index 0000000..c54f610
 +  check("SourceQuad Copy keeps the UV flag", s:Copy():IsUVSpace() == s:IsUVSpace())
 +  B.log(string.format("lab_quad_test: DONE %d PASS %d FAIL", pass, fail))
 +end)
+diff --git a/scripts/recomp/rgon/lab_render_color.lua b/scripts/recomp/rgon/lab_render_color.lua
+new file mode 100644
+index 0000000..c2b22f7
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_render_color.lua
+@@ -0,0 +1,45 @@
++-- lab_render_color.lua (development only; ISAAC_RGON_LAB=lab_render_color.lua): finds which call passes nil as the
++-- fourth argument of Color(...) (Fiend Folio: "bad argument #4 to 'Color_constructor'"). Wraps the global Color and
++-- logs the Lua stack of every such call. Run with the lab_trapdoor-style 95-mod support. Notes in notes/render.md.
++local T = ...
++local B = T.B
++local orig = Color
++local seen = {}
++local function where()
++  local out = {}
++  local dbg = rawget(_G, "debug")
++  if dbg and dbg.getinfo then
++    for level = 3, 8 do
++      local ok, info = pcall(dbg.getinfo, level, "Sl")
++      if not ok or not info then break end
++      out[#out + 1] = tostring(info.short_src) .. ":" .. tostring(info.currentline)
++    end
++  end
++  if #out == 0 then
++    for level = 2, 8 do
++      local function probe() error("x", level) end
++      local ok, msg = pcall(probe)
++      out[#out + 1] = tostring(msg):gsub("^(.-): x$", "%1")
++    end
++  end
++  return table.concat(out, " < ")
++end
++local mt = getmetatable(orig)
++local orig_call = mt and rawget(mt, "__call")
++if type(orig_call) == "function" then
++  rawset(mt, "__call", function(self, ...)
++    local n = select("#", ...)
++    local a, b, c, d = ...
++    if a == nil or b == nil or c == nil then      -- the game's wrapper fills A, RO, GO, BO; R, G, B must be there
++      local w = where()
++      if not seen[w] then
++        seen[w] = true
++        B.log("lab_render_color: Color with a nil R, G or B (n=" .. n .. ", args " .. tostring(a) .. "," .. tostring(b) .. "," .. tostring(c) .. ") at " .. w)
++      end
++    end
++    return orig_call(self, ...)
++  end)
++  B.log("lab_render_color: wrapped Color.__call")
++else
++  B.log("lab_render_color: Color has no __call to wrap")
++end
+diff --git a/scripts/recomp/rgon/lab_render_probe.lua b/scripts/recomp/rgon/lab_render_probe.lua
+new file mode 100644
+index 0000000..0c69bcb
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_render_probe.lua
+@@ -0,0 +1,60 @@
++-- lab_render_probe.lua (development only; ISAAC_RGON_LAB=lab_render_probe.lua): probes SetOverlayFrame, IsFinished
++-- while stopped, and where Font's methods live. Notes in notes/render.md.
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab render probe", 1)
++local function log(s) B.log("lab_render_probe: " .. s) end
++local function keys(t)
++  local out = {}
++  if type(t) == "table" then for k in pairs(t) do out[#out + 1] = tostring(k) end end
++  table.sort(out)
++  return table.concat(out, ",")
++end
++local done = false
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  if done then return end
++  done = true
++  local o = Sprite()
++  o:Load("gfx/001.000_player.anm2", true)
++  o:Play("WalkDown", true)
++  o:PlayOverlay("HeadDown", true)
++  local a = B.ptr(o)
++  local function st(tag)
++    log(tag .. ": overlay anim '" .. o:GetOverlayAnimation() .. "' frame " .. o:GetOverlayFrame() .. " playing " .. tostring(o:IsOverlayPlaying("HeadDown"))
++      .. " byte " .. B.r8(a + 0x64) .. " finishedQ " .. tostring(o:IsOverlayFinished("HeadDown")) .. " rec " .. string.format("%x", B.r32(a + 0x54)))
++  end
++  st("start")
++  o:SetOverlayFrame("HeadDown", 3) st("SetOverlayFrame(name,3)")
++  o:Update() st("update")
++  o:SetOverlayFrame(7) st("SetOverlayFrame(7)")
++  o:SetOverlayFrame("HeadDown", 7) st("SetOverlayFrame(name,7)")
++  o:SetOverlayFrame(5) st("SetOverlayFrame(5)")
++  B.w8(a + 0x64, 1) o:Update() st("byte 1, update")
++  local m = Sprite()
++  m:Load("gfx/001.000_player.anm2", true)
++  m:Play("WalkDown", true)
++  m:Update() m:Update()
++  log("IsFinished while playing mid-way " .. tostring(m:IsFinished("WalkDown")))
++  m:Stop()
++  log("IsFinished while stopped mid-way " .. tostring(m:IsFinished("WalkDown")) .. " length " .. m:GetCurrentAnimationData():GetLength() .. " loops " .. tostring(m:GetCurrentAnimationData():IsLoopingAnimation()))
++  -- Font
++  local f = Font()
++  local mt = getmetatable(f)
++  log("Font metatable keys " .. keys(mt))
++  log("Font __index type " .. type(mt and mt.__index) .. " keys " .. keys(type(mt and mt.__index) == "table" and mt.__index or nil))
++  log("Font global type " .. type(Font) .. " keys " .. keys(Font) .. " mt keys " .. keys(getmetatable(Font)))
++  local c = T.class_tables("Font")
++  log("class_tables Font " .. tostring(c) .. " keys " .. keys(c))
++  local cls = mt and rawget(mt, "__class")
++  log("__class keys " .. keys(cls))
++  log("Implemented Font names: " .. (function() local o = {} for k in pairs(REPENTOGON.Implemented) do if tostring(k):find("^Font%.") then o[#o + 1] = k end end table.sort(o) return table.concat(o, ",") end)())
++  -- ReplaceSpritesheet third argument
++  local r = Sprite()
++  r:Load("gfx/001.000_player.anm2", true)
++  r:ReplaceSpritesheet(0, "gfx/characters/costumes/character_002_magdalene.png", true)
++  log("ReplaceSpritesheet(…, true) path " .. r:GetLayer(0):GetSpritesheetPath())
++  -- the layer state's class
++  local l = r:GetLayer(0)
++  local lmt = getmetatable(l)
++  log("LayerState metatable keys " .. keys(lmt) .. " __index type " .. type(lmt and lmt.__index))
++end)
+diff --git a/scripts/recomp/rgon/lab_render_shot.lua b/scripts/recomp/rgon/lab_render_shot.lua
+new file mode 100644
+index 0000000..7ff3a7c
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_render_shot.lua
+@@ -0,0 +1,39 @@
++-- lab_render_shot.lua (development only; ISAAC_RGON_LAB=lab_render_shot.lua, a windowed run with SHOT=): draws what the
++-- render chunk made, every frame in the first room: Font:DrawStringScaled text, a Sprite and its Copy side by side (the
++-- Copy has another spritesheet, a scale and a stopped overlay) and a Sprite:SetSpritesheet from Renderer.LoadImage.
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab render shot", 1)
++local font, a, b, c
++local function setup()
++  font = Font()
++  font:Load("font/terminus8.fnt")
++  a = Sprite()
++  a:Load("gfx/001.000_player.anm2", true)
++  a:Play("WalkDown", true)
++  a:PlayOverlay("HeadDown", true)
++  a:ReplaceSpritesheet(0, "gfx/characters/costumes/character_002_magdalene.png", true)
++  b = a:Copy()
++  b.Scale = Vector(1.6, 1.6)
++  b:ReplaceSpritesheet(0, "gfx/characters/costumes/character_003_samson.png", true)
++  c = Sprite()
++  c:Load("gfx/001.000_player.anm2", true)
++  c:Play("WalkDown", true)
++  c:SetSpritesheet(0, Renderer.LoadImage("gfx/characters/costumes/character_006_eve.png"))
++  B.log("lab_render_shot: sprites set up; layer 0 paths " .. a:GetLayer(0):GetSpritesheetPath() .. " | " .. b:GetLayer(0):GetSpritesheetPath() .. " | " .. c:GetLayer(0):GetSpritesheetPath())
++end
++mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++  if Isaac.GetFrameCount() < 30 then return end
++  if not font then setup() end
++  local kc = KColor(1, 1, 0.4, 1)
++  font:DrawStringScaled("Font:DrawStringScaled 2x", 40, 40, 2, 2, kc, 0, false)
++  font:DrawString("Font:DrawString (checked)", 40, 70, KColor(0.4, 1, 1, 1), 0, false)
++  font:DrawStringScaled("centered in a 200 box", 40, 85, 1, 1, KColor(1, 1, 1, 1), 200, true)
++  a:Update() b:Update() c:Update()
++  a:Render(Vector(120, 180), Vector(0, 0), Vector(0, 0))
++  b:Render(Vector(220, 180), Vector(0, 0), Vector(0, 0))
++  c:Render(Vector(320, 180), Vector(0, 0), Vector(0, 0))
++  font:DrawString("original", 100, 190, KColor(1, 1, 1, 1), 0, false)
++  font:DrawString("Copy, scale 1.6", 190, 205, KColor(1, 1, 1, 1), 0, false)
++  font:DrawString("SetSpritesheet", 290, 190, KColor(1, 1, 1, 1), 0, false)
++end)
+diff --git a/scripts/recomp/rgon/lab_render_test.lua b/scripts/recomp/rgon/lab_render_test.lua
+new file mode 100644
+index 0000000..c11642e
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_render_test.lua
+@@ -0,0 +1,420 @@
++-- lab_render_test.lua (development only; ISAAC_RGON_LAB=lab_render_test.lua): wave 4 chunk 8. Calls every method of
++-- Sprite (the new and the changed ones), LayerState, Point, Beam, SourceQuad, DestinationQuad, Image, Font and
++-- EntityConfigBaby. Getters are read back, setters read back and measured, actions judged by the game's own answer.
++-- Logs "lab_render_test: PASS/FAIL ..." and one final "lab_render_test: DONE pass=N fail=M".
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab render test", 1)
++local pass, fail = 0, 0
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log("lab_render_test: " .. (ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function try(name, f)
++  local ok, err = pcall(f)
++  if not ok then check(name .. " raised no error", false, err) end
++end
++local function near(a, b) return math.abs(a - b) < 1e-4 end
++local function vis(v, x, y) return type(v) == "userdata" and near(v.X, x) and near(v.Y, y) end
++local function fresh(anm, play)
++  local s = Sprite()
++  s:Load(anm or "gfx/001.000_player.anm2", true)
++  if play then s:Play(play, true) end
++  return s
++end
++
++local function sprite_tests()
++  -- Stop / StopOverlay / Continue / ContinueOverlay
++  local s = fresh(nil, "WalkDown")
++  s:PlayOverlay("WalkLeft", true)
++  s:Update() s:Update()
++  check("Stop is implemented", REPENTOGON.Implemented["Sprite.Stop"] == true)
++  s:Stop()
++  check("Stop() stops the main animation", s:IsPlaying("WalkDown") == false)
++  check("Stop() stops the overlay too (default true)", s:IsOverlayPlaying("WalkLeft") == false)
++  local f, of = s:GetFrame(), s:GetOverlayFrame()
++  s:Update() s:Update()
++  check("a stopped sprite does not advance", s:GetFrame() == f and s:GetOverlayFrame() == of, f .. "/" .. of .. " -> " .. s:GetFrame() .. "/" .. s:GetOverlayFrame())
++  s:Continue()
++  check("Continue() resumes both", s:IsPlaying("WalkDown") and s:IsOverlayPlaying("WalkLeft"))
++  s:Update()
++  check("Continue() resumes from the frame it was on", s:GetFrame() == f + 1 and s:GetOverlayFrame() == of + 1, s:GetFrame() .. "/" .. s:GetOverlayFrame())
++  s:Stop(false)
++  check("Stop(false) stops the main animation only", s:IsPlaying("WalkDown") == false and s:IsOverlayPlaying("WalkLeft") == true)
++  s:Continue(false)
++  check("Continue(false) leaves the overlay alone, resumes main", s:IsPlaying("WalkDown") == true)
++  s:StopOverlay()
++  check("StopOverlay stops the overlay only", s:IsOverlayPlaying("WalkLeft") == false and s:IsPlaying("WalkDown") == true)
++  of = s:GetOverlayFrame()
++  s:Update() s:Update()
++  check("a stopped overlay does not advance", s:GetOverlayFrame() == of and s:GetFrame() > f)
++  check("ContinueOverlay is implemented", REPENTOGON.Implemented["Sprite.ContinueOverlay"] == true and REPENTOGON.Implemented["Sprite.StopOverlay"] == true)
++  s:ContinueOverlay()
++  check("ContinueOverlay resumes the overlay", s:IsOverlayPlaying("WalkLeft") == true)
++  s:Update()
++  check("ContinueOverlay: the frame moves on", s:GetOverlayFrame() == of + 1, s:GetOverlayFrame())
++  -- a sprite with no overlay
++  local n = fresh(nil, "WalkDown")
++  try("StopOverlay with no overlay", function() n:StopOverlay() n:ContinueOverlay() n:Stop() n:Continue() end)
++  check("Continue() after Stop() with no overlay", n:IsPlaying("WalkDown"))
++  -- a finished animation is not restarted
++  local d = fresh(nil, "Death")
++  for _ = 1, 200 do d:Update() end
++  local fin = d:IsFinished("Death")
++  local df = d:GetFrame()
++  d:Continue()
++  d:Update()
++  check("Continue() does not restart a finished animation", fin and d:IsFinished("Death") and d:GetFrame() == df, df .. " -> " .. d:GetFrame())
++
++  -- ReplaceSpritesheet(layer, png, load)
++  local r = fresh(nil, "WalkDown")
++  local path = "gfx/characters/costumes/character_002_magdalene.png"
++  r:ReplaceSpritesheet(0, path)
++  check("ReplaceSpritesheet (two arguments) sets the layer path", r:GetLayer(0):GetSpritesheetPath():lower() == path)
++  local r2 = fresh(nil, "WalkDown")
++  try("ReplaceSpritesheet(layer, png, true)", function() r2:ReplaceSpritesheet(0, path, true) end)
++  check("ReplaceSpritesheet (three arguments) sets the layer path", r2:GetLayer(0):GetSpritesheetPath():lower() == path)
++  check("ReplaceSpritesheet checks its arguments", not pcall(function() r2:ReplaceSpritesheet("x", path) end))
++  -- SetOverlayFrame
++  local o = fresh(nil, "WalkDown")
++  o:PlayOverlay("WalkLeft", true)
++  o:SetOverlayFrame("WalkLeft", 3)
++  check("SetOverlayFrame(name, frame)", o:GetOverlayFrame() == 3, o:GetOverlayFrame())
++  check("SetOverlayFrame(name, frame) stops the overlay (the game's own behaviour)", not o:IsOverlayPlaying("WalkLeft"))
++  o:PlayOverlay("WalkLeft", true)
++  o:SetOverlayFrame(7)
++  check("SetOverlayFrame(frame) keeps the animation", o:GetOverlayAnimation() == "WalkLeft" and o:GetOverlayFrame() == 7, o:GetOverlayFrame())
++  check("SetOverlayFrame(frame) keeps it playing", o:IsOverlayPlaying("WalkLeft"))
++  o:Update()
++  check("SetOverlayFrame(frame): plays on from there", o:GetOverlayFrame() == 8, o:GetOverlayFrame())
++  o:StopOverlay()
++  o:SetOverlayFrame(2)
++  check("SetOverlayFrame(frame) on a stopped overlay leaves it stopped", o:GetOverlayFrame() == 2 and not o:IsOverlayPlaying("WalkLeft"), o:GetOverlayFrame())
++  try("SetOverlayFrame(frame) without an overlay", function() fresh(nil, "WalkDown"):SetOverlayFrame(2) end)
++
++  -- Copy
++  local c = fresh(nil, "WalkDown")
++  c:PlayOverlay("WalkLeft", true)
++  c.Scale = Vector(2, 3)
++  c.Rotation = 30
++  c.Offset = Vector(5, 6)
++  c.FlipX = true
++  c.PlaybackSpeed = 0.5
++  c.Color = Color(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7)
++  c:SetFrame("WalkDown", 3)
++  c:SetOverlayFrame("WalkLeft", 2)
++  c:ReplaceSpritesheet(0, path)
++  c:LoadGraphics()
++  local l1 = c:GetLayer(1)
++  l1:SetVisible(false)
++  l1:SetPos(Vector(1, 2))
++  l1:SetSize(Vector(2, 2))
++  l1:SetColor(Color(1, 0, 0, 1))
++  l1:SetRotation(12)
++  l1:SetFlipY(true)
++  l1:SetWrapSMode(0)
++  c:SetRenderFlags(4)
++  c:Continue()
++  c:Update()
++  check("the original plays before Copy", c:IsPlaying("WalkDown") and c:IsOverlayPlaying("WalkLeft"))
++  local k = c:Copy()
++  check("Copy is a Sprite of the same file", type(k) == "userdata" and k:GetFilename() == c:GetFilename() and tostring(k) ~= tostring(c))
++  check("Copy: animation, frame, overlay", k:GetAnimation() == "WalkDown" and k:GetFrame() == c:GetFrame() and k:GetOverlayAnimation() == "WalkLeft" and k:GetOverlayFrame() == c:GetOverlayFrame(),
++    k:GetFrame() .. "/" .. c:GetFrame() .. " " .. k:GetOverlayFrame() .. "/" .. c:GetOverlayFrame())
++  check("Copy: playing", k:IsPlaying("WalkDown") and k:IsOverlayPlaying("WalkLeft"))
++  check("Copy: scale, rotation, offset, flip, speed", vis(k.Scale, 2, 3) and near(k.Rotation, 30) and vis(k.Offset, 5, 6) and k.FlipX == true and k.FlipY == false and near(k.PlaybackSpeed, 0.5))
++  check("Copy: colour", near(k.Color.R, 0.1) and near(k.Color.G, 0.2) and near(k.Color.B, 0.3) and near(k.Color.A, 0.4) and near(k.Color.RO, 0.5), k.Color.R .. " " .. k.Color.A)
++  check("Copy: spritesheet of layer 0", k:GetLayer(0):GetSpritesheetPath():lower() == path)
++  local kl = k:GetLayer(1)
++  check("Copy: layer state", kl:IsVisible() == false and vis(kl:GetPos(), 1, 2) and vis(kl:GetSize(), 2, 2) and near(kl:GetRotation(), 12) and kl:GetFlipY() == true and kl:GetWrapSMode() == 0 and near(kl:GetColor().G, 0))
++  check("Copy: render flags", k:GetRenderFlags() == 4, k:GetRenderFlags())
++  check("Copy: layer count and names", k:GetLayerCount() == c:GetLayerCount() and k:GetLayer(2):GetName() == c:GetLayer(2):GetName())
++  -- independent of the original
++  k:SetFrame("WalkUp", 1)
++  k.Scale = Vector(1, 1)
++  check("Copy is independent", c:GetAnimation() == "WalkDown" and vis(c.Scale, 2, 3))
++  local cs = c:Copy()
++  check("Copy of a stopped sprite is stopped", (function() c:Stop() local z = c:Copy() return z:IsPlaying("WalkDown") == false and z:IsOverlayPlaying("WalkLeft") == false end)())
++  check("Copy of an empty Sprite", type(Sprite():Copy()) == "userdata")
++  check("Copy: Implemented", REPENTOGON.Implemented["Sprite.Copy"] == true)
++
++  -- overlay events: the main-animation answer of a sprite that plays the animation as its main is the oracle
++  local candidates = { "gfx/001.000_player.anm2", "gfx/010.000_gaper.anm2", "gfx/011.000_fly.anm2", "gfx/012.000_monstro.anm2",
++    "gfx/020.000_monstro.anm2", "gfx/021.000_clotty.anm2", "gfx/022.000_hopper.anm2", "gfx/024.000_charger.anm2",
++    "gfx/026.000_spider.anm2", "gfx/041.000_Charger.anm2", "gfx/003.000_familiar.anm2", "gfx/002.000_tear.anm2",
++    "gfx/005.100_pickup.anm2", "gfx/005.010_pickup.anm2", "gfx/008.000_bomb.anm2", "gfx/046.000_sloth.anm2",
++    "gfx/017.000_duke of flies.anm2", "gfx/060.000_mom.anm2", "gfx/018.000_Duke of Flies.anm2", "gfx/261.000_dingle.anm2",
++    "gfx/005.350_trinket.anm2", "gfx/005.100_collectible.anm2", "gfx/025.000_fatty.anm2", "gfx/023.000_pooter.anm2" }
++  local events = { "Shoot", "Jump", "Land", "Hit", "DeathSound", "Sound", "Attack", "Explode", "Throw", "Spawn", "Slam", "Bounce",
++    "Shot", "Sound1", "Flap", "Walk", "Step", "Appear", "Fire", "Blink", "Open", "Close", "Charge", "Bark", "Eat", "Pop", "Drop" }
++  local found
++  for _, anm in ipairs(candidates) do
++    local ok, sp = pcall(fresh, anm)
++    if ok and sp:GetLayerCount() > 0 then
++      for _, ad in ipairs(sp:GetAllAnimationData()) do
++        local an = ad:GetName()
++        local run = fresh(anm, an)
++        for fr = 0, math.min(ad:GetLength(), 120) do
++          for _, ev in ipairs(events) do
++            if run:IsEventTriggered(ev) then found = found or { anm, an, fr, ev } end
++          end
++          if found then break end
++          run:Update()
++        end
++        if found then break end
++      end
++    end
++    if found then break end
++  end
++  if not found then
++    check("found an animation with an event to test IsOverlayEventTriggered", false, "none of the candidates triggered a known event name")
++  else
++    local anm, an, fr, ev = found[1], found[2], found[3], found[4]
++    B.log("lab_render_test: event animation " .. anm .. " " .. an .. " frame " .. fr .. " event " .. ev)
++    local oracle = fresh(anm, an)
++    local ovl = fresh(anm, an)
++    ovl:Stop()
++    ovl:PlayOverlay(an, true)
++    local hit_main, hit_ov, miss_ov, hit_was = false, false, 0, false
++    for _ = 0, fr do
++      hit_main = oracle:IsEventTriggered(ev)
++      hit_ov = ovl:IsOverlayEventTriggered(ev)
++      hit_was = ovl:WasOverlayEventTriggered(ev)
++      if _ < fr then oracle:Update() ovl:Update() end
++    end
++    check("IsOverlayEventTriggered agrees with the game's own answer for the same animation", hit_main == true and hit_ov == true, tostring(hit_main) .. " " .. tostring(hit_ov))
++    check("IsOverlayEventTriggered: an unknown event is false", ovl:IsOverlayEventTriggered("NoSuchEvent") == false)
++    check("IsOverlayEventTriggered does not disturb the main state", ovl:IsPlaying(an) == false and ovl:IsOverlayPlaying(an))
++    check("WasOverlayEventTriggered answers a boolean", type(hit_was) == "boolean")
++    check("IsOverlayEventTriggered with no overlay is false", fresh(anm, an):IsOverlayEventTriggered(ev) == false)
++    check("IsOverlayEventTriggered: Implemented", REPENTOGON.Implemented["Sprite.IsOverlayEventTriggered"] == true)
++  end
++
++  -- stand-ins stay out of Implemented
++  for _, nm in ipairs({ "GetSpritesheet", "SetSpritesheet", "SetCustomShader", "ClearCustomShader", "HasCustomShader" }) do
++    check("Sprite." .. nm .. " exists", type(s[nm]) == "function")
++    check("Sprite." .. nm .. " is not registered (stand-in)", REPENTOGON.Implemented["Sprite." .. nm] ~= true)
++  end
++  local img = s:GetSpritesheet(0)
++  check("Sprite:GetSpritesheet(0) is an Image named after the layer's file", img ~= nil and img:GetName():lower() == s:GetLayer(0):GetSpritesheetPath():lower(), img and img:GetName())
++  check("Sprite:GetSpritesheet of a layer that does not exist is nil", s:GetSpritesheet(60) == nil)
++  s:SetSpritesheet(0, Renderer.LoadImage(path))
++  check("Sprite:SetSpritesheet(layer, a loaded Image) replaces the graphics", s:GetLayer(0):GetSpritesheetPath():lower() == path, s:GetLayer(0):GetSpritesheetPath())
++  s:GetLayer(0):SetSpritesheet(Renderer.LoadImage("gfx/characters/costumes/character_003_samson.png"))
++  check("LayerState:SetSpritesheet(a loaded Image) replaces the graphics", s:GetLayer(0):GetSpritesheetPath():lower() == "gfx/characters/costumes/character_003_samson.png", s:GetLayer(0):GetSpritesheetPath())
++  local la = s:GetLayer(0)
++  check("LayerState:GetSpritesheet is an Image of the layer's file", la:GetSpritesheet():GetName():lower() == la:GetSpritesheetPath():lower())
++  for _, nm in ipairs({ "SetCustomShader", "SetCustomChampionShader" }) do
++    try("LayerState:" .. nm, function() la[nm](la, "shaders/none") end)
++  end
++  check("LayerState:HasCustomShader is false", la:HasCustomShader("shaders/none") == false and la:HasCustomChampionShader() == false)
++  try("LayerState clear shaders", function() la:ClearCustomShader() la:ClearCustomChampionShader() end)
++  try("Sprite shader stand-ins", function() s:SetCustomShader("shaders/none") s:ClearCustomShader() s:SetCustomChampionShader("x") s:ClearCustomChampionShader() end)
++  check("Sprite:HasCustomShader is false", s:HasCustomShader() == false and s:HasCustomChampionShader() == false)
++end
++
++local function layer_tests()
++  local s = fresh(nil, "WalkDown")
++  local l = s:GetLayer(1)
++  check("LayerState getters/setters Implemented", (function()
++    for _, n in ipairs({ "GetBlendMode", "GetColor", "GetCropOffset", "GetDefaultSpritesheetPath", "GetFlipX", "GetFlipY", "GetLayerID", "GetName", "GetPos",
++      "GetRenderFlags", "GetRotation", "GetSize", "GetSpritesheetPath", "GetWrapSMode", "GetWrapTMode", "IsVisible", "SetColor", "SetCropOffset", "SetFlipX",
++      "SetFlipY", "SetPos", "SetRenderFlags", "SetRotation", "SetSize", "SetVisible", "SetWrapSMode", "SetWrapTMode" }) do
++      if REPENTOGON.Implemented["LayerState." .. n] ~= true then return false end
++    end
++    return true
++  end)())
++  check("LayerState:GetLayerID", l:GetLayerID() == 1)
++  check("LayerState:GetName is a string", type(l:GetName()) == "string" and l:GetName() ~= "", l:GetName())
++  check("LayerState:GetSpritesheetPath / GetDefaultSpritesheetPath", l:GetSpritesheetPath() ~= "" and l:GetDefaultSpritesheetPath() ~= "")
++  l:SetVisible(false) check("LayerState Set/IsVisible", l:IsVisible() == false) l:SetVisible(true) check("LayerState IsVisible true", l:IsVisible())
++  l:SetPos(Vector(3, 4)) check("LayerState Set/GetPos", vis(l:GetPos(), 3, 4))
++  l:SetSize(Vector(5, 6)) check("LayerState Set/GetSize", vis(l:GetSize(), 5, 6))
++  l:SetRotation(45) check("LayerState Set/GetRotation", near(l:GetRotation(), 45))
++  l:SetCropOffset(Vector(7, 8)) check("LayerState Set/GetCropOffset", vis(l:GetCropOffset(), 7, 8))
++  l:SetFlipX(true) l:SetFlipY(true) check("LayerState Set/GetFlip", l:GetFlipX() and l:GetFlipY())
++  l:SetFlipX(false) l:SetFlipY(false) check("LayerState flip off", not l:GetFlipX() and not l:GetFlipY())
++  l:SetWrapSMode(2) l:SetWrapTMode(3) check("LayerState Set/GetWrapMode", l:GetWrapSMode() == 2 and l:GetWrapTMode() == 3)
++  l:SetRenderFlags(8) check("LayerState Set/GetRenderFlags", l:GetRenderFlags() == 8)
++  l:SetColor(Color(0.25, 0.5, 0.75, 1, 0.1, 0.2, 0.3))
++  local col = l:GetColor()
++  check("LayerState Set/GetColor", near(col.R, 0.25) and near(col.G, 0.5) and near(col.B, 0.75) and near(col.RO, 0.1), col.R .. " " .. col.G)
++  local bm = l:GetBlendMode()
++  bm:SetMode(BlendType.ADDITIVE)
++  check("LayerState:GetBlendMode is the layer's own", l:GetBlendMode().RGBDestinationFactor == bm.RGBDestinationFactor and bm.RGBDestinationFactor == 1)
++  -- the game's own reaction: the layer's rendered size follows SetSize
++  local frame_w = s:GetLayerFrameData(1) and s:GetLayerFrameData(1):GetWidth()
++  check("AnimationFrame width readable next to LayerState", frame_w ~= nil)
++end
++
++local function quad_tests()
++  for _, cls in ipairs({ "DestinationQuad", "SourceQuad" }) do
++    local C = _G[cls]
++    check(cls .. " constructor is Implemented", REPENTOGON.Implemented[cls .. "." .. cls] == true)
++    local q = C(Vector(0, 0), Vector(10, 0), Vector(0, 20), Vector(10, 20))
++    check(cls .. "(tl, tr, bl, br)", vis(q:GetTopLeft(), 0, 0) and vis(q:GetBottomRight(), 10, 20))
++    local function corners(x) return string.format("%g,%g %g,%g %g,%g %g,%g", x:GetTopLeft().X, x:GetTopLeft().Y, x:GetTopRight().X, x:GetTopRight().Y, x:GetBottomLeft().X, x:GetBottomLeft().Y, x:GetBottomRight().X, x:GetBottomRight().Y) end
++    local function r3(v) return string.format("%g", math.floor(v * 1000 + 0.5) / 1000 + 0) end
++    local function rounded(x)
++      local p = { x:GetTopLeft(), x:GetTopRight(), x:GetBottomLeft(), x:GetBottomRight() }
++      return string.format("%s,%s %s,%s %s,%s %s,%s", r3(p[1].X), r3(p[1].Y), r3(p[2].X), r3(p[2].Y), r3(p[3].X), r3(p[3].Y), r3(p[4].X), r3(p[4].Y))
++    end
++    local s = q:Copy() s:Scale(Vector(2, 3), Vector(0, 0))
++    check(cls .. ":Scale about the origin", corners(s) == "0,0 20,0 0,60 20,60", corners(s))
++    s = q:Copy() s:Scale(Vector(2, 2), Vector(10, 20))
++    check(cls .. ":Scale about an anchor", corners(s) == "-10,-20 10,-20 -10,20 10,20", corners(s))
++    s = q:Copy() s:Rotate(90, Vector(0, 0))
++    check(cls .. ":Rotate 90 degrees about the origin (x to y)", rounded(s) == "0,0 0,10 -20,0 -20,10", rounded(s))
++    s = q:Copy() s:Rotate(180, Vector(5, 10))
++    check(cls .. ":Rotate 180 about the centre swaps corners", rounded(s) == "10,20 0,20 10,0 0,0", rounded(s))
++    s = q:Copy() s:Shear(Vector(1, 0), Vector(0, 0))
++    check(cls .. ":Shear x by y", corners(s) == "0,0 10,0 20,20 30,20", corners(s))
++    s = q:Copy() s:ApplyMatrix({ { 1, 0, 5 }, { 0, 2, 0 } }, Vector(0, 0))
++    check(cls .. ":ApplyMatrix", corners(s) == "5,0 15,0 5,40 15,40", corners(s))
++    s = q:Copy() s:Translate(Vector(1, 1)) s:Flip(true, false)
++    check(cls .. ":Flip horizontal after Translate", corners(s) == "11,1 1,1 11,21 1,21", corners(s))
++    s = q:Copy() s:Flip(false, true)
++    check(cls .. ":Flip vertical", corners(s) == "0,20 10,20 0,0 10,0", corners(s))
++    s = q:Copy() s:Flip()
++    check(cls .. ":Flip() flips both", corners(s) == "10,20 0,20 10,0 0,0", corners(s))
++    s = q:Copy() s:SetTopLeft(Vector(1, 1)) s:SetTopRight(Vector(2, 2)) s:SetBottomLeft(Vector(3, 3)) s:SetBottomRight(Vector(4, 4))
++    check(cls .. " setters", corners(s) == "1,1 2,2 3,3 4,4", corners(s))
++    local r = C.NewFromRectangle(Vector(1, 2), 3, 4)
++    check(cls .. ".NewFromRectangle", corners(r) == "1,2 4,2 1,6 4,6", corners(r))
++    local bnd = C.NewFromBounds(Vector(1, 2), Vector(5, 7))
++    check(cls .. ".NewFromBounds", corners(bnd) == "1,2 5,2 1,7 5,7", corners(bnd))
++    check(cls .. " __tostring", type(tostring(q)) == "string" and tostring(q):find(cls, 1, true) ~= nil)
++    check(cls .. " bad argument raises", not pcall(function() q:Scale(5, Vector(0, 0)) end))
++    for _, m in ipairs({ "GetTopLeft", "GetTopRight", "GetBottomLeft", "GetBottomRight", "SetTopLeft", "SetTopRight", "SetBottomLeft", "SetBottomRight",
++      "Copy", "Translate", "Scale", "Rotate", "Shear", "ApplyMatrix", "Flip", "NewFromBounds", "NewFromRectangle" }) do
++      check("Implemented " .. cls .. "." .. m, REPENTOGON.Implemented[cls .. "." .. m] == true)
++    end
++  end
++  local uv = SourceQuad(Vector(0, 0), Vector(1, 0), Vector(0, 1), Vector(1, 1), true)
++  check("SourceQuad with the UV flag is in UV space", uv:IsUVSpace() == true and uv:Copy():IsUVSpace() == true)
++  check("SourceQuad without the flag is in pixels", SourceQuad(Vector(0, 0), Vector(1, 0), Vector(0, 1), Vector(1, 1)):IsUVSpace() == false)
++  check("SourceQuad.NewFromBounds with the UV flag is in UV space", SourceQuad.NewFromBounds(Vector(0, 0), Vector(1, 1), true):IsUVSpace() and SourceQuad.NewFromRectangle(Vector(0, 0), 1, 1, true):IsUVSpace())
++  check("SourceQuad:IsUVSpace is Implemented", REPENTOGON.Implemented["SourceQuad.IsUVSpace"] == true)
++  check("SourceQuad Convert functions are not registered (they need the Image's size)", REPENTOGON.Implemented["SourceQuad.ConvertToUVSpace"] ~= true)
++end
++
++local function point_beam_tests()
++  local col = Color(1, 0, 0, 0.5)
++  local p = Point(Vector(1, 2), 30, 1.25, col)
++  check("Point is Implemented", REPENTOGON.Implemented["Point.Point"] == true and REPENTOGON.Implemented["Point.GetPosition"] == true)
++  check("Point:GetPosition", vis(p:GetPosition(), 1, 2))
++  check("Point:GetSpritesheetCoordinate", near(p:GetSpritesheetCoordinate(), 30))
++  check("Point:GetWidth", near(p:GetWidth(), 1.25))
++  check("Point:GetColor", near(p:GetColor().R, 1) and near(p:GetColor().A, 0.5))
++  check("Point:GetIsWorldSpace default false", p:GetIsWorldSpace() == false)
++  p:SetPosition(Vector(5, 6)) p:SetSpritesheetCoordinate(7) p:SetWidth(2) p:SetColor(Color(0, 1, 0, 1)) p:SetIsWorldSpace(true)
++  check("Point setters", vis(p:GetPosition(), 5, 6) and near(p:GetSpritesheetCoordinate(), 7) and near(p:GetWidth(), 2) and near(p:GetColor().G, 1) and p:GetIsWorldSpace() == true)
++  local d = Point(Vector(0, 0), 0)
++  check("Point defaults: width 1, white", near(d:GetWidth(), 1) and near(d:GetColor().R, 1) and near(d:GetColor().A, 1))
++  check("Point rejects a non-Vector position", not pcall(Point, 5, 0))
++  check("Point rejects a non-number coordinate", not pcall(Point, Vector(0, 0), "x"))
++  check("Point __tostring", type(tostring(p)) == "string")
++  for _, m in ipairs({ "GetColor", "GetIsWorldSpace", "GetSpritesheetCoordinate", "GetWidth", "GetPosition", "SetColor", "SetIsWorldSpace", "SetSpritesheetCoordinate", "SetWidth", "SetPosition" }) do
++    check("Implemented Point." .. m, REPENTOGON.Implemented["Point." .. m] == true)
++  end
++  -- Beam
++  local sp = fresh(nil, "WalkDown")
++  local b = Beam(sp, 1, false, true)
++  check("Beam:GetLayer / GetUseOverlay / GetUnkBool", b:GetLayer() == 1 and b:GetUseOverlay() == false and b:GetUnkBool() == true)
++  check("Beam keeps its own copy of the sprite", b:GetSprite() ~= nil and b:GetSprite() ~= sp)
++  b:SetLayer(2) b:SetUseOverlay(true) b:SetUnkBool(false)
++  check("Beam setters", b:GetLayer() == 2 and b:GetUseOverlay() == true and b:GetUnkBool() == false)
++  local s2 = fresh(nil, "WalkUp")
++  b:SetSprite(s2, 3, true)
++  check("Beam:SetSprite(sprite, layer, overlay)", b:GetLayer() == 3 and b:GetUseOverlay() == true and b:GetSprite() ~= nil)
++  b:SetSprite(s2)
++  check("Beam:SetSprite(sprite)", b:GetSprite() ~= nil)
++  b:Add(Vector(1, 1), 0)
++  b:Add(Vector(2, 2), 16, 2)
++  b:Add(Point(Vector(3, 3), 32, 0.5, Color(1, 1, 1, 1)))
++  local pts = b:GetPoints()
++  check("Beam:Add keeps the points in order, as Points", #pts == 3 and vis(pts[1]:GetPosition(), 1, 1) and near(pts[2]:GetWidth(), 2) and near(pts[3]:GetSpritesheetCoordinate(), 32) and near(pts[1]:GetWidth(), 1))
++  b:SetPoints({ Point(Vector(9, 9), 1) })
++  check("Beam:SetPoints", #b:GetPoints() == 1 and vis(b:GetPoints()[1]:GetPosition(), 9, 9))
++  b:Render(false)
++  check("Beam:Render(false) keeps the points", #b:GetPoints() == 1)
++  b:Render()
++  check("Beam:Render() clears the points", #b:GetPoints() == 0)
++  check("Beam is a stand-in: not in Implemented", REPENTOGON.Implemented["Beam.Render"] ~= true and REPENTOGON.Implemented["Beam.Add"] ~= true)
++  local named = Beam(sp, "head", false, false)
++  check("Beam with a layer name", named:GetLayer() == sp:GetLayer("head"):GetLayerID())
++end
++
++local function image_tests()
++  local img = Renderer.LoadImage("gfx/characters/costumes/character_001_isaac.png")
++  check("Image:GetName", img:GetName() == "gfx/characters/costumes/character_001_isaac.png")
++  for _, m in ipairs({ "GetWidth", "GetHeight", "GetPaddedWidth", "GetPaddedHeight", "Render", "RenderWithShader" }) do
++    check("Image:" .. m .. " exists and is a stand-in", type(img[m]) == "function" and REPENTOGON.Implemented["Image." .. m] ~= true)
++  end
++  check("Image dimensions are not claimed (a stand-in answers 0)", img:GetWidth() == 0 and img:GetHeight() == 0)
++  check("Image:GetTexelRegion exists", type(img.GetTexelRegion) == "function")
++  check("Image:GetTexelRegion is not registered", REPENTOGON.Implemented["Image.GetTexelRegion"] ~= true)
++  try("GetTexelRegion", function() return img:GetTexelRegion(0, 0, 1, 1) end)
++  try("Image:Render", function() img:Render(SourceQuad(Vector(0, 0), Vector(1, 0), Vector(0, 1), Vector(1, 1)), DestinationQuad(Vector(0, 0), Vector(1, 0), Vector(0, 1), Vector(1, 1)), KColor(1, 1, 1, 1)) end)
++  try("Image:RenderWithShader", function() img:RenderWithShader(SourceQuad(Vector(0, 0), Vector(1, 0), Vector(0, 1), Vector(1, 1)), DestinationQuad(Vector(0, 0), Vector(1, 0), Vector(0, 1), Vector(1, 1)), KColor(1, 1, 1, 1), Renderer.LoadShader("x"), {}) end)
++end
++
++local function baby_tests()
++  check("EntityConfig.GetBaby is Implemented", REPENTOGON.Implemented["EntityConfig.GetBaby"] == true)
++  local b = EntityConfig.GetBaby(2)
++  check("EntityConfig.GetBaby(2) is the Bloat Baby", b ~= nil and b:GetName() == "Bloat Baby", b and b:GetName())
++  check("EntityConfigBaby:GetID", b:GetID() == 2)
++  check("EntityConfigBaby:GetSpritesheetPath", b:GetSpritesheetPath() == "gfx/Characters/Player2/002_Baby_Bloat.png", b:GetSpritesheetPath())
++  check("EntityConfigBaby:GetAchievementID is a number", type(b:GetAchievementID()) == "number", b:GetAchievementID())
++  check("EntityConfig.GetBaby(10000) is nil", EntityConfig.GetBaby(10000) == nil)
++  check("EntityConfig.GetBaby(BabySubType.BABY_BLOAT) agrees", EntityConfig.GetBaby(BabySubType.BABY_BLOAT):GetID() == 2)
++  for _, m in ipairs({ "GetAchievementID", "GetID", "GetName", "GetSpritesheetPath" }) do
++    check("Implemented EntityConfigBaby." .. m, REPENTOGON.Implemented["EntityConfigBaby." .. m] == true)
++  end
++end
++
++local font_done = false
++local function font_tests()
++  local f = Font()
++  local ok = pcall(function() f:Load("font/terminus8.fnt") end)
++  check("Font loads the game's terminus8", ok and f:IsLoaded())
++  local w = f:GetStringWidth("Hello")
++  check("Font:GetStringWidth is a positive number", type(w) == "number" and w > 0, w)
++  check("Font:GetStringWidthUTF8", f:GetStringWidthUTF8("Hello") == w)
++  check("Font:GetStringWidth is longer for a longer string", f:GetStringWidth("Hello world") > w)
++  check("Font:GetStringWidth rejects a number", not pcall(function() f:GetStringWidth(5) end))
++  check("Font:GetStringWidth rejects nil", not pcall(function() f:GetStringWidth(nil) end))
++  local kc = KColor(1, 1, 1, 1)
++  try("Font:DrawString", function() f:DrawString("Hello", 10, 10, kc, 0, false) end)
++  try("Font:DrawString box width centered", function() f:DrawString("Hello", 10, 20, kc, 100, true) end)
++  try("Font:DrawStringUTF8", function() f:DrawStringUTF8("Hello", 10, 30, kc, 0, false) end)
++  try("Font:DrawStringScaled", function() f:DrawStringScaled("Scaled", 10, 40, 2, 2, kc, 0, false) end)
++  try("Font:DrawStringScaledUTF8", function() f:DrawStringScaledUTF8("Scaled", 10, 60, 1.5, 1.5, kc, 0, false) end)
++  check("Font:DrawString rejects a missing colour", not pcall(function() f:DrawString("x", 0, 0, nil) end))
++  check("Font:DrawString rejects a number for the string", not pcall(function() f:DrawString(5, 0, 0, kc) end))
++  check("Font:DrawStringScaled rejects a missing scale", not pcall(function() f:DrawStringScaled("x", 0, 0, nil, 1, kc) end))
++  check("Font:DrawStringScaled rejects a missing colour", not pcall(function() f:DrawStringScaled("x", 0, 0, 1, 1, nil) end))
++  for _, m in ipairs({ "DrawString", "DrawStringUTF8", "DrawStringScaled", "DrawStringScaledUTF8", "GetStringWidth", "GetStringWidthUTF8" }) do
++    check("Implemented Font." .. m, REPENTOGON.Implemented["Font." .. m] == true)
++  end
++  font_done = true
++end
++
++local frame = 0
++local ran = false
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  frame = frame + 1
++  if frame ~= 5 then return end
++  ran = true
++  try("sprite tests", sprite_tests)
++  try("layer tests", layer_tests)
++  try("quad tests", quad_tests)
++  try("point and beam tests", point_beam_tests)
++  try("image tests", image_tests)
++  try("baby tests", baby_tests)
++end)
++mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++  if frame < 8 or font_done then return end
++  try("font tests", font_tests)
++  B.log(string.format("lab_render_test: DONE pass=%d fail=%d", pass, fail))
++end)
 diff --git a/scripts/recomp/rgon/lab_roomconfig_test.lua b/scripts/recomp/rgon/lab_roomconfig_test.lua
 new file mode 100644
 index 0000000..6e5765e
@@ -19369,7 +21729,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..a547f9f 100644
+index 4175f07..e82a4a3 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -19428,7 +21788,7 @@ index 4175f07..a547f9f 100644
    rearm = function() arm(nil) end,
  }
 -for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_hooks.lua" }) do
-+for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_ambush.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_entity_more.lua", "api_player_health.lua", "api_npc.lua", "api_tears_more.lua", "api_eid.lua", "api_pickup_more.lua", "api_player_items.lua", "api_game_misc.lua", "api_rooms_more.lua", "api_cacheflags.lua", "api_hooks.lua", "api_framectx.lua" }) do
++for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_ambush.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_entity_more.lua", "api_player_health.lua", "api_npc.lua", "api_tears_more.lua", "api_eid.lua", "api_pickup_more.lua", "api_player_items.lua", "api_game_misc.lua", "api_rooms_more.lua", "api_cacheflags.lua", "api_hooks.lua", "api_hooks_hud.lua", "api_framectx.lua", "api_render.lua", "api_weapons.lua" }) do
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)
@@ -19802,7 +22162,7 @@ index 1a209cf..8d72794 100644
      else if (GL.has(name)) { used++; if (!HAVECLASS.has(name)) missing.push(name); }
      else if (name.startsWith('MC_')) { const id = CB.get(name); if (id >= 1000) { used++; if (!HAVEID.has(id)) missing.push(name); } }
 diff --git a/scripts/recomp/rgon/tools/hook_table.py b/scripts/recomp/rgon/tools/hook_table.py
-index 0d1d8bd..5f80afe 100644
+index 0d1d8bd..c2e9337 100644
 --- a/scripts/recomp/rgon/tools/hook_table.py
 +++ b/scripts/recomp/rgon/tools/hook_table.py
 @@ -68,7 +68,7 @@ HOOKS = [
@@ -19814,7 +22174,7 @@ index 0d1d8bd..5f80afe 100644
      (21, "Game::RestoreState", 0x006bb790, "sig", None, ""),
      (22, "Room::SpawnGridEntity", 0x007ebca0, "reg", None, ""),
      (23, "GridEntity::Init", 0x00709db0, "sig", None, ""),
-@@ -206,6 +206,86 @@ HOOKS = [
+@@ -206,6 +206,142 @@ HOOKS = [
       "character it sets [this+5] from Menu_Character_Entry::IsCharacterAvailable (0x0094d64a, 0x0094d657) and "
       "shows layers 4..15 or 16 of the big page; for a mod's (selected id [this+0x10] >= 0x12, 0x0094d62d) it "
       "always sets [this+5] = 1 (0x0094d700)"),
@@ -19898,19 +22258,75 @@ index 0d1d8bd..5f80afe 100644
 +     "false; 24 callers (the Lua binding pushes 0x006ee200 itself, the D6 and Jera code call it directly)"),
 +    (222, "Room::GetItemPool", 0x007ebe20, "asm", 0, "static, ecx = the seed, edx = the RoomDescriptor, [esp+4] = the boss id (read at "
 +     "[ebp+8]), plain `ret` (the caller cleans); the pool type in EAX; callers 0x006fe39d (GetPoolForRoom) and 0x007ec0b1"),
++    # worker cb-d: HUD, completion and text callbacks (slots 224-271 are cb-d's)
++    (224, "PlayerHUD::RenderHearts", 0x00843df0, "asm", 0x18,
++     "thiscall on one of the HUD's player slots; (Vector* offset, ANM2* sprite, int layout, float scale, Vector pos by value): called by "
++     "0x0084a870 and by HUD::Render's player loop (0x009a70bc: `push eax(&pos); push [hud+0x39a0] = the hearts sprite; push layout; push 1.0f`); "
++     "the one `ret 0x18` (0x008451a4). REPENTOGON's signature matches nothing here"),
++    (225, "CompletionWidget::Render", 0x004252f0, "sig", 8,
++     "REPENTOGON's signature matches once, here (thiscall, (Vector* pos, Vector* scale), `ret 8`); called by 0x0094a500 (the character menu) "
++     "and 0x009b7190 (the pause screen)"),
++    (226, "HUD::ShowFortuneText", 0x009a3ac0, "asm", 4,
++     "thiscall(std::list* lines), `ret 4` twice; the Lua binding of HUD:ShowFortuneText (registered with the name at 0x00b7463c, function "
++     "0x0085eca0) builds the list and calls it at 0x0085ee7f, and the fortune cookie code 0x009807a0 calls it at 0x00980aac. REPENTOGON's "
++     "signature matches 0x00912560 here, which is a different class's function"),
++    (227, "HistoryHUD::Render", 0x0083ac20, "asm", 8,
++     "thiscall on HUD+0x5c54 (the history HUD, `lea ecx, [edi + 0x5c54]` at 0x009a413c in HUD::Render), (Vector* pos, bool mini) with "
++     "mini = the player layout is 2; `ret 8` (0x0083b277); REPENTOGON's signature matches nothing here"),
++    (228, "HistoryHUD::Recompute", 0x0083b280, "asm", 8,
++     "REPENTOGON's signature matches twice (0x0083b280 and 0x006d9550, a different function); this one follows Render, thiscall "
++     "(int idx, bool immediate), `ret 8` (0x0083b826); called by 0x0083b850 (RecomputeAll) and HUD::PostUpdate (0x009a2b9e)"),
++    (229, "Manager::RecordPlayerCompletion", 0x0095a7b0, "asm", 4,
++     "static stdcall(int event), `ret 4` (0x0095aa2d); REPENTOGON's signature is one byte off (`sub esp, 0x14` here); walks the game's player "
++     "list and records the completion; 15 callers in 0x007fb250 (boss death: `push 0xe` Beast, `push 3` Boss Rush) and 0x0065d1f0"),
++    (230, "PersistentGameData::IncreaseEventCounter", 0x00929b40, "sig", 8,
++     "REPENTOGON's signature matches once, here; thiscall(int event, int amount), the Layer already calls it (api_data.lua)"),
++    (231, "HUD_Message::Show", 0x00840b00, "asm", 0x10,
++     "thiscall on a message slot (HUD+0x3ed0 + 0x1f4 * i); (const char* title, const char* subtitle, bool autoHide, bool isCurse); two "
++     "`ret 0x10`; called by HUD::ShowItemTextCustomUTF8 (0x009a3410), the Lua HUD:ShowItemText (0x0085ea47) and the stage name code"),
++    (232, "HUD::ShowStackedItemTextCustomUTF16", 0x009a34a0, "sig", 0x10,
++     "REPENTOGON's signature matches once, here; thiscall(wchar_t* title, wchar_t* subtitle, bool, bool); three `ret 0x10`; the game's "
++     "HUD::ShowItemText (0x009a2d20) calls it at 0x009a3302"),
++    # worker cb-e: weapons, lasers, knives (slots 272-319)
++    (272, "Weapon::Fire", 0x009f3540, "asm", 0xc, "REPENTOGON's Weapon vtable signature (`558bec83e4f883ec60a1????????33c4894424??8b45`) matches "
++     "once, here: the base Weapon's Fire(const Vector& pos, bool isShooting, bool isInterpolated), vtable slot 3 of Weapon (0x00b81690); the "
++     "subclasses' Fire (Brimstone 0x009ff360 at 0x009ff3a6, Tears 0x00a0a720 at 0x00a0a759 and 12 more) call it first; this = the weapon "
++     "(owner at +4, type at +0x30); both `ret 0xc`"),
++    (273, "Weapon::TriggerTearFired", 0x009f7930, "asm", 8, "REPENTOGON's signature (`558bec83e4f081ec98020000`) matches nothing here; the "
++     "same function: thiscall(const Vector& pos [ebp+8], int fireAmount [ebp+0xc]) with the frame grown to 0x2a8, `test edx, edx; jle` "
++     "skips a non-positive amount, loops per tear (Isaac's Tears, collectible 0x143, at 0x009f79a1), one `ret 8` (0x009f9013); called "
++     "from the weapon Fire functions of Tears, Brimstone (0x00a0052b), Knife and others"),
++    (274, "Entity_Laser::DoDamage", 0x0097e3c0, "asm", 4, "REPENTOGON's signature matches three functions; this is the laser's: thiscall(Entity* "
++     "[ebp+8]) with the damage in xmm2 (stored at [ebp-0x10]), `ret 4` (0x0097e6ce), called twice by Entity_Laser::damage_entities "
++     "(0x00971810) at 0x009727da and 0x0097320c, once per collision of a sample laser and of a straight one"),
++    (275, "Entity_Player::FireBoneClub", 0x007ae030, "asm", 0x10, "REPENTOGON's signature matches once, here: thiscall(parent, variant, "
++     "unk, weapon) with unk2 in xmm3; the one caller is 0x009f6b25 (0x009f6af0, a Weapon function); `ret 0x10` (0x007ae1cd)"),
++    (276, "Weapon::FireSword", 0x009f6c50, "asm", 0x18, "REPENTOGON's signature matches once, here: thiscall with six stack arguments (param_3 in "
++     "xmm3); `ret 0x18` (0x009f6e59); five callers, all in the Spirit Sword weapon's Fire 0x00a099e0"),
++    (277, "Entity_Familiar::FireBrimstone", 0x00638c10, "asm", 8, "REPENTOGON's signature matches once, here: thiscall(const Vector& aim "
++     "[ebx+8], bool); creates the laser with 0x0096f310 (called by Player::FireBrimstone too) and returns it in EAX; the owner player's "
++     "dead byte [+0x173] answers 0; `ret 8` (0x00638e1b)"),
++    (278, "Entity_Familiar::FireTechLaser", 0x00613c20, "asm", 4, "REPENTOGON's signature (`558bec81ec98000000a1...`) matches nothing here; this "
++     "is the same function: thiscall(const Vector& aim [ebp+8]) on a familiar ([edi+0x410] = its player, dead byte +0x173 answers 0), makes "
++     "a type-2 laser with 0x0096f310, sets +0x515 and +0x4e4, moves it with `call [eax+0x3c]`, returns it (`mov eax, esi`); both `ret 4`"),
++    (279, "Weapon_Brimstone::do_baby_brimstone_burst", 0x00a01020, "asm", 0xc, "REPENTOGON's signature (SEH prologue, `sub esp, 0x210`, "
++     "`movss [ebp-X], xmm3`) matches nothing here; this has the same shape (frame 0x218, `movss [ebp-0xdc], xmm3`, ebx-aligned prologue): "
++     "thiscall(Vector* unused1, Vector* dir, int unused2) with damageScale in xmm3, one `ret 0xc` (0x00a02783); called five times by the "
++     "Brimstone weapon's Fire (0x009ff360: `push [ebp-0x60]; lea eax,[ebp-0x18]; push eax; push 0xc7b640 (the zero vector); mov ecx, esi; "
++     "movss xmm3, 1.0f`) and five times by 0x00a02890"),
  ]
  # the entity classes' virtual functions: slots 100 + 12 * k + class index
  _k = 0
-@@ -213,7 +293,7 @@ for _fn in ("Init", "Update", "Render", "TakeDamage", "HandleCollision"):
+@@ -213,7 +349,7 @@ for _fn in ("Init", "Update", "Render", "TakeDamage", "HandleCollision"):
      for _i, _cls in enumerate(ENTITY_CLASSES):
          HOOKS.append((100 + 12 * _k + _i, "%s::%s" % (_cls, _fn), None, "vt", None, ""))
      _k += 1
 -MAX_SLOTS = 192
-+MAX_SLOTS = 224
++MAX_SLOTS = 320
  
  # Round 110: instruction hooks (lift_patches.py RGON_INSN_HOOKS): a handler right
  # before one instruction inside a function, which reads and writes the registers
-@@ -280,6 +360,102 @@ INSN_HOOKS = [
+@@ -280,6 +416,110 @@ INSN_HOOKS = [
       "before 0x008f89c4, which every way reaches (the target of `jb` at 0x008f8994), and drawn after it "
       "(0x008f8a10..). Called by the wheel 0x0094bee0 (return address 0x0094c44a) and by 0x00982100 "
       "(0x0098256a). REPENTOGON's signature for its RenderCustomCharacterPortraits matches nothing here"),
@@ -20010,10 +22426,18 @@ index 0d1d8bd..5f80afe 100644
 +     "Entity_Knife::update_bone_swing (REPENTOGON's PostMeleeHitboxInit signature matches once, 0x0096a929: `push [ebp-0xc0]; mov ecx, edi; "
 +     "call 0x006a92a0` then `movzx eax, word [esi+0x4ee]`); the hook sits on that movzx: esi is the weapon (main) knife, edi the hitbox knife "
 +     "just spawned (it was compared with esi at 0x0096a919: the same pointer means no hitbox)"),
++    # worker cb-e: MC_PRE_LASER_COLLISION in Entity_Laser::damage_entities (0x00971810; the laser is `this` = edi / [ebp-0x7c])
++    (280, "Entity_Laser::damage_entities@PreSampleCollision", 0x00971810, 0x009720b5, (0x0097207c,),
++     "REPENTOGON's PreSampleLaserCollision signature (`8b48??83f90975??c780...`) matches once, here (0x009720b5: `mov ecx,[eax+0x28]; cmp ecx,9`), "
++     "reached only by the `ja` at 0x0097207a (the sample is within the entity's radius); eax = the entity, the laser [ebp-0x7c]. Ignoring goes "
++     "to 0x0097207c, the fall-through of that `ja` (the next sample); it has no label in the lift, lift_patches.py adds one"),
++    (281, "Entity_Laser::damage_entities@PreCollision", 0x00971810, 0x00973201, (0x00973651,),
++     "REPENTOGON's `f30f1095????????8bcf56` matches once, here (`movss xmm2,[ebp-0xd4]; mov ecx,edi; push esi; call 0x97e3c0` = DoDamage): "
++     "edi = the laser, esi = the entity. Ignoring goes to 0x00973651, where the `jbe`s just before go (the next entity)"),
  ]
  
  
-@@ -293,7 +469,8 @@ def check_insn(pe_root, taken):
+@@ -293,7 +533,8 @@ def check_insn(pe_root, taken):
          seen.add(slot)
          f = run_pequery(pe_root, "func", "0x%08x" % iva)
          m = re.search(r"start 0x([0-9a-f]+)\s+end 0x([0-9a-f]+)", f)

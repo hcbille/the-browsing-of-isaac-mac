@@ -131,6 +131,25 @@ def rule_inert_not_implemented(fs):
                                  'list them as "accepted, not supported" in the file and in layer-gaps.md' % name)
 
 
+def rule_ctor_implemented_name(fs):
+    """A constructor is counted as "Class.Class" by rgon_census.py and rgon_backlog.py (2026-11-19, chunk 8: the quad
+    constructors were set as Implemented["SourceQuad"], so the backlog kept them missing while they worked)."""
+    ctors = ('DestinationQuad', 'SourceQuad', 'Point', 'Beam', 'Sprite', 'Font', 'RNG', 'Color', 'Vector', 'KColor', 'BitSet128')
+    for f in fs:
+        if not f.endswith('.lua') or not f.startswith(RGON + '/'):
+            continue
+        t = text_of(f)
+        if t is None:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            if re.match(r'\s*--', line):
+                continue
+            m = re.search(r'Implemented\[\s*"(%s)"\s*\]\s*=' % '|'.join(ctors), line)
+            if m or re.search(r'Implemented\[\s*name\s*\]\s*=\s*true', line):
+                yield (f, n, 'a constructor goes in REPENTOGON.Implemented as "Class.Class" (Implemented["%s.%s"] = true), the key the census '
+                             'and the backlog look up; a bare class name or a bare variable counts for nothing' % ((m.group(1),) * 2 if m else ('Name', 'Name')))
+
+
 def rule_hurt_func_source(fs):
     """GridEntity::hurt_func (0x00709fb0) reads its first stack argument, the damage SOURCE entity (its type at +0x28), before
     anything else (2026-11-19, chunk 6: a call with 0 there dereferences null). Pass a real Entity* (the first player), never 0.
@@ -484,6 +503,22 @@ def rule_lua_format_options(fs):
                        'first (e.g. hex32() in host_rgon.c) and pass the text as %%s' % m.group(1))
 
 
+def rule_host_string_to_guest(fs):
+    """A Lua shim must never return a Host C literal with ret_ptr (2026-11-19: lua_typename's "boolean" is in the Host
+    image, so EntityPlayer:GetBombVariant died with "Host pointer ... outside the Guest region"). Strings that Lua
+    itself owns live in the Guest arena and are fine; a literal or static string goes through guest_str()."""
+    bad = re.compile(r'ret_ptr\s*\(\s*cpu\s*,\s*(lua_typename|luaL_typename|lua_getupvalue|lua_getlocal|lua_setupvalue)\b')
+    for f in fs:
+        if not f.endswith('host_lua.c'):
+            continue
+        t = text_of(f) or ''
+        for m in bad.finditer(t):
+            if 'host-string-ok' in t[max(0, m.start() - 200):m.start()]:
+                continue    # the web build's #else branch: literals are in linear memory there
+            yield (f, t[:m.start()].count('\n') + 1,
+                   '%s returns a static Host string: store guest_str(%s(...)) in cpu->EAX instead of ret_ptr' % (m.group(1), m.group(1)))
+
+
 def rule_pgrep_game_by_name(fs):
     """Detect a running game with `pgrep -x isaac-mac`, never `pgrep -f` with a path (2026-11-19: heavy.sh waited 40 min
     for a game that was not running, because -f matched the waiting worker's own parent shell, whose command line
@@ -565,7 +600,7 @@ def rule_add_cache_flags_one_arg(fs):
                        'player:EvaluateItems() (the second argument is for mods, handled by api_cacheflags.lua)')
 
 
-RULES = [rule_add_cache_flags_one_arg, rule_type_of_callback_result, rule_stdstring_read, rule_orphan_starts_packed, rule_hurt_func_source, rule_item_name_is_a_key, rule_insn_hook_giant_entry, rule_pgrep_game_by_name, rule_tears_methods_in_lab, rule_cacheflag_literals, rule_health_field_offsets, rule_web_host_mem_base, rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_lab_prints_done, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part]
+RULES = [rule_add_cache_flags_one_arg, rule_type_of_callback_result, rule_stdstring_read, rule_orphan_starts_packed, rule_hurt_func_source, rule_item_name_is_a_key, rule_insn_hook_giant_entry, rule_pgrep_game_by_name, rule_tears_methods_in_lab, rule_cacheflag_literals, rule_health_field_offsets, rule_web_host_mem_base, rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_lab_prints_done, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part, rule_host_string_to_guest, rule_ctor_implemented_name]
 
 
 def main():

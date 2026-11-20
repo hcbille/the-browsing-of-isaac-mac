@@ -845,6 +845,24 @@ signature match; "FXLayers::AddPoopFx 0x4dd7f0" is really an NPC update.
 False positives of the backlog tool, now suppressed: `REVEL.RoomLists[...]:AddRooms` (a Revelations function, not RoomConfig.AddRooms) and StageAPI's
 `:SetMusic` (not RoomConfigStage). Lint rules: `hurt-func-source`, and `backlog-narrowing` now needs MODLIB.
 
+### CB-d: HUD, history HUD, completion, fortune and item text callbacks (hooks 224-232, `api_hooks_hud.lua`, lab `lab_cb_d.lua`, 2026-11-19)
+13 callbacks fire now (census 196 -> 209; functions 937 unchanged): MC_PRE/POST_PLAYERHUD_RENDER_HEARTS (1118/1091, `PlayerHUD::RenderHearts`
+0x00843df0 `ret 0x18`, found through HUD::Render's call that pushes the hearts sprite at HUD+0x39a0), MC_PRE/POST_COMPLETION_MARKS_RENDER (1216/1217,
+`CompletionWidget::Render` 0x004252f0 `ret 8`; the widget is `{ int characterId; ANM2 at +4 }`, read back), MC_PRE_FORTUNE_DISPLAY (1483,
+`HUD::ShowFortuneText` 0x009a3ac0 `ret 4`: REPENTOGON's signature matches 0x00912560, another class's function; the right one is what the Lua
+binding HUD:ShowFortuneText calls), MC_PRE/POST_HISTORYHUD_RENDER (1027/1028, `HistoryHUD::Render` 0x0083ac20 `ret 8`, `this` = HUD+0x5c54) and
+MC_POST_HISTORYHUD_RECOMPUTE (1029, `Recompute` 0x0083b280 `ret 8`, only when immediate), MC_PRE/POST_COMPLETION_EVENT (1049/1052,
+`Manager::RecordPlayerCompletion` 0x0095a7b0 static `ret 4`), MC_COMPLETION_MARK_GET / MC_POST_COMPLETION_MARK_GET (1047/1048, from
+`PersistentGameData::IncreaseEventCounter` for the game's characters, by the counter names PROGRESSION_KILL_<boss>_WITH_<character>, and from
+RecordPlayerCompletion for a mod's characters, not tested with a real mod character), MC_PRE_ITEM_TEXT_DISPLAY (1484, `HUD_Message::Show` 0x00840b00 `ret 0x10`
+and `HUD::ShowStackedItemTextCustomUTF16` 0x009a34a0 `ret 0x10`). Facts: the history HUD is drawn only when `Options.ExtraHUDStyle` > 0
+(`[options+0x2a384]`, test at 0x009a40f1); in this build the item text goes through those two functions only (no separate UTF-8 stacked function).
+Limits: the HistoryHUD object handed to 1027-1029 has no methods yet (GetCollectibles, GetPosition, ... are not implemented, and neither is
+HUD:GetHistoryHUD); a table returned from MC_PRE_HISTORYHUD_RENDER (HideCollectibles/HideTrinkets) is accepted and ignored. Lab 34 PASS / 0 FAIL
+(the pause screen shows the widget). Deferred: MC_CAN_SELECT_CHARACTER and the character select page/portrait callbacks (1328-1332): REPENTOGON patches
+the middle of `Menu_Character::Render` and the wheel loop (five mid-function patches, `ModManager::RenderCustomCharacterMenu` 0xa54150 only for mods),
+which needs instruction hooks inside the menu's render code and a way to check them in a window; not located in this time box.
+
 ### Fiend Folio key blocks: `AddCacheFlags(flags, true)` (`api_cacheflags.lua`, lab `lab_ffkeys.lua`, 2026-11-19)
 Play report: in "Vermin - Key Chain" the coloured key blocks never opened. Cause: Fiend Folio's `CollectPuzzleKey` calls
 `player:AddCacheFlags(CACHE_FAMILIARS, true)` to get its key-ghost familiars from `MC_EVALUATE_CACHE` -> `CheckFamiliar`. The game's own
@@ -938,3 +956,30 @@ MusicManager PlayJingle/StopJingle, BossPool and BossPoolManager, the EntitySave
 and EntityNPC.ThrowMaggot (REPENTOGON's byte signatures match nothing), the HistoryHUD family with its two callbacks, Input.GetMouseWheel, Options.BetterVoidGeneration,
 Isaac LoadModDataFromFolder/SetIcon/ShowErrorDialog/StartNewGame/DrawLine/RenderCollectionItem. `RenderToWorld`'s screen-shake and scroll terms read as zero in the lab, so only the
 zero-offset case is verified. Lint rules: `stdstring-read`, `backlog-narrowing` (MODFIELD).
+
+**Render batch (worker render, wave 4 chunk 8; `api_render.lua`, `api_misc.lua`, lab `lab_render_test.lua` 218 PASS / 0 FAIL).**
+Sprite animation state in v1.9.7.17: two 0x20-byte blocks at +0x30 (main) and +0x50 (overlay): +0x04 animation record, +0x08 per-layer frame
+indices, +0x10 frame (float), +0x14 playing byte. The game's own `Stop()` clears the main byte only; its `IsFinished(name)` is also true while an
+animation is merely stopped, so the Layer works "finished" out from the animation data (non-looping and at its last frame). Done: `Sprite` Stop (with
+REPENTOGON's overlay flag), StopOverlay, Continue, ContinueOverlay, IsOverlayEventTriggered and WasOverlayEventTriggered (the two state blocks swapped
+around the game's own event check), Copy (file, animations, spritesheets, every layer field, colour, flips, speed, flags), ReplaceSpritesheet's third
+argument, SetOverlayFrame(frame); `Point` (new, a Lua value class); the quad constructors and `NewFromBounds/NewFromRectangle` UV flag (all quad names, counted
+as "Class.Class"); `Font` argument checks in front of the game's own Lua legacy functions (DrawString, DrawStringScaled, UTF8 pair, GetStringWidth pair);
+`EntityConfig.GetBaby` and `EntityConfigBaby` (resources/babies.xml: id, name, skin, achievement). Beam now holds Points and a copy of its sprite.
+Stand-ins, not in `REPENTOGON.Implemented` (they need render targets and shader programs inside the engine): Image (width/height answer 0, GetTexelRegion,
+Render, RenderWithShader), Sprite/LayerState GetSpritesheet and SetSpritesheet (an Image from `Renderer.LoadImage(path)` really replaces the layer's graphics;
+one from CreateImage is not drawn), the custom shader functions on Sprite and LayerState, `Beam:Render`, `SourceQuad` Convert functions (they divide by an Image's size).
+No texture pointer exists in a layer state (+0x08 is the path string), so an Image needs an engine hook: deferred. Lint rule: `ctor-implemented-name`.
+Census: functions 937 to 961, constructors 7 to 13, callbacks 196. Missing names used by Fiend Folio 54 to 39 and by Epiphany 20 to 17.
+**Weapon, laser and knife callbacks (worker cb-e, wave 4, 2026-11-20; `api_weapons.lua`, hook slots 272-281, lab `lab_cb_e.lua` 28 PASS / 0 FAIL; census callbacks 196 -> 207).**
+Hooks (all `asm` rows of `hook_table.py`, every `ret` checked): `Weapon::Fire` 0x009f3540 (ret 0xc; the base class's, every weapon's Fire calls it first; it runs about three times per shot),
+`Weapon::TriggerTearFired` 0x009f7930 (ret 8; REPENTOGON's signature matches nothing, frame grew to 0x2a8), `Entity_Laser::DoDamage` 0x0097e3c0 (ret 4, damage in xmm2),
+`Entity_Player::FireBoneClub` 0x007ae030 (ret 0x10), `Weapon::FireSword` 0x009f6c50 (ret 0x18), `Entity_Familiar::FireBrimstone` 0x00638c10 (ret 8), `Entity_Familiar::FireTechLaser` 0x00613c20
+(ret 4; found by shape, called for variant 53 = Robo-Baby 2.0), `Weapon_Brimstone::do_baby_brimstone_burst` 0x00a01020 (ret 0xc, damage scale in xmm3), and two instruction hooks in
+`Entity_Laser::damage_entities` 0x00971810 for MC_PRE_LASER_COLLISION: sample lasers at 0x009720b5 (entity eax, laser [ebp-0x7c], ignoring goes to 0x0097207c) and straight lasers at
+0x00973201 (laser edi, entity esi, ignoring goes to 0x00973651). MC_POST_FIRE_KNIFE (1257) reuses the existing FireKnife hook (slot 68). `lift_patches.apply_insn_hooks` now gives a redirect target
+that the lifter left without a label (the fall-through of a conditional branch) an `L_xxxxxxxx: ;` right after its `RECOMP_VA` marker. Proven in the lab by the game's own reaction: tears
+(1105, 1098 with args and a WeaponType filter), Mom's Knife (1257), Spirit Sword (1258), Forgotten's club (1254), Technology / Technology 2 / Brimstone / `EntityLaser.ShootAngle` variants 1-14 on a frozen
+Monstro (1248 and 1249 with args; a `true` answer on 1248 silences 1249 on both the sample and the straight path), Lil Brimstone (1261), Robo-Baby 2.0 (1262, variant filter), Tainted Azazel's sneeze
+(1036 and 1037, source player, direction, damage scale 1.0). Not seen: Hemoptysis's sneeze did not fire in 900 frames (the callback is armed and fires for Tainted Azazel; Azazel himself never sneezes).
+Deferred: FireSplitTear split sites (not reached).

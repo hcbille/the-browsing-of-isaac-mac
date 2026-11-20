@@ -58,9 +58,13 @@ Working, on an M2 MacBook Air:
   lasers, knives and effects, pickups, loot lists and item pools, and the shop purchase,
   Void, Compost, ghost pickup, Devil Room and Planetarium chance callbacks; and now the player's item and
   charge state, room cameras and effects, game-level settings and challenges, and the grid
-  update, render, collision and damage callbacks. A recompilation gap that crashed the game
-  on a rarely used accessor is fixed.
-  It has 937 of REPENTOGON's 1,727 functions and 196 of its 380 callbacks, the
+  update, render, collision and damage callbacks; and now sprite stop, continue and overlay
+  controls, points, beams, quads, text drawing checks and baby configs, plus the heart HUD,
+  history HUD, completion mark, fortune text, weapon, laser, knife, sword, bone club and
+  familiar laser callbacks. A recompilation gap that crashed the game
+  on a rarely used accessor is fixed, and so is a crash in a script argument check that
+  handed the game a pointer from outside its memory.
+  It has 961 of REPENTOGON's 1,727 functions and 220 of its 380 callbacks, the
   ones the tested mods use first. Item settings such as `ChargeType` are writable, as
   with REPENTOGON. `scripts/mac/rgon_census.py` measures the rest.
 - One pinned game version. The recompilation only works with one exact `isaac-ng.exe`
@@ -81,7 +85,9 @@ Not done yet:
   with a real Steam client.
 - Mod status effects declared without an id (some of Epiphany's and Fiend Folio's) do
   nothing yet. They used to freeze the game on a room change; that's fixed.
-- More REPENTOGON coverage: most missing callbacks need new hooks in the game.
+- More REPENTOGON coverage: most missing callbacks need new hooks in the game. Still
+  open: the character select callbacks, real image sizes and custom shaders (the names
+  exist but do nothing yet).
 - Floor music is missing in some setups (the game reports no track for the stage); the
   cause is being looked into.
 - A from-scratch build check.
@@ -104,7 +110,7 @@ game.
   [`0cd8f863f`](https://github.com/TeamREPENTOGON/REPENTOGON/commit/0cd8f863fe9947a8414d9018a700269603e629e6)
   (2026-11-09, version 1.1.3, its latest snapshot). That snapshot targets game v1.9.7.12;
   this build runs v1.9.7.17, which is why fields are re-measured.
-- **Progress:** 937 of its 1,727 functions and 196 of its 380 callbacks, the ones
+- **Progress:** 961 of its 1,727 functions and 220 of its 380 callbacks, the ones
   the tested mods use coming first. `scripts/mac/rgon_census.py` compares the layer
   against a REPENTOGON checkout, and `docs/mac/layer-gaps.md` has the details.
 - The layer tells each mod whether REPENTOGON is there, and only says yes when every
