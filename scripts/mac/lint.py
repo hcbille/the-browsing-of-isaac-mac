@@ -167,9 +167,9 @@ def rule_host_math_header(fs):
 
 
 def rule_image_render_not_registered(fs):
-    """Image:Render only draws inside Renderer.RenderToImage; on the screen it does nothing (2026-11-20, gfx). A name that is
-    only half real stays out of REPENTOGON.Implemented: leave Image.Render and Image.RenderWithShader unregistered until the
-    screen route exists."""
+    """Image:RenderWithShader needs a shader program inside the engine; there is none, so it stays out of REPENTOGON.Implemented
+    (2026-11-20, gfx; Image:Render itself is real since wave 6: screen route by a temporary Sprite). A name that is only half
+    real stays unregistered and is listed as deferred."""
     for f in fs:
         if not f.endswith('.lua') or not f.startswith(RGON + '/') or f.endswith('lint.py'):
             continue
@@ -179,9 +179,27 @@ def rule_image_render_not_registered(fs):
         for n, line in enumerate(t.splitlines(), 1):
             if re.match(r'\s*--', line):
                 continue
-            if re.search(r'Implemented\[\s*"Image\.(Render|RenderWithShader)"\s*\]\s*=\s*true', line):
-                yield (f, n, 'Image.Render draws only inside Renderer.RenderToImage, so it is not registered in REPENTOGON.Implemented; '
-                             'register it only when it also draws on the screen')
+            if re.search(r'Implemented\[\s*"(Image\.RenderWithShader|Beam\.Render)"\s*\]\s*=\s*true', line):
+                yield (f, n, 'Image:RenderWithShader and Beam:Render have no real route (no shader program / BeamRenderer here), so they are not '
+                             'registered in REPENTOGON.Implemented; register one only when it draws what REPENTOGON draws')
+
+
+def rule_layer_setsize_is_scale(fs):
+    """LayerState:GetSize/SetSize is the layer's SCALE (default 1, 1), not the crop size: SetSize(32, 32) on a 64x64 layer drew a
+    quad 32 times larger (2026-11-20, gfx2 probe). The crop rectangle is the anm2 frame's Width/Height plus
+    LayerState:SetCropOffset; to draw a sub-rectangle, use an anm2 whose frame has that size (api_gfx.lua's blit sprites)."""
+    for f in fs:
+        if not f.endswith('.lua') or not f.startswith(RGON + '/') or f.endswith('lint.py'):
+            continue
+        t = text_of(f)
+        if t is None:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            if re.match(r'\s*--', line) or 'function' in line:
+                continue
+            if re.search(r'[Ll]ayer[^\n]*:SetSize\(|:GetLayer\([^)]*\):SetSize\(', line):
+                yield (f, n, 'LayerState:SetSize is the layer scale, not the crop size; set the crop with SetCropOffset and give the anm2 frame '
+                             'the size you want (see api_gfx.lua screen_render)')
 
 
 def rule_hurt_func_source(fs):
@@ -451,6 +469,36 @@ def rule_leftovers_methods_in_lab(fs):
                    'or leave the method out of api_leftovers.lua' % (cls, name))
 
 
+def rule_isaac_misc_names_in_lab(fs):
+    """Every name api_isaac_misc.lua registers is in lab_isaac_misc.lua's NAMES (wave 6, worker misc-a: a name with no check is a name nobody proved)."""
+    src = text_of(RGON + '/api_isaac_misc.lua')
+    lab = text_of(RGON + '/lab_isaac_misc.lua')
+    if src is None or lab is None:
+        return
+    names = set(re.findall(r'method\("(\w+)", "(\w+)"', src))
+    names |= set(re.findall(r'static\(\w+, "(\w+)", "(\w+)"', src))
+    names |= set(('RoomDescriptor', n) for n in re.findall(r'DM\.(\w+) =', src))
+    names |= set(('ProceduralItemManager', n) for n in re.findall(r'rawset\(M, "(\w+)"', src))
+    names |= set(('ItemConfigCard', n) for n in re.findall(r'rawset\(pg, "(\w+)"', src))
+    for cls, name in sorted(names):
+        if '"%s.%s"' % (cls, name) not in lab:
+            yield (RGON + '/lab_isaac_misc.lua', 0, 'add "%s.%s" to NAMES and a check that reads it back or shows the game\'s reaction, '
+                   'or leave it out of api_isaac_misc.lua' % (cls, name))
+
+
+def rule_empty_method_stand_in(fs):
+    """A method registered with an empty body (`method(cls, name, function() end)`) is a stand-in that does nothing (wave 6: Room:UpdateColorModifier
+    sat as one for weeks). Find the game's own function and call it, or leave the name out; never register a no-op."""
+    for f in fs:
+        if not f.startswith(RGON + '/api_') or not f.endswith('.lua'):
+            continue
+        text = text_of(f) or ''
+        for i, line in enumerate(text.split('\n'), 1):
+            mm = re.search(r'\b(method|m)\("(\w+)", "(\w+)", function\(\) end\)', line)
+            if mm and not ('"%s"' % mm.group(3) in text and 'Implemented["%s." .. n] = nil' % mm.group(2) in text):
+                yield (f, i, 'no-op method: call the game\'s own function (find it in the decompile) or leave the name unregistered')
+
+
 def rule_entity_methods_in_lab(fs):
     """Every method api_npc.lua registers is called by lab_entity_classes.lua (2026-11-19: the entity-class chunk was given
     a lab that names each one; a name with no check is a name nobody proved)."""
@@ -679,7 +727,27 @@ def rule_add_cache_flags_one_arg(fs):
                        'player:EvaluateItems() (the second argument is for mods, handled by api_cacheflags.lua)')
 
 
-RULES = [rule_add_cache_flags_one_arg, rule_type_of_callback_result, rule_stdstring_read, rule_orphan_starts_packed, rule_hurt_func_source, rule_item_name_is_a_key, rule_insn_hook_giant_entry, rule_pgrep_game_by_name, rule_tears_methods_in_lab, rule_cacheflag_literals, rule_health_field_offsets, rule_web_host_mem_base, rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_lab_prints_done, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part, rule_host_string_to_guest, rule_ctor_implemented_name, rule_backlog_class_alias, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_host_math_header, rule_image_render_not_registered]
+def rule_misc_b_methods_in_lab(fs):
+    """Every method api_misc_b.lua registers (and GetGroup/SetGroup) is named in lab_misc_b.lua, and no Layer file calls GridEntity:HurtDamage "unproven" (wave 6, worker misc-b: GridEntity::hurt_func hurts the ENTITY argument with the grid's damage, it never changes a poop or rock; the first probe watched the wrong thing and left the name out)."""
+    src = text_of(RGON + '/api_misc_b.lua')
+    lab = text_of(RGON + '/lab_misc_b.lua')
+    if src is not None and lab is not None:
+        names = set(re.findall(r'method\("(\w+)", "(\w+)"', src))
+        names |= set(('RoomDescriptor', n) for n in re.findall(r'DM\.(\w+) =', src))
+        for cls, name in sorted(names):
+            if '"%s.%s"' % (cls, name) not in lab:
+                yield (RGON + '/lab_misc_b.lua', 0, 'add "%s.%s" to the Implemented list of first_part and a check that calls it (getter by read-back, '
+                       'setter by effect, action by the game\'s reaction), or leave the method out of api_misc_b.lua' % (cls, name))
+    for f in fs:
+        if not (f.startswith('scripts/recomp/rgon/') and f.endswith('.lua')):
+            continue
+        for i, line in enumerate((text_of(f) or '').splitlines(), 1):
+            if 'HurtDamage' in line and 'effect unproven' in line:
+                yield (f, i, 'GridEntity:HurtDamage works (api_misc_b.lua): hurt_func damages the Entity passed in, so test it by that '
+                       'entity\'s hit points (a spikes entity hurting a Gaper), not by a poop or rock state')
+
+
+RULES = [rule_add_cache_flags_one_arg, rule_type_of_callback_result, rule_stdstring_read, rule_orphan_starts_packed, rule_hurt_func_source, rule_item_name_is_a_key, rule_insn_hook_giant_entry, rule_pgrep_game_by_name, rule_tears_methods_in_lab, rule_cacheflag_literals, rule_health_field_offsets, rule_web_host_mem_base, rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_lab_prints_done, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part, rule_host_string_to_guest, rule_ctor_implemented_name, rule_backlog_class_alias, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_host_math_header, rule_image_render_not_registered, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_misc_b_methods_in_lab, rule_layer_setsize_is_scale]
 
 
 def main():
