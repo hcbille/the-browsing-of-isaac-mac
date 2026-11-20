@@ -805,6 +805,21 @@ def rule_data_values_names_in_lab(fs):
             yield (RGON + '/lab_data_values.lua', 0, 'add "%s" to the Implemented list of names() and a check that calls it, or leave it out of api_data_values.lua' % n)
 
 
+def rule_host_misc_names_in_lab(fs):
+    """Every name api_host_misc.lua registers (T.static on Isaac or Input) is named in lab_host_misc.lua's Implemented list and
+    called there (wave 9, worker host-bridge: a Host-backed name that is registered but never run is the kind a mod finds first)."""
+    src = text_of(RGON + '/api_host_misc.lua')
+    lab = text_of(RGON + '/lab_host_misc.lua')
+    if src is None or lab is None:
+        return
+    names = set(c + '.' + n for c, n in re.findall(r'static\((Isaac|Input), "\1", "(\w+)"', src))
+    for n in sorted(names):
+        if '"%s"' % n not in lab:
+            yield (RGON + '/lab_host_misc.lua', 0, 'add "%s" to the Implemented list of the lab and a check that calls it, or leave it out of api_host_misc.lua' % n)
+        elif n.split('.')[1] not in lab.replace('"%s"' % n, ''):
+            yield (RGON + '/lab_host_misc.lua', 0, 'the lab names "%s" but never calls it: add a check that calls %s' % (n, n))
+
+
 def rule_scan_global_assignment(fs):
     """A mod's own global (`Dump = include(...)` in Epiphany) defines that name: the mod scan must not count `Dump(` as
     REPENTOGON's Vertex:Dump (2026-11-20). Both scan implementations carry the rule, and the scanner version moves."""
@@ -937,7 +952,79 @@ def rule_misnamed_collectible_enums(fs):
 
 
 
-RULES = [rule_home_paths, rule_layer_files_loaded, rule_frame_line_prefix, rule_part_loads_part, rule_lab_prints_done, rule_inert_not_implemented, rule_ctor_implemented_name, rule_host_math_header, rule_image_render_not_registered, rule_layer_setsize_is_scale, rule_hurt_func_source, rule_global_pointer_plus_offset, rule_status_files_in_notes, rule_flip_default, rule_const_table_fallback, rule_lua_vararg_middle, rule_lua_mixed_table_index, rule_room_transition_stand_in, rule_roomconfig_both_tables, rule_orphan_starts_packed, rule_fast_setjmp, rule_gate_class_aware, rule_backlog_narrowing, rule_backlog_class_alias, rule_census_false_positives, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_entity_methods_in_lab, rule_tears_methods_in_lab, rule_read_of_call_result, rule_type_of_callback_result, rule_item_name_is_a_key, rule_conception_pairing, rule_health_field_offsets, rule_cacheflag_literals, rule_lua_format_options, rule_host_string_to_guest, rule_pgrep_game_by_name, rule_web_host_mem_base, rule_insn_hook_giant_entry, rule_stdstring_read, rule_add_cache_flags_one_arg, rule_misc_b_methods_in_lab, rule_data_values_names_in_lab, rule_scan_global_assignment, rule_locate_names_in_lab, rule_familiar_pickup_names_in_lab, rule_player_calls_names_in_lab, rule_console_box_drawn_in_console_hook, rule_free_only_own_string_buffers, rule_console_game_lines_whitelisted, rule_lua_keyword_table_key, rule_misnamed_collectible_enums]
+def rule_player_rest_names_in_lab(fs):
+    """Every name api_player_rest.lua registers (method(P, "X") or S.X = function) is called by name in lab_player_rest.lua, and the lab uses
+    the real PlayerType enum names (wave 9, worker player-rest: PLAYER_THE_FORGOTTEN is nil, the game's name is PLAYER_THEFORGOTTEN, so
+    ChangePlayerType(nil) raised and a probe scenario was lost)."""
+    src = text_of(RGON + '/api_player_rest.lua')
+    lab = text_of(RGON + '/lab_player_rest.lua')
+    if src is None or lab is None:
+        return
+    names = set(re.findall(r'method\(P, "(\w+)"', src)) | set(re.findall(r'\bS\.(\w+) = function', src))
+    for name in sorted(names):
+        if name not in lab:
+            yield (RGON + '/lab_player_rest.lua', 0, 'add a check that calls "%s" (getter by read-back, setter by effect, action by the game\'s '
+                   'reaction), or leave the name out of api_player_rest.lua' % name)
+    for f in fs:
+        if f.startswith(RGON + '/') and f.endswith('.lua'):
+            for i, line in enumerate((text_of(f) or '').splitlines(), 1):
+                if 'PLAYER_THE_FORGOTTEN' in line and not line.lstrip().startswith('--') and 'rule' not in f:
+                    yield (f, i, 'PlayerType.PLAYER_THE_FORGOTTEN is nil: the game calls it PLAYER_THEFORGOTTEN')
+
+
+def rule_lab_check_never_fails(fs):
+    """A lab check that cannot fail (2026-11-20, room-calls: a check(...) whose condition ended in `or true` passed whatever the game did).
+    Write the condition so it fails when the name is wrong, or drop the check and say in the hand-back that the name is read-back only."""
+    bad = re.compile(r'\bcheck\(.*\bor true\b')
+    for f in fs:
+        if not (f.startswith('scripts/recomp/rgon/lab_') and f.endswith('.lua')):
+            continue
+        for i, line in enumerate((text_of(f) or '').splitlines(), 1):
+            if bad.search(line):
+                yield (f, i, 'a lab check with `or true` cannot fail: state the condition the game must meet, or remove the check')
+
+
+
+def rule_grid_npc_names_in_lab(fs):
+    """Every name api_grid_npc.lua registers is named in lab_grid_npc.lua, and a door's sprite function is not registered on a byte-signature match alone (wave 9, worker grid-npc: REPENTOGON's GridEntityDoor::play_animation signature matched a four-argument function in .17, and the real candidate left the door sprite without an animation, so PlayAnimation stayed unregistered)."""
+    src = text_of(RGON + '/api_grid_npc.lua')
+    lab = text_of(RGON + '/lab_grid_npc.lua')
+    if src is None or lab is None:
+        return
+    names = set(re.findall(r'method\("(\w+)", "(\w+)"', src)) | set(re.findall(r'static\(\w+, "(\w+)", "(\w+)"', src))
+    for cls, name in sorted(names):
+        if name == 'TryUnlock':
+            cls = 'GridEntityLock'
+        if cls == 'EntityNPC' and name.startswith(('IsRed', 'SetRed')) or cls == 'EntityNPC' and name.endswith('TeleportationTimer'):
+            cls = 'EntityDelirium'
+        if '"%s.%s"' % (cls, name) not in lab and not (cls == 'GridEntity' and ('"GridEntity.%s"' % name) in lab):
+            yield (RGON + '/lab_grid_npc.lua', 0, 'add "%s.%s" to NAMES and a check that calls it (getter by read-back, action by the game\'s reaction), '
+                   'or leave the name out of api_grid_npc.lua' % (cls, name))
+    if 'PlayAnimation' in src:
+        yield (RGON + '/api_grid_npc.lua', 0, 'GridEntityDoor.PlayAnimation: do not register it until a lab shows the door sprite playing an animation after the call '
+               '(0x0070d3f0 only reloads the sprite and the animation names)')
+
+
+
+
+def rule_menus_rest_names_in_lab(fs):
+    """Every name api_menus_rest.lua registers (put("Class", "Name"...) or def("Name") of GenericPrompt) is named in lab_menus_rest.lua, and the special seeds menu's selection is the word at +0xc (wave 9, worker menus-b: REPENTOGON's +4 holds a float position in this build, which a round trip alone passed; only the Down key's reaction showed it)."""
+    src = text_of(RGON + '/api_menus_rest.lua')
+    lab = text_of(RGON + '/lab_menus_rest.lua')
+    if src is None or lab is None:
+        return
+    names = set(re.findall(r'put\("(\w+)", "(\w+)"', src))
+    names |= set(('GenericPrompt', n) for n in re.findall(r'def\("(\w+)"', src))
+    for cls, name in sorted(names):
+        if '"%s.%s"' % (cls, name) not in lab:
+            yield (RGON + '/lab_menus_rest.lua', 0, 'add "%s.%s" to NAMES and a check that calls it (getter by read-back, setter by effect, '
+                   'action by the game\'s reaction), or leave the name out of api_menus_rest.lua' % (cls, name))
+    if re.search(r'"SpecialSeedsMenu", 0x251c, 0x1c, 4,', src):
+        yield (RGON + '/api_menus_rest.lua', 0, 'the special seeds menu\'s selected element is at base+0xc in this build (+4 is a float position): use 0xc')
+
+
+
+RULES = [rule_home_paths, rule_layer_files_loaded, rule_frame_line_prefix, rule_part_loads_part, rule_lab_prints_done, rule_inert_not_implemented, rule_ctor_implemented_name, rule_host_math_header, rule_image_render_not_registered, rule_layer_setsize_is_scale, rule_hurt_func_source, rule_global_pointer_plus_offset, rule_status_files_in_notes, rule_flip_default, rule_const_table_fallback, rule_lua_vararg_middle, rule_lua_mixed_table_index, rule_room_transition_stand_in, rule_roomconfig_both_tables, rule_orphan_starts_packed, rule_fast_setjmp, rule_gate_class_aware, rule_backlog_narrowing, rule_backlog_class_alias, rule_census_false_positives, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_entity_methods_in_lab, rule_tears_methods_in_lab, rule_read_of_call_result, rule_type_of_callback_result, rule_item_name_is_a_key, rule_conception_pairing, rule_health_field_offsets, rule_cacheflag_literals, rule_lua_format_options, rule_host_string_to_guest, rule_pgrep_game_by_name, rule_web_host_mem_base, rule_insn_hook_giant_entry, rule_stdstring_read, rule_add_cache_flags_one_arg, rule_misc_b_methods_in_lab, rule_data_values_names_in_lab, rule_host_misc_names_in_lab, rule_scan_global_assignment, rule_locate_names_in_lab, rule_familiar_pickup_names_in_lab, rule_player_calls_names_in_lab, rule_console_box_drawn_in_console_hook, rule_free_only_own_string_buffers, rule_console_game_lines_whitelisted, rule_lua_keyword_table_key, rule_misnamed_collectible_enums, rule_player_rest_names_in_lab, rule_lab_check_never_fails, rule_grid_npc_names_in_lab, rule_menus_rest_names_in_lab]
 
 def main():
     if '--list' in sys.argv:
