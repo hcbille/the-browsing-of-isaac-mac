@@ -408,3 +408,5 @@ delete `apply.sh`.
 6. **M12**: README with status and steps, final publish.
 7. **M8 backlog, timeboxed batches**: `MC_MENU_INPUT_ACTION` (fires or is not counted), Epiphany's characters
    on the wheel, Browser Build rebuild and run with the new hooks, then EID and StageAPI structures.
+- **Giving the game a file at run time (worker gfx, 2026-11-20).** The game's file lookup (0x00a17180) only knows the files of its boot-time index, so `B.fs_seed("resources/...")` (host_rgon.c, an in-memory file) is not found by `T.read_file` or `Sprite:LoadGraphics`. A path with a drive letter (`C:/rgon_images/...`) is opened as it stands and the host's file table answers it: that is how `api_gfx.lua` hands the game a PNG it made. A file name must be new for each version (the game keeps a loaded image per name). The same bridge has `png_decode/png_encode/png_size/img_blit`. Game PNGs are not loose files (packed archives): read them through `T.read_file("gfx/...")`, which also resolves mods. The labs: `lab_gfx_test.lua` (HEADLESS, `FRAMES=2400`: a run needs about 520 frames to reach the first room) and `lab_gfx_shot.lua` (windowed, `SHOT=@300:<png>` after the room anchor).
+

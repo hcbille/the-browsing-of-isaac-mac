@@ -863,6 +863,27 @@ HUD:GetHistoryHUD); a table returned from MC_PRE_HISTORYHUD_RENDER (HideCollecti
 the middle of `Menu_Character::Render` and the wheel loop (five mid-function patches, `ModManager::RenderCustomCharacterMenu` 0xa54150 only for mods),
 which needs instruction hooks inside the menu's render code and a way to check them in a window; not located in this time box.
 
+### CB-f: level, room, challenge, ambush, 'M and custom cache callbacks (hooks 233-241, `api_room_hooks.lua`, lab `lab_cb_f.lua`, 2026-11-20)
+Eight callbacks fire (1137, 1141, 1263, 1271, 1472, 1488, 1190, 1224), each proven by the game's own reaction in the lab (30 PASS / 0 FAIL);
+MC_POST_START_GREED_WAVE (1489) is deferred. Functions: `Level::place_room` 0x00738ab0 `ret 0x14` (five stack args `(slot, config, seed, ?, out)`;
+REPENTOGON's four-argument signature matches four other functions in this build, the real one was found through its message string
+"Level::place_room data is NULL!"), `Backdrop::Init` 0x0093d960 `ret 8`, `Room::IsPersistentRoomEntity` 0x007ed2a0 `ret 0xc`, `RoomTransition::Update`
+0x008318a0 (plain ret; names.json's 0x00779b40 is a false match, an `Entity_Player::Update` callee; found as the callee Game::Update calls with
+`this` = game+0x1b83c), `PersistentGameData::AddChallenge` 0x0092a7b0 `ret 4`, `Ambush::SpawnWave` 0x00833600 and `SpawnBossrushWave` 0x00833c40
+(plain ret), `Room::SpawnGreedModeWave` 0x00816910 `ret 4`. MC_PRE_M_MORPH_ACTIVE is an instruction hook (slot 241) in the active item function
+0x007abf80 at 0x007ac25b: `esi` = the item the game picked, `edi` = the player, 0x007ac2d2 skips the reroll.
+Facts, measured: the LevelGeneratorRoom (1137's first argument, a stack temporary: read it inside the callback only) has GenerationIndex at +4 (the rooms
+of a floor are numbered 0 to n-1, each once, in no placement order), column +8, row +0xc, shape +0x18, door mask +0x1c. A returned RoomConfigRoom
+replaces the placed room (the lab's Basement variant 5 rooms show up in the new floor), with REPENTOGON's shape and required-door checks. The
+player's cache flags word is at +0x1574 and CacheFlag.CACHE_ALL is 0xffff in this build (not 0xffffffff). MC_EVALUATE_CUSTOM_CACHE receives
+(player, tag, value), param = tag; the pending tag set is filled by AddCustomCacheTag and by item add/remove (api_gaps.lua) and evaluated in
+EvaluateItems' `before`, all known (items.xml) tags when the flags are CACHE_ALL. MC_IS_PERSISTENT_ROOM_ENTITY is asked for each layout entity when
+the game fills a room that is already cleared (an answer of true spawns it again: 1 entity back with true, 0 with false), not when a room is left.
+MC_POST_ROOM_TRANSITION_UPDATE is passed no param (REPENTOGON passes the transition mode; the word at the object's +0 did not follow the RoomTransitionAnim in the lab, so it is unmeasured); callbacks without a filter hear it.
+Limits: 1190 was proven by calling the game's 0x007abf80 itself (headless, no button press), not by an input; 1489 needs a Greed Mode run (the game
+calls `SpawnGreedModeWave` only there) and the hook slot 240 is in the engine for it; the `CACHE_ALL` lab step uses a synthetic known tag (no mod is
+loaded in the lab).
+
 ### Fiend Folio key blocks: `AddCacheFlags(flags, true)` (`api_cacheflags.lua`, lab `lab_ffkeys.lua`, 2026-11-19)
 Play report: in "Vermin - Key Chain" the coloured key blocks never opened. Cause: Fiend Folio's `CollectPuzzleKey` calls
 `player:AddCacheFlags(CACHE_FAMILIARS, true)` to get its key-ghost familiars from `MC_EVALUATE_CACHE` -> `CheckFamiliar`. The game's own
@@ -872,6 +893,23 @@ yet!` line is the game's harmless message for a mod pickup variant. Lab: a key i
 spawns, binds to the key, flies to the block and the block opens (`Breaking`, then the grid is cleared): 3 colours pass. The mod opens a block only when
 the player is within `Size + 26` (36) of its centre; a player against a wall is about 30 away. Not tested: chain blocks (`FFChainBlock*`, broken by
 the BFS from a key block), the tricolor key and the gray block (Dungeon Master). Lint rule: `add_cache_flags_one_arg`.
+
+### Leftover names by class (`api_leftovers.lua`, lab `lab_leftovers.lua` 80 PASS / 0 FAIL, wave 5 worker misc, 2026-11-20)
+Census: functions 961 -> 980, variables 16 -> 25, callbacks 220 (unchanged). Gate: Epiphany 24 -> 21 missing, Fiend Folio 50 -> 44 (both still shown).
+- Already working, only unflagged (now in `REPENTOGON.Implemented`): `Camera.IsPosVisible/SetFocusPosition/SnapToPosition`, `FXParams.WaterColor/
+  WaterEffectColor` (a real bug fixed on the way: the ColorModifier write refused a ColorModifier), `RoomDescriptor.Doors/BossDeathSeed`.
+- Measured and read back: `RoomConfigRoom.Mode` (int at +4), `Room:GetLightningIntensity/SetLightningIntensity/DoLightningStrike` (float at game +0x67734, the game's own
+  update decays it; strike = intensity 1.3 + RandomFloat() * 0.6, sound 472), `Entity:GetNullCapsule` (0x006b6c20; a knife variant 10/11 "Hit" layer answers
+  size 6.15; an unknown layer answers a zero capsule), `HUD:GetHistoryHUD` (HUD +0x5c54) with `HistoryHUD:GetPosition/GetPlayer/GetItems/GetCollectibles/
+  GetCollectibleOffsets` and `HistoryHUDItem:GetItemID/GetTime/GetRenderOffset/IsVisible` (position equals the position the game passes to Render, normal
+  and mini; the history is drawn only with `Options.ExtraHUDStyle` > 0).
+- Lua routes: `Room:ClearBossHazards(ignoreNPCs = true)` kills projectiles (and, with false, the NPCs that shut doors), `EntityPlayer:SpawnAquariusCreep(params)` spawns
+  effect variant 54 with the params' damage and tear flags (default params as REPENTOGON documents).
+- Not done: `HistoryHUD:GetTrinkets/GetTrinketOffsets`, `HistoryHUDItem:IsTrinket` (a picked-up trinket never reached the history vector in the lab, so the trinket
+  byte and id layout is unmeasured). `EntityNPC.ThrowMaggot` is not registered by REPENTOGON either. The rest of the task list (Teleport, InitTwin, ShuffleCostumes,
+  RemoveCoPlayer, ModdedCardFront, Isaac.* draw and dialog functions, Renderer clip pane, LoadStb, ...) still needs engine functions that were not located.
+- `scripts/mac/rgon_backlog.py` now maps `Item` to `ItemConfig_Item` and treats `SetMusic` of StageAPI custom stages as the mod's own method. Lint rules:
+  `backlog_class_alias`, `new_class_names_flagged`, `leftovers_methods_in_lab`.
 
 ### Next batches (proposed)
 
@@ -983,3 +1021,21 @@ that the lifter left without a label (the fall-through of a conditional branch) 
 Monstro (1248 and 1249 with args; a `true` answer on 1248 silences 1249 on both the sample and the straight path), Lil Brimstone (1261), Robo-Baby 2.0 (1262, variant filter), Tainted Azazel's sneeze
 (1036 and 1037, source player, direction, damage scale 1.0). Not seen: Hemoptysis's sneeze did not fire in 900 frames (the callback is armed and fires for Tainted Azazel; Azazel himself never sneezes).
 Deferred: FireSplitTear split sites (not reached).
+**Character select callbacks (worker charsel, wave 5, 2026-11-20; `api_charsel.lua`, instruction hook slots 252-259, lab `lab_charsel.lua` rec 8 / cancel 11 / modrec 6 / modcancel 7 PASS, 0 FAIL; census callbacks 220 -> 225, functions 961).**
+Instruction hooks (rows of `INSN_HOOKS`), all inside `Menu_Character`: `Update` 0x0094c580 at 0x0094c619, right after the test that the character is unlocked (MC_CAN_SELECT_CHARACTER 1328; false goes to the locked buzzer 0x0094c646); the page render 0x0094bbd0 with a vanilla branch (0x0094bc2d, id below 0x12) and a modded branch (the call of `ModManager::RenderCustomCharacterMenu` at 0x0094bc5f, stdcall ret 0xc, so a cancel adds 0xc to esp), both ending at 0x0094bc64 (MC_PRE/POST_RENDER_CHARACTER_SELECT_PAGE 1329/1330; a cancel also skips the Eden tokens text, 0x0094bc7c); the wheel render 0x0094bee0 with a vanilla branch (0x0094c2f0) and a modded one (the call of `RenderCharacterPortrait` at 0x0094c445, stdcall ret 0x10), both ending at 0x0094c44a (MC_PRE/POST_RENDER_CHARACTER_SELECT_PORTRAIT 1331/1332; a Vector answer moves the portrait). REPENTOGON's signatures for the three render functions match nothing in this build (different register allocation), so the points were placed from the disassembly.
+Seen: scripted input to the character select in a windowed run. Vanilla page, wheel and portraits fire with the right arguments, and every cancel was seen on screen (Isaac's page not drawn, Magdalene's portrait gone, Cain moved up 40). The modded page path fires for characters 41 and 42 reached by arrow keys, and its cancel stops 1330 without a crash. Not seen: the modded wheel path (0x0094c445). It needs a character with a menu portrait sprite; the test characters have none and the game draws nothing for them there, so no 1331/1332 fire for a modded portrait.
+Deferred: the second 1328 use (isBeingSelected = false, the random pick's list of eligible characters) is not hooked; MC_PRE_RENDER_CUSTOM_CHARACTER_MENU (1333) is not implemented. Gate: Epiphany still shown (19 names missing), Fiend Folio shown (49 missing), 9 mods shown.
+
+**Throw, split, regen, slot explosion, loot list and Bag of Crafting callbacks (worker cb-g, wave 5, 2026-11-20; `api_throw_loot.lua`, hook slots 282-291, lab `lab_cb_g.lua` 29 PASS / 0 FAIL; census callbacks 220 -> 229, functions 961 unchanged; Epiphany missing names 24 -> 22, Fiend Folio 50 -> 42).**
+Function hooks: `Entity_Player::ThrowHeldEntity` 0x007d2470 (ret 4; held entity at player +0x1410, velocity Vector pointer on the stack; a Vector answer from 1040 is written back), `Entity_Player::TryAddToBagOfCrafting` 0x007d5170 (ret 4; 1016 fires when the result is true),
+`Entity_Pickup::GetLootList` 0x006dae40 (ret 0xc; the result is an MSVC deque of 0x14-byte entries, read after the game fills it, rebuilt through its clear 0x006da850 and `emplace_back` 0x006b84e0 when a callback changed the list; the pickup RNG at +0x3dc is restored unless shouldAdvance).
+Instruction hooks: the Bag's chosen kinds in `TryAddToBagOfCrafting` (0x007d54e0, `false` skips to 0x007d51c9, a table answer replaces the kinds), `Entity_NPC::TrySplit` blacklist test (0x006d98e7; `true` stops the split), dark red champion regen in `Entity_NPC::Update`
+(0x006c7275 and 0x006c7295, after the game's ResetColor, which the handler runs itself), and slot explosions in `Entity_Slot::TakeDamage` for slot variants 1, 8 and 10 (0x006645e8, 0x006648b6, 0x00664924; the lifted chunk that holds the
+second and third is `sub_00664850`, not the function's entry). Proven by the game's own reaction: a held bomb thrown at the velocity 1040 answered, a chest's loot list extended, replaced and restored (1334 and 1336), Meat Cleaver's split stopped and allowed on a Gaper (1191), a dark red champion's regen (1223),
+variants 1, 8 and 10 exploded with `DAMAGE_EXPLOSION` (1123: a `false` answer keeps the state, otherwise it becomes 3), and the Bag of Crafting (used from the pocket slot with `UseActiveItem`; the swing hits spawned hearts) with 1015's table and 1016, and a `false` answer on 1015 giving no 1016.
+Not proven: 1015 answering a table (the replacement path is untested), 1040 and 1334's `Player` argument (nil in the lab). Deferred: 1123 for the greed donation machine (variant 11) and the other slot variants; the callback fires for the three hooked variants only. `TryAddToBagOfCrafting` is called only by the Bag's knife swing, and only for pickups the game accepts, so 1015 never sees a rejected variant (REPENTOGON's hook sits earlier).
+**Image batch (worker gfx, wave 5; `api_gfx.lua`, host bridge `png_decode`/`png_size`/`png_encode`/`fs_seed`/`img_blit` in `host_rgon.c`, lab `lab_gfx_test.lua` 70 PASS / 0 FAIL, screenshot lab `lab_gfx_shot.lua`; census functions 966 -> 979, callbacks 228).**
+No engine hook was needed: an `Image` is done in software. `Renderer.LoadImage(path)` reads the PNG through the game's own file layer (`T.read_file`, which resolves mods and resources itself) and raises when there is no file (Fiend Folio probes for gold sheets with `pcall(LoadImage)`); `GetWidth`/`GetHeight` come from the PNG header, `GetTexelRegion` answers RGBA bytes (REPENTOGON's code writes `w*h*4` bytes, its doc says floats). `Renderer.CreateImage(w, h, name)` starts transparent; `Renderer.RenderToImage(image, f)` hands `f` a controller with `Clear`, and `Image:Render(src, dst, kcolor, color)` inside it blits the source quad (pixel or UV space) onto the target in the host (`img_blit`: two triangles, nearest sample, KColor and Color multiply, Color offsets added, straight-alpha source-over). `SetSpritesheet` of a created image writes it as a PNG into the game's file layer in memory (`fs_seed`) and calls the game's own `ReplaceSpritesheet` + `LoadGraphics`.
+Measured: the game's file lookup (0x00a17180, the first step of the open at 0x00a178d0 and of the image loader 0x00a118d0) does not see a file seeded at a relative name after boot (its index of the mounted tree is built at boot), but opens a path with a drive letter as it stands, and the host's file table answers it: the stored PNGs are `C:/rgon_images/gfx/<name>_<n>.png` (a new name per version, since the game keeps an image of a name while anything uses it). Proven by the game's own reaction (a screenshot: the Sad Onion sheet from `Sprite:GetSpritesheet`, drawn into a created image in a red tint and in green with a half-size copy, bound with `Sprite:SetSpritesheet` and `LayerState:SetSpritesheet`, drawn by the game's renderer).
+Done: `Renderer.LoadImage/CreateImage/RenderToImage`, `Image` `GetWidth/GetHeight/GetName/GetTexelRegion`, `SourceQuad:ConvertToUVSpace/ConvertToPixelSpace(image)`, `Sprite` and `LayerState` `GetSpritesheet/SetSpritesheet` (a created image is answered back by `GetSpritesheet`).
+Not done, stays out of `REPENTOGON.Implemented` (inert, said once): `Image:Render` outside `RenderToImage` (the screen; it logs and draws nothing, so it is not registered), `Image:RenderWithShader`, custom shaders (`SetCustomShader` family, `Renderer.GetShaderByType`, `LoadShader`), `Beam:Render` (needs the engine's BeamRenderer), `Sprite:Render` inside `RenderToImage` (turned into a no-op for the length of the call: it would draw on the screen). Known difference: the stored PNG is a snapshot; REPENTOGON shares the texture, so there an image drawn into after `SetSpritesheet` shows at once, here at the next `SetSpritesheet`. Lint rules: `host-math-header`, `image-render-not-registered`. Fiend Folio's missing names 39 -> 38 (`GetHeight`), inert 14 -> 9; Epiphany missing 17 -> 16.

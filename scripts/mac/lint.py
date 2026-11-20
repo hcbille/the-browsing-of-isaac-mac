@@ -150,6 +150,40 @@ def rule_ctor_implemented_name(fs):
                              'and the backlog look up; a bare class name or a bare variable counts for nothing' % ((m.group(1),) * 2 if m else ('Name', 'Name')))
 
 
+def rule_host_math_header(fs):
+    """A host C file that calls floor, ceil, sqrt, pow or the like includes <math.h> (2026-11-20, gfx: host_rgon.c's quad blit
+    called floor()/ceil() with no declaration, which clang rejects as an implicit function declaration)."""
+    fn = re.compile(r'\b(floor|ceil|sqrt|pow|fabs|round|trunc|fmod)\s*\(')
+    for f in fs:
+        if not (f.endswith('.c') and '/host/src/' in f):
+            continue
+        t = text_of(f)
+        if t is None or '#include <math.h>' in t:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            if not re.match(r'\s*(/\*|\*|//)', line) and fn.search(line):
+                yield (f, n, 'add #include <math.h> at the top of this file: it calls a math function without declaring it')
+                break
+
+
+def rule_image_render_not_registered(fs):
+    """Image:Render only draws inside Renderer.RenderToImage; on the screen it does nothing (2026-11-20, gfx). A name that is
+    only half real stays out of REPENTOGON.Implemented: leave Image.Render and Image.RenderWithShader unregistered until the
+    screen route exists."""
+    for f in fs:
+        if not f.endswith('.lua') or not f.startswith(RGON + '/') or f.endswith('lint.py'):
+            continue
+        t = text_of(f)
+        if t is None:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            if re.match(r'\s*--', line):
+                continue
+            if re.search(r'Implemented\[\s*"Image\.(Render|RenderWithShader)"\s*\]\s*=\s*true', line):
+                yield (f, n, 'Image.Render draws only inside Renderer.RenderToImage, so it is not registered in REPENTOGON.Implemented; '
+                             'register it only when it also draws on the screen')
+
+
 def rule_hurt_func_source(fs):
     """GridEntity::hurt_func (0x00709fb0) reads its first stack argument, the damage SOURCE entity (its type at +0x28), before
     anything else (2026-11-19, chunk 6: a call with 0 there dereferences null). Pass a real Entity* (the first player), never 0.
@@ -370,6 +404,51 @@ def rule_backlog_narrowing(fs):
     ):
         if needle not in t:
             yield (f, 0, msg + ' (missing `%s`)' % needle)
+
+
+def rule_backlog_class_alias(fs):
+    """The backlog tool must fold REPENTOGON's C++ metatable name `Item` into ItemConfig_Item (wave 5: AddCustomTag/HasCustomTag were
+    implemented as ItemConfigItem.* yet listed as missing "Item.*", and StageAPI's own `:SetMusic` as RoomConfigStage.SetMusic)."""
+    f = 'scripts/mac/rgon_backlog.py'
+    if f not in fs:
+        return
+    t = text_of(f) or ''
+    for needle, msg in (
+        ("CLASS_ALIAS = {'Item'", 'keep CLASS_ALIAS {Item -> ItemConfig_Item} and run every class through norm(), so a name done on ItemConfigItem is not counted missing on the C++ name'),
+        ("StageAPI.CustomStage", 'a SetMusic in a file that builds StageAPI.CustomStage is the custom stage\'s own method: suppress it instead of listing RoomConfigStage.SetMusic'),
+    ):
+        if needle not in t:
+            yield (f, 0, msg + ' (missing `%s`)' % needle)
+
+
+def rule_new_class_names_flagged(fs):
+    """A class made with new_class() in a Layer file has its methods counted only when they are put into REPENTOGON.Implemented
+    (wave 5: Camera.IsPosVisible/SetFocusPosition/SnapToPosition and FXParams.WaterColor worked since wave 4 but the census listed
+    them missing). After the class table, add `for k in pairs(T) do R.Implemented["Class." .. k] = true end` once the lab reads them."""
+    for f in fs:
+        if not f.startswith(RGON + '/api_') or not f.endswith('.lua'):
+            continue
+        t = text_of(f) or ''
+        for m in re.finditer(r'new_class\("(\w+)",\s*(\w+)\)', t):
+            cls, var = m.group(1), m.group(2)
+            if re.search(r'function\s+%s[:.]\w+' % re.escape(var), t) and ('Implemented["%s.' % cls) not in t:
+                yield (f, 0, 'class %s (new_class) defines methods on %s but never flags them: add a `for k in pairs(%s) do R.Implemented["%s." .. k] = true end` '
+                       'after the class, or mark them `-- inert: Name`' % (cls, var, var, cls))
+
+
+def rule_leftovers_methods_in_lab(fs):
+    """Every method api_leftovers.lua registers is named in lab_leftovers.lua (wave 5, worker misc: a name with no check is a name nobody proved)."""
+    src = text_of(RGON + '/api_leftovers.lua')
+    lab = text_of(RGON + '/lab_leftovers.lua')
+    if src is None or lab is None:
+        return
+    names = set(re.findall(r'method\("(\w+)", "(\w+)"', src))
+    names |= set(('HistoryHUD', n) for n in re.findall(r'\bdef\("(\w+)"', src))
+    names |= set(('HistoryHUDItem', n) for n in re.findall(r'function ITEM_MT:(\w+)', src))
+    for cls, name in sorted(names):
+        if '"%s.%s"' % (cls, name) not in lab:
+            yield (RGON + '/lab_leftovers.lua', 0, 'add "%s.%s" to NAMES and a check that calls it (getter by read-back, setter by effect, action by the game\'s reaction), '
+                   'or leave the method out of api_leftovers.lua' % (cls, name))
 
 
 def rule_entity_methods_in_lab(fs):
@@ -600,7 +679,7 @@ def rule_add_cache_flags_one_arg(fs):
                        'player:EvaluateItems() (the second argument is for mods, handled by api_cacheflags.lua)')
 
 
-RULES = [rule_add_cache_flags_one_arg, rule_type_of_callback_result, rule_stdstring_read, rule_orphan_starts_packed, rule_hurt_func_source, rule_item_name_is_a_key, rule_insn_hook_giant_entry, rule_pgrep_game_by_name, rule_tears_methods_in_lab, rule_cacheflag_literals, rule_health_field_offsets, rule_web_host_mem_base, rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_lab_prints_done, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part, rule_host_string_to_guest, rule_ctor_implemented_name]
+RULES = [rule_add_cache_flags_one_arg, rule_type_of_callback_result, rule_stdstring_read, rule_orphan_starts_packed, rule_hurt_func_source, rule_item_name_is_a_key, rule_insn_hook_giant_entry, rule_pgrep_game_by_name, rule_tears_methods_in_lab, rule_cacheflag_literals, rule_health_field_offsets, rule_web_host_mem_base, rule_read_of_call_result, rule_lua_format_options, rule_conception_pairing, rule_backlog_narrowing, rule_entity_methods_in_lab, rule_gate_class_aware, rule_fast_setjmp, rule_roomconfig_both_tables, rule_room_transition_stand_in, rule_lua_vararg_middle, rule_const_table_fallback, rule_global_pointer_plus_offset, rule_flip_default, rule_lab_prints_done, rule_inert_not_implemented, rule_home_paths, rule_layer_files_loaded, rule_status_files_in_notes, rule_frame_line_prefix, rule_part_loads_part, rule_host_string_to_guest, rule_ctor_implemented_name, rule_backlog_class_alias, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_host_math_header, rule_image_render_not_registered]
 
 
 def main():

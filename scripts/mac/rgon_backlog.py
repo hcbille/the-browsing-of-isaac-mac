@@ -45,7 +45,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import rgon_census as rc  # noqa: E402  (reuse its REPENTOGON-reading code)
 
-norm = rc.norm_class
+# REPENTOGON's C++ names a few metatables differently from its documentation: the registration `Metatables::ITEM, "Item"` is the class the
+# documentation calls ItemConfig_Item (the Layer's ItemConfigItem). Without the alias, ItemConfigItem.AddCustomTag counted as implemented
+# and "Item.AddCustomTag" as missing (wave 5: Item showed 2 missing names that were done).
+CLASS_ALIAS = {'Item': 'ItemConfig_Item'}
+
+
+def norm(c):
+    return rc.norm_class(CLASS_ALIAS.get(c, c))
+
 
 # (class, name) pairs that the mods' uses never mean: `.Weight` is the mods' own boss and pick weights (Fiend Folio's
 # main.lua:763, 49 uses; REPENTOGON's ItemConfig_Card.Weight has none in any mod), so it is not a miss of the card's field.
@@ -566,6 +574,9 @@ def main():
                 prefix = text[line_starts[line_of(p) - 1]:p]
                 if re.search(r'\bfunction[ \t]+[\w.:]*$', prefix):
                     suppressed['definition (function a:Name)'] += 1
+                    continue
+                if name == 'SetMusic' and 'StageAPI.CustomStage' in text:
+                    suppressed['SetMusic in a file that builds StageAPI.CustomStage: the custom stage\'s own method'] += 1
                     continue
                 pieces = chain_before(text, p)
                 if pieces and pieces[0][0] == 'id' and pieces[0][1] in MODLIB:
