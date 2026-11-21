@@ -43,40 +43,36 @@ Working, on an M2 MacBook Air:
 - Your saves, imported from the Windows or Steam folders on first start.
 - Steam Workshop mods: a Launcher syncs your subscriptions, and each mod can be switched
   on or off. The game's mods menu agrees with the Launcher.
-- REPENTOGON-using mods through upstream's compatibility layer, including Epiphany (its
-  Tarnished characters too) and Fiend Folio: RELOADED, whose items, enemies and characters
-  now load in full. External Item Descriptions now sees REPENTOGON too: Bag of Crafting
-  contents and output, TM Trainer's procedural items, transformation progress. Custom
-  Stage API and Unique Items API see REPENTOGON as well; StageAPI's custom floors (its own
-  and Fiend Folio's) work with it. Only REPENTOGON's console autocompletion is missing,
-  since the game's own console has none. The layer decides per mod whether it can run,
-  and now checks each name on the class the mod calls it on (a method one class has no
-  longer counts for another). New: the player death, revive, health type, birth, bed,
-  pocket swap and card and pill callbacks, and more entity methods that Fiend Folio and
-  Epiphany use (familiars, enemy shields and splitting, capsule collision), the player
-  health names (Candy Heart, Soul Locket, Keeper's Sack, the hearts on the HUD), tears,
-  lasers, knives and effects, pickups, loot lists and item pools, and the shop purchase,
-  Void, Compost, ghost pickup, Devil Room and Planetarium chance callbacks; and now the player's item and
-  charge state, room cameras and effects, game-level settings and challenges, and the grid
-  update, render, collision and damage callbacks; and now sprite stop, continue and overlay
-  controls, points, beams, quads, text drawing checks and baby configs, plus the heart HUD,
-  history HUD, completion mark, fortune text, weapon, laser, knife, sword, bone club and
-  familiar laser callbacks, then level, room, throw, loot list, character select and slot
-  explosion callbacks, plus real images (`CreateImage`, `RenderToImage`, `SetSpritesheet`) drawn in
-  software. Epiphany's Tarnished character page now swaps in on the character select (an animation-data check was too strict), and
-  Fiend Folio's character icons, completion marks, Chaos Bombs and Sin plushie drops no longer fail. A recompilation gap that crashed the game
-  on a rarely used accessor is fixed, and so is a crash in a script argument check that
-  handed the game a pointer from outside its memory.
-  It has 1,589 of REPENTOGON's 1,727 functions and 378 of its 380 callbacks, the
-  ones the tested mods use first. Item settings such as `ChargeType` are writable, as
-  with REPENTOGON. `scripts/mac/rgon_census.py` measures the rest.
+- REPENTOGON-using mods, through upstream's compatibility layer plus our own
+  reimplementation of REPENTOGON's API. Epiphany (its Tarnished characters too) and
+  Fiend Folio: RELOADED load in full, and External Item Descriptions, Custom Stage API
+  (its custom floors and Fiend Folio's work), Unique Items API and others see REPENTOGON.
+  The layer decides per mod whether it can run, and checks each name on the class the mod
+  calls it on. Covered so far, class by class:
+  - the player: death, revive, health types and the HUD hearts, items, charges, pocket
+    items, cards and pills, birth and bed callbacks;
+  - entities: familiars, enemies (shields, splitting, capsule collision), tears, lasers,
+    knives and effects, pickups, loot lists and item pools;
+  - the level and rooms: room and level settings, cameras, effects, grid entities (update,
+    render, collision and damage callbacks), room sets, challenge and boss waves, special
+    quest doors, and the Planetarium and Devil Room chance callbacks;
+  - the interface: sprites (stop, continue, overlays), real images drawn in software, points,
+    beams and quads, text, the history HUD, completion marks, fortune text, character
+    select, the pause and options menus, and the music and jingle callbacks;
+  - a mod's own `shaders.xml` shaders and `MC_GET_SHADER_PARAMS` (checked with a probe mod,
+    StageAPI and Fiend Folio's Sleeper effect).
+  It has 1,589 of REPENTOGON's 1,727 functions and 378 of its 380 callbacks. Only
+  REPENTOGON's console autocompletion is missing, since the game's own console has none.
+  Item settings such as `ChargeType` are writable, as with REPENTOGON.
+  `scripts/mac/rgon_census.py` measures the rest.
 - One pinned game version. The recompilation only works with one exact `isaac-ng.exe`
   (Repentance+ 1.9.7.17, Steam build 22878971). `scripts/mac/fetch-game.sh` downloads
   exactly that build of the base game and every DLC from Steam, and `build.sh` refuses any
   other version.
 - Large mod collections: the file table holds about 95 mods' worth of files, and a mod's
   `content-repentogon/` folder is read as REPENTOGON does.
-- A Launcher with a startup window that shows each loading step. A boot with about 95 mods
+- A Launcher with a startup window that shows each loading step, and a mods list with a search
+  field and All/Enabled/Disabled filter. A boot with about 95 mods
   takes roughly 10 seconds. With that many mods the game now runs about 20% faster than
   before, and its log is written in the background. The log records frame and game-work
   times every 10 seconds with the floor and room (`scripts/mac/framestats.py` sums them up).
@@ -89,8 +85,9 @@ Not done yet:
 - Mod status effects declared without an id (some of Epiphany's and Fiend Folio's) do
   nothing yet. They used to freeze the game on a room change; that's fixed.
 - More REPENTOGON coverage: what is left is the Dear ImGui windows, per-sprite custom shaders
-  (a mod's own `shaders.xml` works), a few Windows-only calls, and a handful of callbacks and names that need more
-  hooks in the game. The full list, with reasons, is in `docs/mac/not-implemented.md`.
+  (a mod's own `shaders.xml` works), a few Windows-only calls and the raw OpenGL render
+  callback, which are not planned, plus a few small menu and entity calls that none of the
+  tested mods use. The full list, with reasons, is in `docs/mac/not-implemented.md`.
 - Floor music is missing in some setups (the game reports no track for the stage); the
   cause is being looked into.
 - A from-scratch build check.
