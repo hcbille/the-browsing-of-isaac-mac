@@ -1,0 +1,2 @@
+MISC_LUA_REQ_COUNT = (MISC_LUA_REQ_COUNT or 0) + 1
+return { loaded = MISC_LUA_REQ_COUNT }

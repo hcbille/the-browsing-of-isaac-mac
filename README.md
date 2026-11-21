@@ -61,7 +61,7 @@ Working, on an M2 MacBook Air:
     select, the pause and options menus, and the music and jingle callbacks;
   - a mod's own `shaders.xml` shaders and `MC_GET_SHADER_PARAMS` (checked with a probe mod,
     StageAPI and Fiend Folio's Sleeper effect).
-  It has 1,589 of REPENTOGON's 1,727 functions and 378 of its 380 callbacks. Only
+  It has 1,601 of REPENTOGON's 1,727 functions and 378 of its 380 callbacks. Only
   REPENTOGON's console autocompletion is missing, since the game's own console has none.
   Item settings such as `ChargeType` are writable, as with REPENTOGON.
   `scripts/mac/rgon_census.py` measures the rest.
@@ -106,11 +106,14 @@ game.
   then write our own implementation. Its structure layouts are only a starting point:
   every game field is measured in this build before we use it. None of REPENTOGON's
   C++ is copied.
-- **Feature-parity target:** REPENTOGON `main` at
+- **Feature-parity target (the REPENTOGON build):** REPENTOGON `main` at
   [`0cd8f863f`](https://github.com/TeamREPENTOGON/REPENTOGON/commit/0cd8f863fe9947a8414d9018a700269603e629e6)
-  (2026-11-09, version 1.1.3, its latest snapshot). That snapshot targets game v1.9.7.12;
-  this build runs v1.9.7.17, which is why fields are re-measured.
-- **Progress:** 1,589 of its 1,727 functions and 378 of its 380 callbacks, the ones
+  (2026-11-09). That is 94 commits after the 1.1.3 tag, so `git describe` calls it
+  `1.1.3-unstable-94-g0cd8f863f`, not a release. It targets game v1.9.7.12; this build
+  runs v1.9.7.17 (Steam build 22878971), which is why every struct field is re-measured.
+  Function and callback counts are taken against this snapshot. The layer reports itself
+  to mods as `REPENTOGON.Version` `"1.1.2"` (what `REPENTOGON.MeetsVersion` compares).
+- **Progress:** 1,601 of its 1,727 functions and 378 of its 380 callbacks, the ones
   the tested mods use coming first. `scripts/mac/rgon_census.py` compares the layer
   against a REPENTOGON checkout, and `docs/mac/layer-gaps.md` has the details.
 - The layer tells each mod whether REPENTOGON is there, and only says yes when every

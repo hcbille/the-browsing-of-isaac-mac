@@ -5863,7 +5863,7 @@ index 0000000..40f3868
 +end
 diff --git a/scripts/recomp/rgon/api_census.lua b/scripts/recomp/rgon/api_census.lua
 new file mode 100644
-index 0000000..943e131
+index 0000000..42e24c0
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_census.lua
 @@ -0,0 +1,299 @@
@@ -6074,7 +6074,7 @@ index 0000000..943e131
 +      return id and math.tointeger(id) or -1
 +    end)
 +  end
-+  -- Isaac.GetLoadedModules is not here: mods get no `package` table (measured), so REPENTOGON's registry _LOADED is out of reach.
++  -- Isaac.GetLoadedModules is in api_misc_lua.lua: mods get no `package` global, but require("debug").getregistry()._LOADED is the table.
 +end
 +
 +------------------------------------------------------------------------------
@@ -8036,6 +8036,127 @@ index 0000000..6022a58
 +  R.Implemented["Camera.IsClampEnabled"] = true
 +  R.Implemented["Camera.SetClampEnabled"] = true
 +end
+diff --git a/scripts/recomp/rgon/api_entity_calls.lua b/scripts/recomp/rgon/api_entity_calls.lua
+new file mode 100644
+index 0000000..52c3695
+--- /dev/null
++++ b/scripts/recomp/rgon/api_entity_calls.lua
+@@ -0,0 +1,115 @@
++-- api_entity_calls.lua -- wave 14, worker entity-calls: names that are one call into a game function (EntityPlayer, Entity,
++-- EntityNPC, EntityFamiliar) plus the EntityDelirium variables. Written against REPENTOGON's behaviour (LuaEntityPlayer.cpp,
++-- LuaEntity.cpp, LuaShape.cpp); no C++ copied. Every address below was found in THIS executable (v1.9.7.17) by a game caller, the
++-- `ret N` of the callee and a lab read-back (lab_entity_calls.lua); REPENTOGON's v1.9.7.12 signatures were only the lead.
++--
++--   EntityPlayer:RerollAllCollectibles(rng, includeActives = false)   0x005c88a0, thiscall, `ret 8` (stack: RNG*, bool).
++--       The game's own D4 (collectible 0x11c) in Entity_Player::UseActiveItem (0x005b39d0, the case at 0x005b8f6b) pushes the
++--       use-flags bit 4 as the bool and the item's RNG (player + 0x1770, 0x10-byte entries, 0x005cbd00) and calls it at
++--       0x005b90c9; the player-type change code (0x00778de8) calls it with (rng, 1). Body: walks the player's collectible list
++--       (vector +0x1dec/+0x1df0, 0x1c-byte entries, item at +8), removes each passive (and each active when the bool is set,
++--       except item 0x248 without it) and gives a new one from the pool with the RNG. REPENTOGON's signature matches this
++--       function (and 0x006627e0, the trinket one); an earlier note ruled it out as "a player reset".
++--   Entity:GetDebugShape(unk)   0x006b5f10, thiscall, `ret 4`: the game's own DebugRenderer::Get(entity index (+0x20), unk) on
++--       game + 0x6772c (called from five NPC and entity debug-draw sites); answers the Shape (api_image_render.lua).
++local T = ...
++local B, R, method, static, wrap, this = T.B, T.R, T.method, T.static, T.wrap, T.this
++local ptr, r8, r32, ri32, rf32, w8, w32, wf32, call, log = B.ptr, B.r8, B.r32, B.ri32, B.rf32, B.w8, B.w32, B.wf32, B.call, B.log
++local type, error, rawget, getmetatable, ipairs = type, error, rawget, getmetatable, ipairs
++local mathtype = math.type
++
++local function argerr(n, fname, want, got)
++  error("bad argument #" .. n .. " to '" .. fname .. "' (" .. want .. " expected, got " .. type(got) .. ")", 3)
++end
++local function int_arg(v, n, fname)
++  if mathtype(v) == "integer" then return v end
++  if type(v) == "number" and v == v // 1 then return math.tointeger(v) end
++  argerr(n, fname, "number", v)
++end
++local function vec_arg(v, n, fname)
++  if type(v) ~= "userdata" or v.X == nil then argerr(n, fname, "Vector", v) end
++  return v
++end
++local function rng_arg(v, n, fname)
++  local p = type(v) == "userdata" and ptr(v) or 0
++  if p == 0 then argerr(n, fname, "RNG", v) end
++  return p
++end
++
++------------------------------------------------------------------------------
++-- EntityPlayer:RerollAllCollectibles
++------------------------------------------------------------------------------
++method("EntityPlayer", "RerollAllCollectibles", function(self, rng, includeActives)
++  local p = this(self, "RerollAllCollectibles")
++  local r = rng_arg(rng, 1, "RerollAllCollectibles")
++  if type(includeActives) ~= "boolean" then argerr(2, "RerollAllCollectibles", "boolean", includeActives) end
++  -- the game stops with "RNG Seed is zero!" on an unseeded RNG
++  if r32(r) == 0 then error("rgon: RerollAllCollectibles needs a seeded RNG", 2) end
++  call(0x005c88a0, p, r, includeActives and 1 or 0)
++end)
++
++------------------------------------------------------------------------------
++-- Entity:GetDebugShape
++------------------------------------------------------------------------------
++method("Entity", "GetDebugShape", function(self, unk)
++  local p = this(self, "GetDebugShape")
++  if type(unk) ~= "boolean" then argerr(1, "GetDebugShape", "boolean", unk) end
++  local a = call(0x006b5f10, p, unk and 1 or 0) & 0xffffffff
++  if a == 0 then return nil end
++  return T.shape_at(a)
++end)
++
++------------------------------------------------------------------------------
++-- EntityPlayer:ResetPlayer()   0x007daed0 (named by names.json; the game's Genesis path 0x007db3b0 calls it at 0x007db57a / 0x007db615)
++-- Body: for the first player (index +0x2c == 0, not a ghost) it runs Player::InitPostLevelInitStats (0x007bc740), then adds every
++-- collectible id of the player's vector at +0x20dc (begin, end, capacity; the game's 0x007dad80 fills it with the items Genesis
++-- keeps) through 0x0075f0e0, runs 0x00763570 and 0x007d7740(0), and finally frees the vector. Lab: an id pushed with the game's own
++-- vector insert (0x0042c920) comes back as a collectible and the vector is empty afterwards. With an empty vector it changes only
++-- a pointer word (+0x1f80), no hearts, pickups or stats (measured).
++------------------------------------------------------------------------------
++method("EntityPlayer", "ResetPlayer", function(self)
++  call(0x007daed0, this(self, "ResetPlayer"))
++end)
++
++------------------------------------------------------------------------------
++-- EntityDelirium variables Angle, AttackID, RemainingAttacks, StateD (on the NPC, like api_state_getters.lua's)
++-- Delirium's AI 0x004a6500 (same layout as REPENTOGON's .12 here, read in the AI by the fld table and the code):
++--   +0xbd2 byte  remaining attacks: set to (random % 3) + 2 at 0x004a6b49 when a cycle starts, tested for 0 at 0x004a6bd0
++--   +0xbd3 byte  state (the PRE_TRANSFORMATION hook reads 0x10 there; the AI writes it at 0x004a6772, 0x004a6fa9 ...)
++--   +0xbd8 dword attack id: 0xff at 0x004a6b1e (no attack chosen), read at 0x004a8ba8 as four bytes
++--   +0xbdc byte  attack angle: zeroed at 0x004a6b2d, read as a byte at 0x004a8bd4
++------------------------------------------------------------------------------
++do
++  local property = T.property
++  local BOSS_TYPE, BOSS_VARIANT = 0xbc8, 0xbcc
++  local D_REMAIN, D_STATE, D_ATTACK, D_ANGLE = 0xbd2, 0xbd3, 0xbd8, 0xbdc
++  local function delirium_at(self)
++    local a = ptr(self)
++    if a == 0 then error("rgon: a Delirium variable was read without its object (use ':')", 3) end
++    if self.Type == 412 or (self.Type ~= 0 and r32(a + BOSS_TYPE) == self.Type and r32(a + BOSS_VARIANT) == self.Variant) then return a end
++    return nil
++  end
++  local function var(name, off, size)
++    property("EntityNPC", name,
++      function(self)
++        local a = delirium_at(self)
++        if not a then return nil end
++        if size == 1 then return r8(a + off) end
++        return r32(a + off)
++      end,
++      function(self, v)
++        local a = delirium_at(self)
++        if not a then error("rgon: " .. name .. " is only for Delirium", 2) end
++        v = int_arg(v, 2, name)
++        if size == 1 then w8(a + off, v & 0xff) else w32(a + off, v & 0xffffffff) end
++      end)
++    R.Implemented["EntityNPC." .. name] = nil
++    R.Implemented["EntityDelirium." .. name] = true
++  end
++  var("RemainingAttacks", D_REMAIN, 1)
++  var("StateD", D_STATE, 1)
++  var("AttackID", D_ATTACK, 4)
++  var("Angle", D_ANGLE, 1)
++end
++
++for _, n in ipairs({ "EntityPlayer.RerollAllCollectibles", "Entity.GetDebugShape", "EntityPlayer.ResetPlayer" }) do R.Implemented[n] = true end
 diff --git a/scripts/recomp/rgon/api_entity_config.lua b/scripts/recomp/rgon/api_entity_config.lua
 new file mode 100644
 index 0000000..aa56efb
@@ -14525,6 +14646,100 @@ index 0000000..cc5d9f3
 +  if rawget(_G, "MainMenu") == nil or rawget(_G, "MainMenu") == false then rawset(_G, "MainMenu", MMN) end
 +  implemented("MainMenu", { "GetGameMenuSprite", "GetContinueWidgetSprite", "GetSelectedElement", "SetSelectedElement" })
 +end
+diff --git a/scripts/recomp/rgon/api_menus_misc.lua b/scripts/recomp/rgon/api_menus_misc.lua
+new file mode 100644
+index 0000000..2b49df8
+--- /dev/null
++++ b/scripts/recomp/rgon/api_menus_misc.lua
+@@ -0,0 +1,88 @@
++-- api_menus_misc.lua -- wave 14, worker menus-misc: the leftover menu names, each proven by the game itself (lab_menus_misc.lua).
++-- Written against REPENTOGON's behaviour (LuaTitleMenu.cpp, LuaPauseMenu.cpp, LuaGenericPrompt.cpp, LuaGame.cpp); no C++ copied.
++-- Every offset below was measured in THIS executable (v1.9.7.17); REPENTOGON's are for v1.9.7.12.
++--   TitleMenu.GetSprite: the title menu's sprite (gfx/ui/main menu/TitleMenu.anm2) sits in the menu manager ([0x00c72a20]) at +0x1dc
++--     (lab_menus_probe.lua lists every sprite of the manager; TitleMenu.anm2 is the only sprite of the title menu, before the save select menu).
++--   PauseMenu.GetCompletionMarksSprite: the pause screen (game + 0x23a74) holds a CompletionWidget at +0xe90: PauseScreen::Initialize 0x009b5840
++--     calls CompletionWidget::Init 0x00424ef0 with `lea ecx, [edi + 0xe90]; push 1` (the pause version, which loads completion_widget_pause.png).
++--     The widget's sprite (self pointers at +0x30 / +0x50 from its address) is at widget + 4 = pause + 0xe94, the only
++--     completion_widget.anm2 in the pause screen (lab list of the sprites of the open pause screen).
++--   GenericPrompt(): a prompt of its own. The game builds the one in its Game object inline (0x006f1bd9: the sprite constructor 0x004074c0 on the
++--     object, the byte at +0x130 and the words +0x114..+0x124 set to 0; the next member of the Game starts at +0x134), so the object is 0x134 bytes.
++--   GenericPrompt.GetCurrentSelection: the word at +0x128 of the prompt; the game's input code (GenericPrompt update 0x00837fe0) flips it with the
++--     menu actions 0x14 and 0x15 (word = (word - 1) & 1) and Confirm copies it (2 - word) to the submitted selection at +0x12c.
++local T = ...
++local B, R, wrap = T.B, T.R, T.wrap
++local r32, ri32, w32, call = B.r32, B.ri32, B.w32, B.call
++local type, error, rawget, rawset, setmetatable, getmetatable = type, error, rawget, rawset, setmetatable, getmetatable
++
++local MM_PTR, GAME_PTR = 0x00c72a20, 0x00c71678
++local told = {}
++local function once(key, text) if not told[key] then told[key] = true B.log("api_menus_misc: " .. text) end end
++local function manager(what)
++  local mm = r32(MM_PTR)
++  if mm == 0 then error(what .. ": the main menu does not exist (it is only there outside a run's first frames)", 3) end
++  return mm
++end
++local function game(what)
++  local g = r32(GAME_PTR)
++  if g == 0 then error(what .. ": there is no game yet", 3) end
++  return g
++end
++local function sprite_at(a, what)
++  if r32(a + 0x30) ~= a or r32(a + 0x50) ~= a then
++    once(what, what .. ": no sprite where it was expected; answered with nil")
++    return nil
++  end
++  return wrap("Sprite", a)
++end
++local function class(name)
++  local t = rawget(_G, name)
++  if type(t) ~= "table" then t = {} rawset(_G, name, t) end
++  return t
++end
++local function put(cls, name, fn)
++  local t = class(cls)
++  if rawget(t, name) == nil then
++    t[name] = fn
++    R.Implemented[cls .. "." .. name] = true
++  end
++end
++
++-- TitleMenu
++put("TitleMenu", "GetSprite", function() return sprite_at(manager("TitleMenu.GetSprite") + 0x1dc, "TitleMenu.GetSprite") end)
++
++-- PauseMenu
++put("PauseMenu", "GetCompletionMarksSprite", function()
++  return sprite_at(game("PauseMenu.GetCompletionMarksSprite") + 0x23a74 + 0xe94, "PauseMenu.GetCompletionMarksSprite")
++end)
++
++-- GenericPrompt
++do
++  local GP = rawget(_G, "GenericPrompt")
++  if type(GP) == "table" then
++    local PROMPT_SIZE, SPRITE_CTOR = 0x134, 0x004074c0
++    local function me(self, what)
++      if type(self) ~= "table" or getmetatable(self) ~= GP then error("bad argument #1 to '" .. what .. "' (GenericPrompt expected, got " .. type(self) .. ")", 3) end
++      return self.address
++    end
++    if rawget(GP, "GetCurrentSelection") == nil then
++      GP.GetCurrentSelection = function(self) return ri32(me(self, "GetCurrentSelection") + 0x128) end
++      R.Implemented["GenericPrompt.GetCurrentSelection"] = true
++    end
++    local mt = getmetatable(GP)
++    if mt == nil then
++      setmetatable(GP, { __call = function()
++        local a = B.alloc(PROMPT_SIZE)
++        if a == 0 then error("GenericPrompt: out of memory", 2) end
++        call(SPRITE_CTOR, a)
++        return setmetatable({ address = a }, GP)
++      end })
++      R.Implemented["GenericPrompt.GenericPrompt"] = true
++    end
++  end
++end
++
++-- Game:ShowGenericLeaderboard is NOT provided: Leaderboard::Show 0x008580e0 (found, ret 0x10, one caller 0x006fa0a6) goes on into the Steam
++-- leaderboard interface (0x00a7dc30 calls a method of a Steam object) and the Mac build runs without Steam: the call stops the game with an
++-- unresolved indirect call to 0 (lab run, 2026-11-21). It would be an inert or crashing name, so it stays out.
 diff --git a/scripts/recomp/rgon/api_menus_more.lua b/scripts/recomp/rgon/api_menus_more.lua
 new file mode 100644
 index 0000000..5e0efd4
@@ -15370,12 +15585,267 @@ index 0000000..449b17e
 +  call(0x00709fb0, { ecx = p, xmm2 = damage }, src, player_damage & 0xffffffff, flags & 0xffffffff,
 +    (flags >> 32) & 0xffffffff, ignore and 1 or 0)
 +end)
+diff --git a/scripts/recomp/rgon/api_misc_lua.lua b/scripts/recomp/rgon/api_misc_lua.lua
+new file mode 100644
+index 0000000..9868d7d
+--- /dev/null
++++ b/scripts/recomp/rgon/api_misc_lua.lua
+@@ -0,0 +1,249 @@
++-- api_misc_lua.lua -- wave 14, worker misc-lua: small REPENTOGON names that are pure Lua or one measured field. Written against
++-- REPENTOGON's behaviour (LuaIsaac.cpp, LuaDebug.cpp, LuaOptions.cpp, LuaSeeds.cpp, LuaRailManager.cpp, LuaItemConfig.cpp,
++-- CardsExtras.cpp); no C++ copied. Every address and offset below was measured in THIS executable (v1.9.7.17) by
++-- lab_misc_lua_probe.lua and read back by lab_misc_lua.lua.
++--
++--   Loaded modules: mods get no `package` or `debug` global, but `require("debug")` answers the debug library and
++--       debug.getregistry()._LOADED is the table the game's own `require` fills (8 libraries at start: _G, coroutine, debug, math, os,
++--       string, table, utf8; a mod's required file is added under the name it was required by). REPENTOGON's Isaac.GetLoadedModules
++--       returns that table, Debug.ListLoadedFiles its keys, Debug.ForceUnload(base) clears every entry whose name (slashes as dots)
++--       starts with `base`, so the next require runs the file again.
++--   Isaac.OpenConsole: REPENTOGON opens its ImGui console. This build has the game's own debug console, whose state word is
++--       game + 0x68d78 (api_console.lua: 0 closed, 1 opening, 2 open, 4 closing); writing 1 to a closed console opened it (state 1 then 2
++--       on the next frame, the console drawn, Escape closed it again: 4 then 0).
++--   Seeds:SetStageSeed(stage, seed): the stage seeds are an array of 14 words at Seeds + 0x18 (stage 0 first; the game's own
++--       GetStageSeed reads them back). Seed 0 is stored as 1, stage must be 0..13.
++--   RailManager:GetRailsSprite: the ANM2 at RailManager + 0x1c4 (the object is 0x2d8 bytes; the ANM2's self-pointers sit at +0x30 / +0x50
++--       from its start, found there in the start room and in the Mines).
++--   Options.QuickRoomClear: REPENTOGON stores a flag and patches the game's room clear delay (10 updates) down to 3. Here the flag is
++--       stored and, while it is on and no enemy is alive in a room that is not clear yet, the delay word (room + 0x11ec, which the game counts
++--       down by 1 each update before it clears the room) is held at 3 at most. Options.PreventModUpdates: REPENTOGON only stores it (its
++--       use is commented out) and has no setter; it reads false.
++--   ItemConfigCard.Weight: the chance weight of a card in the pool. REPENTOGON keeps it in its own table (initial value from the card's
++--       weight attribute) and draws from its own pool. Here the weights are kept in Lua and the game's draw is corrected on
++--       MC_GET_CARD: the card the game picked is kept with probability weight / heaviest weight, otherwise drawn again (up to 64
++--       times) from the game's pool, so a card's share of its category follows its weight and a weight of 0 is never handed out.
++local T = ...
++local B, R, static = T.B, T.R, T.static
++local r32, ri32, rf32, w8, w32, wf32, ptr, log = B.r32, B.ri32, B.rf32, B.w8, B.w32, B.wf32, B.ptr, B.log
++local type, error, pcall, ipairs, pairs, rawget, rawset, getmetatable, tostring, select, setmetatable = type, error, pcall, ipairs, pairs, rawget, rawset, getmetatable, tostring, select, setmetatable
++local mathtype = math.type
++
++local GAME_PTR = 0x00c71678
++local function f32(x) return (string.unpack("<f", string.pack("<f", x))) end
++local function argerr(n, fname, want, got)
++  error("bad argument #" .. n .. " to '" .. fname .. "' (" .. want .. " expected, got " .. (got == nil and "no value" or type(got)) .. ")", 3)
++end
++local function class_of(sample)
++  local mt = sample ~= nil and getmetatable(sample)
++  if type(mt) ~= "table" then return nil end
++  return rawget(mt, "__class") or mt, rawget(mt, "__const") or mt
++end
++
++------------------------------------------------------------------------------
++-- loaded modules: Isaac.GetLoadedModules, Debug.ListLoadedFiles, Debug.ForceUnload
++------------------------------------------------------------------------------
++do
++  local ok, loaded = pcall(function() return require("debug").getregistry()._LOADED end)
++  if ok and type(loaded) == "table" then
++    static(Isaac, "Isaac", "GetLoadedModules", function() return loaded end)
++    local Debug = rawget(_G, "Debug")
++    if type(Debug) ~= "table" then Debug = {} rawset(_G, "Debug", Debug) end
++    static(Debug, "Debug", "ListLoadedFiles", function()
++      local out, n = {}, 0
++      for k in pairs(loaded) do n = n + 1 out[n] = k end
++      return out
++    end)
++    static(Debug, "Debug", "ForceUnload", function(base)
++      if type(base) ~= "string" then argerr(1, "ForceUnload", "string", base) end
++      local hit = {}
++      for k in pairs(loaded) do
++        if type(k) == "string" then
++          local dotted = k:gsub("/", ".")
++          if dotted:sub(1, #base) == base then hit[#hit + 1] = { k, dotted } end
++        end
++      end
++      local out = {}
++      for i, h in ipairs(hit) do
++        loaded[h[1]] = nil
++        out[i] = h[2]
++      end
++      return out
++    end)
++  else
++    log("api_misc_lua: no registry _LOADED through require('debug'); the loaded-module names are left out")
++  end
++end
++
++------------------------------------------------------------------------------
++-- Isaac.OpenConsole
++------------------------------------------------------------------------------
++static(Isaac, "Isaac", "OpenConsole", function()
++  local g = r32(GAME_PTR)
++  if g ~= 0 and r32(g + 0x68d78) == 0 then w32(g + 0x68d78, 1) end
++end)
++
++------------------------------------------------------------------------------
++-- Seeds:SetStageSeed
++------------------------------------------------------------------------------
++do
++  local cls, const = class_of(Game():GetSeeds())
++  if cls then
++    local function setter(self, stage, seed)
++      local p = type(self) == "userdata" and ptr(self) or 0
++      if p == 0 then error("rgon: SetStageSeed called without its object (use ':')", 2) end
++      if mathtype(stage) ~= "integer" and not (type(stage) == "number" and stage == stage // 1) then argerr(1, "SetStageSeed", "number", stage) end
++      if type(seed) ~= "number" then argerr(2, "SetStageSeed", "number", seed) end
++      stage = math.tointeger(stage)
++      seed = math.tointeger(seed // 1) & 0xffffffff
++      if seed == 0 then seed = 1 end
++      if stage < 0 or stage > 13 then error("bad argument #1 to 'SetStageSeed' (Invalid LevelStage (must be between 0 and 13))", 2) end
++      w32(p + 0x18 + 4 * stage, seed)
++    end
++    if rawget(cls, "SetStageSeed") == nil then
++      local c = B.cfn(setter)
++      rawset(cls, "SetStageSeed", c)
++      if const ~= cls and rawget(const, "SetStageSeed") == nil then rawset(const, "SetStageSeed", c) end
++      R.Implemented["Seeds.SetStageSeed"] = true
++    end
++  end
++end
++
++------------------------------------------------------------------------------
++-- RailManager:GetRailsSprite
++------------------------------------------------------------------------------
++do
++  local RM = T.railmanager_methods
++  if type(RM) == "table" and rawget(RM, "GetRailsSprite") == nil then
++    RM.GetRailsSprite = function(self)
++      local p = type(self) == "userdata" and ptr(self) or 0
++      if p == 0 then error("rgon: GetRailsSprite called without its object (use ':')", 2) end
++      local s = p + 0x1c4
++      if r32(s + 0x30) ~= s or r32(s + 0x50) ~= s then error("rgon: no sprite where RailManager:GetRailsSprite expects one", 2) end
++      return T.wrap("Sprite", s)
++    end
++    R.Implemented["RailManager.GetRailsSprite"] = true
++  end
++end
++
++------------------------------------------------------------------------------
++-- Options.QuickRoomClear, Options.PreventModUpdates
++------------------------------------------------------------------------------
++do
++  local quick = false
++  local function want_bool(v, name) if type(v) ~= "boolean" then argerr(1, name, "boolean", v) end return v end
++  T.property("Options", "QuickRoomClear", function() return quick end, function(...) quick = want_bool((select(-1, ...)), "QuickRoomClear") end)
++  T.property("Options", "PreventModUpdates", function() return false end, nil)
++  if T.listen then
++    T.listen(ModCallbacks.MC_POST_UPDATE, function()
++      if not quick then return end
++      local room = Game():GetRoom()
++      local a = ptr(room) + 0x11ec
++      local d = ri32(a)
++      if d > 3 and not room:IsClear() and room:GetAliveEnemiesCount() == 0 then w32(a, 3) end
++    end, CallbackPriority.LATE)
++  end
++end
++
++------------------------------------------------------------------------------
++-- ItemConfigCard.Weight
++------------------------------------------------------------------------------
++do
++  local sample = Isaac.GetItemConfig():GetCard(1)
++  local cls, const = class_of(sample)
++  local XN = rawget(_G, "XMLNode")
++  if cls and T.listen then
++    local weights = {}            -- card id -> weight set from Lua
++    local active = false          -- some card has a weight other than 1
++    local function weight_of(card_id)
++      local w = weights[card_id]
++      if w ~= nil then return w end
++      local c = Isaac.GetItemConfig():GetCard(card_id)
++      return c and c.InitialWeight or 1.0
++    end
++    local xml_top
++    local function heaviest()
++      local m = 1.0
++      for _, w in pairs(weights) do if w > m then m = w end end
++      -- a card whose weight attribute is above 1 and that was never set from Lua (the xml is read once)
++      if xml_top == nil then
++        xml_top = {}
++        if XN and XN.CARD and T.xml_entries then
++          local set = T.xml_entries(XN.CARD)
++          for _, e in ipairs(set and set.list or {}) do
++            local id, w = tonumber(e.id), tonumber(e.weight)
++            if id and w and w > 1 then xml_top[math.tointeger(id)] = w end
++          end
++        end
++      end
++      for id, w in pairs(xml_top) do if weights[id] == nil and w > m then m = w end end
++      return m
++    end
++    local drawing = false
++    local listening = false
++    local function listen()
++      if listening then return end
++      listening = true
++      T.listen(ModCallbacks.MC_GET_CARD, function(_, rng, card, playing, runes, only_runes)
++        if drawing or not active or card == 0 then return nil end
++        local top = heaviest()
++        local pool = Game():GetItemPool()
++        drawing = true
++        local pick = card
++        for _ = 1, 64 do
++          local w = weight_of(pick)
++          if w >= top or rng:RandomFloat() < w / top then break end
++          pick = pool:GetCard(rng:Next(), playing, runes, only_runes)
++        end
++        drawing = false
++        if pick ~= card then return pick end
++        return nil
++      end, CallbackPriority.LATE)
++    end
++    local function num_ok(v) return type(v) == "number" and v == v end
++    local function getter(self) return weight_of(self.ID) end
++    local function setter(...)
++      local self, v = select(1, ...), (select(-1, ...))
++      if not num_ok(v) then argerr(1, "Weight", "number", v) end
++      local w = f32(v < 0 and 0 or v)
++      weights[self.ID] = w
++      if w ~= 1.0 then active = true listen() end
++    end
++    local done = false
++    local seen, const_hooked = {}, {}
++    for _, t in ipairs({ getmetatable(sample), cls, const }) do
++      if seen[t] then goto next end
++      seen[t] = true
++      local pg, ps = rawget(t, "__propget"), rawget(t, "__propset")
++      -- a const class (what a `const ItemConfig_Card*` carries) has a getter table and no setter table
++      if type(pg) == "table" and rawget(pg, "Weight") == nil then
++        rawset(pg, "Weight", B.cfn(getter))
++        done = true
++      end
++      if type(ps) == "table" and rawget(ps, "Weight") == nil then rawset(ps, "Weight", B.cfn(setter)) end
++      -- the card objects carry the const metatable, whose __newindex refuses every name: take Weight there, pass the rest on
++      if type(ps) ~= "table" and type(rawget(t, "__newindex")) == "function" and not const_hooked[t] then
++        const_hooked[t] = true
++        local orig = rawget(t, "__newindex")
++        rawset(t, "__newindex", B.cfn(function(self, key, value)
++          if key == "Weight" then return setter(self, value) end
++          return orig(self, key, value)
++        end))
++      end
++      ::next::
++    end
++    if done then
++      R.Implemented["ItemConfigCard.Weight"] = true
++      -- cards whose own weight attribute is not 1 count from the start
++      if XN and XN.CARD and T.xml_entries then
++        local set = T.xml_entries(XN.CARD)
++        for _, e in ipairs(set and set.list or {}) do
++          local w = tonumber(e.weight)
++          if w and w ~= 1 then active = true listen() break end
++        end
++      end
++    else
++      log("api_misc_lua: no property tables on the card class; ItemConfigCard.Weight is left out")
++    end
++  end
++end
 diff --git a/scripts/recomp/rgon/api_modhot.lua b/scripts/recomp/rgon/api_modhot.lua
 new file mode 100644
-index 0000000..265c94c
+index 0000000..5f2dac8
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_modhot.lua
-@@ -0,0 +1,285 @@
+@@ -0,0 +1,286 @@
 +-- api_modhot.lua -- wave 8 batch B: fourteen names that Fiend Folio, Epiphany and StageAPI call (Room champion rules, EntityBomb's
 +-- hit list and costume sprites, PlayerHUD:RenderActiveItem, Color:Print, EntityConfig.GetMaxBabyID, ItemConfig.CanRerollCollectible,
 +-- GridEntityDoor:GetExtraSprite, Sprite:GetEventTriggerFrames / SetOverlayLayerFrame, StageTransition.Get/SetSameStage).
@@ -15383,7 +15853,8 @@ index 0000000..265c94c
 +-- LuaEntityConfig.cpp, LuaItemConfig.cpp, LuaGridEntityDoor.cpp, LuaSprite.cpp, LuaStageTransition.cpp); every offset and address below
 +-- was measured in THIS executable (v1.9.7.17) and read back by lab_modhot.lua. No hooks.
 +--
-+-- Room:GetChampionBossChance (IsChampionBossSeed is NOT registered: the lab saw the game roll no champion in 40 fresh boss rooms, so the
++-- Room:GetChampionBossChance (IsChampionBossSeed is NOT registered: the lab saw the game roll no champion in 40 fresh boss rooms, and wave 14
++--   again none in 19 `goto` boss rooms and 24 boss rooms of new floors with the chance at 0.3 (the rule said yes in 4 of 24), so the
 +--   seed rule could not be compared with the game's own; REPENTOGON compiles both into its own code, the game has no function of them):
 +--   chance 0 until achievement 3 (the Womb) is unlocked, then 0.1; 0.3 with achievement 0x21; 0.6 on Greedier (Game difficulty 3);
 +--   times twice the summed Purple Heart multiplier while anyone holds it; 1.0 in challenge 0x22. The seed test seeds an RNG with the
@@ -16375,10 +16846,10 @@ index 40d6a51..977fd61 100644
        if p == 0 then error("rgon: EntitySlot:" .. what .. " called without its object (use ':')", 3) end
 diff --git a/scripts/recomp/rgon/api_options.lua b/scripts/recomp/rgon/api_options.lua
 new file mode 100644
-index 0000000..7f43907
+index 0000000..3319b4a
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_options.lua
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,72 @@
 +-- api_options.lua -- wave 11, worker names-11: the Options fields REPENTOGON adds that are plain fields of the game's own options
 +-- record (OptionsConfig). Options record = Manager ([0x00c7169c]) + 0x2a33c. Offsets are relative to the record and were measured
 +-- in v1.9.7.17 against options.ini (REPENTOGON's v1.9.7.12 offsets are NOT the same from +0x5c on: the window fields moved by 8 and
@@ -16394,7 +16865,8 @@ index 0000000..7f43907
 +--   +0xa0 OnlineHUD (int)   +0xa4 StreamerMode (bool)   +0xa8 OnlinePlayerVolume (int)   +0xac OnlinePlayerOpacity (int)
 +--   +0xb0 OnlineChatEnabled (bool)   +0xb1 OnlineChatFilterEnabled (bool)   +0xb4 OnlineColorSet (int)   +0xb8 OnlineInputDelay (int)
 +-- Not done (they are REPENTOGON's own settings, kept in its ini, with no field in the game to read or write): BetterVoidGeneration,
-+-- HushPanicStateFix, PreventModUpdates, QuickRoomClear, StatHUDPlanetarium. A stored value that changes nothing would be a stand-in.
++-- HushPanicStateFix, StatHUDPlanetarium (each needs a patch inside a game function). A stored value that changes nothing would be a
++-- stand-in. QuickRoomClear and PreventModUpdates are in api_misc_lua.lua (wave 14).
 +local T = ...
 +local B, property = T.B, T.property
 +local r8, ri32, rf32, w8, w32, wf32, r32 = B.r8, B.ri32, B.rf32, B.w8, B.w32, B.wf32, B.r32
@@ -16801,10 +17273,10 @@ index 0000000..d2f9fcf
 +-- name is left out of Implemented. Flags for GetCollectible belong with an engine hook (cb-b).
 diff --git a/scripts/recomp/rgon/api_player_calls.lua b/scripts/recomp/rgon/api_player_calls.lua
 new file mode 100644
-index 0000000..f5cfa28
+index 0000000..12840dd
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_player_calls.lua
-@@ -0,0 +1,226 @@
+@@ -0,0 +1,225 @@
 +-- api_player_calls.lua -- wave 8, worker player-calls (batch B5): EntityPlayer and Entity names that are one call into a game
 +-- function. Every address below was CONFIRMED in v1.9.7.17 by the function's body, a caller that passes what it should and
 +-- its `ret N`, then by a read-back in lab_player_calls.lua; names.json / REPENTOGON signatures were only the lead.
@@ -16827,7 +17299,7 @@ index 0000000..f5cfa28
 +--       0x007ae1d0, thiscall, `ret 0x18` (hook slot 69 already wraps it): spawns effect 1000 variant 0x71 with the position and
 +--       velocity pointers, copies the offset into the effect's +0x34c, and a Tech X laser besides when the player has it.
 +--       Only the first three words are read; the other three are zeros here.
-+--   EntityPlayer:ResetPlayer() is deferred (see the note above ReviveCoopGhost's code): no observable effect proven.
++--   EntityPlayer:ResetPlayer() is in api_entity_calls.lua (wave 14: the effect is the re-adding of the queued collectibles).
 +--   EntityPlayer:ReviveCoopGhost() -> boolean   REPENTOGON's rule: when IsCoopGhost() the game's RevivePlayerGhost
 +--       (0x007d93b0, plain `ret`; it clears the ghost byte +0x20a9) runs and the answer is true.
 +--   EntityPlayer:TryDecreaseGlowingHourglassUses(uses, forceHourglass)   0x007b9e10, thiscall, `ret 8`. Only the low byte of
@@ -16974,8 +17446,7 @@ index 0000000..f5cfa28
 +------------------------------------------------------------------------------
 +-- ReviveCoopGhost, TryDecreaseGlowingHourglassUses
 +------------------------------------------------------------------------------
-+-- ResetPlayer (0x007daed0) is deferred: its lab run changed one pointer word (+0x1f80) and no hearts, items or stats, so no
-+-- effect is proven and the name stays unregistered.
++-- ResetPlayer (0x007daed0) moved to api_entity_calls.lua (wave 14): its effect is the re-adding of the ids queued at +0x20dc.
 +
 +method("EntityPlayer", "ReviveCoopGhost", function(self)
 +  local p = this(self, "ReviveCoopGhost")
@@ -20172,10 +20643,10 @@ index 0000000..5d3212d
 +end)
 diff --git a/scripts/recomp/rgon/api_rooms_more.lua b/scripts/recomp/rgon/api_rooms_more.lua
 new file mode 100644
-index 0000000..314863d
+index 0000000..3c44737
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_rooms_more.lua
-@@ -0,0 +1,282 @@
+@@ -0,0 +1,289 @@
 +-- api_rooms_more.lua -- chunk 6 (rooms and levels): Room (camera, FX, clear delay, champion boss seed), Camera, FXLayers,
 +-- FXParams, RoomDescriptor (Doors, BossDeathSeed, GetErrorTrinketEffect), GridEntity:ToWall, Level:TryPlaceRoom / TryPlaceRoomAtDoor. Written against REPENTOGON's behaviour; every address and offset was
 +-- found in THIS executable (v1.9.7.17) and read back by lab_rooms_probe.lua / lab_rooms_more.lua.
@@ -20280,6 +20751,9 @@ index 0000000..314863d
 +  UseWaterV2 = { 0x1c, "byte" }, ShadowAlpha = { 0x48, "float" },
 +  WaterColor = { 0x20, "kcolor" }, WaterColorMultiplier = { 0x34, "kcolor" },
 +  ShadowColor = { 0x4c, "kcolor" }, LightColor = { 0x60, "kcolor" }, WaterEffectColor = { 0x74, "colormod" },
++  -- the room's colour correction: R G B A at +0, brightness +0x14, contrast +0x18 (the words Room::ComputeColorModifier 0x00823370 reads,
++  -- api_isaac_misc.lua); a copy, like REPENTOGON's (Room:UpdateColorModifier applies it)
++  ColorModifier = { 0x0, "roomcolormod" },
 +}
 +local function fx_get(self, key)
 +  local f = FXP[key]
@@ -20288,6 +20762,7 @@ index 0000000..314863d
 +  if f[2] == "byte" then return r8(a) ~= 0 end
 +  if f[2] == "float" then return rf32(a) end
 +  if f[2] == "kcolor" then return kcolor_get(a) end
++  if f[2] == "roomcolormod" then return T.ColorModifier.new(rf32(a), rf32(a + 4), rf32(a + 8), rf32(a + 12), rf32(a + 0x14), rf32(a + 0x18)) end
 +  return T.ColorModifier.new(rf32(a), rf32(a + 4), rf32(a + 8), rf32(a + 12), rf32(a + 16), rf32(a + 20))
 +end
 +local function fx_set(self, key, v)
@@ -20297,6 +20772,9 @@ index 0000000..314863d
 +  if f[2] == "byte" then w8(a, v and 1 or 0)
 +  elseif f[2] == "float" then wf32(a, num_arg(v, 1, key))
 +  elseif f[2] == "kcolor" then kcolor_set(a, v, key)
++  elseif f[2] == "roomcolormod" then
++    if not T.ColorModifier.is(v) then error("bad argument to '" .. key .. "' (ColorModifier expected, got " .. type(v) .. ")", 2) end
++    wf32(a, v.R) wf32(a + 4, v.G) wf32(a + 8, v.B) wf32(a + 12, v.A) wf32(a + 0x14, v.Brightness) wf32(a + 0x18, v.Contrast)
 +  else
 +    if not T.ColorModifier.is(v) then error("bad argument to '" .. key .. "' (ColorModifier expected, got " .. type(v) .. ")", 2) end
 +    wf32(a, v.R) wf32(a + 4, v.G) wf32(a + 8, v.B) wf32(a + 12, v.A) wf32(a + 16, v.Brightness) wf32(a + 20, v.Contrast)
@@ -31343,6 +31821,202 @@ index 0000000..97a6dbd
 +    stage = "over"
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_entity_calls.lua b/scripts/recomp/rgon/lab_entity_calls.lua
+new file mode 100644
+index 0000000..c356281
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_entity_calls.lua
+@@ -0,0 +1,117 @@
++-- lab_entity_calls.lua (development only; LAB=lab_entity_calls.lua): every name of api_entity_calls.lua.
++-- Lines "lab_entity_calls: PASS|FAIL <name> <detail>", a last "DONE pass=N fail=M".
++local T = ...
++local B = T.B
++local r32, ri32, rf32, w32, wf32, call, ptr = B.r32, B.ri32, B.rf32, B.w32, B.wf32, B.call, B.ptr
++local mod = RegisterMod("rgon lab entity calls", 1)
++local pass, fail = 0, 0
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log("lab_entity_calls: " .. (ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function note(s) B.log("lab_entity_calls: note " .. s) end
++local function try(name, f)
++  local ok, err = pcall(f)
++  if not ok then check(name, false, "error: " .. tostring(err)) end
++end
++local started, frame = false, 0
++mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() started = true end)
++
++local REG = { "EntityPlayer.RerollAllCollectibles", "Entity.GetDebugShape", "EntityDelirium.RemainingAttacks", "EntityDelirium.StateD",
++  "EntityDelirium.AttackID", "EntityDelirium.Angle", "EntityPlayer.ResetPlayer" }
++local del, seen = nil, { remain = {}, state = {}, attack = {}, angle = {} }
++
++local function names()
++  for _, n in ipairs(REG) do check("Implemented " .. n, REPENTOGON.Implemented[n] == true) end
++end
++
++local function checks()
++  local pos = Game():GetRoom():GetCenterPos()
++  local p = Isaac.GetPlayer(0)
++
++  try("GetDebugShape", function()
++    local g = Isaac.Spawn(10, 0, 0, pos, Vector(0, 0), nil)
++    g:AddEntityFlags(EntityFlag.FLAG_FREEZE)
++    local s = g:GetDebugShape(false)
++    check("GetDebugShape answers a Shape", s ~= nil and s.GetTimeout ~= nil)
++    check("shape index is the entity's", s ~= nil and ri32(s.address) == g.Index, s and ri32(s.address))
++    check("fresh shape timeout 5", s ~= nil and s:GetTimeout() == 5, s and s:GetTimeout())
++    local s2 = g:GetDebugShape(false)
++    check("same entity same shape", s2 ~= nil and s2.address == s.address)
++  end)
++
++  try("Delirium spawn", function()
++    p:AddCollectible(313)
++    p:AddHearts(24)
++    local e = Isaac.Spawn(412, 0, 0, pos + Vector(0, -100), Vector(0, 0), nil)
++    del = e:ToNPC()
++    check("Delirium vars readable", del.RemainingAttacks ~= nil and del.StateD ~= nil and del.AttackID ~= nil and del.Angle ~= nil)
++    del.RemainingAttacks = 7
++    del.AttackID = 0x12345
++    del.Angle = 9
++    check("Delirium setter round trip", del.RemainingAttacks == 7 and del.AttackID == 0x12345 and del.Angle == 9)
++    local plain = Isaac.Spawn(10, 0, 0, pos, Vector(0, 0), nil):ToNPC()
++    check("other NPC answers nil", plain.RemainingAttacks == nil and plain.StateD == nil)
++  end)
++
++  try("ResetPlayer", function()
++    p:AddCollectible(4)
++    p:RemoveCollectible(4)
++    local vec = ptr(p) + 0x20dc
++    local cell = B.alloc(4)
++    w32(cell, 4)
++    call(0x0042c920, vec, r32(vec + 4), cell)
++    check("vector holds one id", (r32(vec + 4) - r32(vec)) == 4)
++    local hearts = p:GetHearts()
++    p:ResetPlayer()
++    check("ResetPlayer re-added the queued collectible", p:GetCollectibleNum(4, true) == 1, p:GetCollectibleNum(4, true))
++    check("ResetPlayer freed the vector", r32(vec) == 0 and r32(vec + 4) == 0)
++    check("hearts unchanged", p:GetHearts() == hearts)
++    p:RemoveCollectible(4)
++  end)
++
++  try("RerollAllCollectibles", function()
++    p:AddCollectible(1)
++    p:AddCollectible(2)
++    p:AddCollectible(3)
++    local function total() return p:GetCollectibleCount() end
++    local before = total()
++    local rng = RNG()
++    rng:SetSeed(12345, 35)
++    p:RerollAllCollectibles(rng, false)
++    local after = total()
++    note("passives before " .. before .. " after " .. after)
++    check("count kept", after == before, before .. "->" .. after)
++    local kept = p:GetCollectibleNum(1, true) + p:GetCollectibleNum(2, true) + p:GetCollectibleNum(3, true)
++    check("the three items were replaced", kept < 3, kept)
++    local z = RNG()
++    local ok = pcall(function() z:SetSeed(0, 35); p:RerollAllCollectibles(z, false) end)
++    check("zero-seed RNG is refused", not ok)
++  end)
++end
++
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  if not started then return end
++  frame = frame + 1
++  if frame == 3 then try("names", names) end
++  if frame == 10 then try("checks", checks) end
++  if del and frame < 900 then
++    local pl = Isaac.GetPlayer(0)
++    if pl:GetHearts() < 12 then pl:AddHearts(12) end
++  end
++  if del and frame > 10 and frame < 900 and del:Exists() then
++    seen.remain[del.RemainingAttacks] = true
++    seen.state[del.StateD] = true
++    seen.attack[del.AttackID] = true
++    seen.angle[del.Angle] = true
++  end
++  if frame == 900 then
++    local function keys(t) local o = {} for k in pairs(t) do o[#o + 1] = k end table.sort(o) return table.concat(o, ",") end
++    note("remaining " .. keys(seen.remain) .. " state " .. keys(seen.state) .. " attack " .. keys(seen.attack) .. " angle " .. keys(seen.angle))
++    check("game rewrote RemainingAttacks (2..4 seen)", seen.remain[2] or seen.remain[3] or seen.remain[4])
++    check("game wrote AttackID 255", seen.attack[255])
++    local n = 0 for _ in pairs(seen.state) do n = n + 1 end
++    check("StateD changes", n >= 2, n)
++  end
++  if frame == 905 then B.log(string.format("lab_entity_calls: DONE pass=%d fail=%d", pass, fail)) end
++end)
+diff --git a/scripts/recomp/rgon/lab_entity_calls_probe.lua b/scripts/recomp/rgon/lab_entity_calls_probe.lua
+new file mode 100644
+index 0000000..6b351b7
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_entity_calls_probe.lua
+@@ -0,0 +1,67 @@
++-- lab_entity_calls_probe.lua (development only; LAB=lab_entity_calls_probe.lua): probes for the entity-calls worker.
++-- Lines "lab_entity_calls_probe: ...". Calls game functions directly through the bridge to see their reaction.
++local T = ...
++local B = T.B
++local r32, ri32, call, ptr = B.r32, B.ri32, B.call, B.ptr
++local mod = RegisterMod("rgon lab entity calls probe", 1)
++local started, frame = false, 0
++local function say(s) B.log("lab_entity_calls_probe: " .. s) end
++mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, function() started = true end)
++
++local function snap(p)
++  return string.format("red=%d max=%d soul=%d black=%d coins=%d bombs=%d keys=%d items=%d dmg=%.2f speed=%.2f tears=%.2f luck=%.2f type=%d",
++    p:GetHearts(), p:GetMaxHearts(), p:GetSoulHearts(), p:GetBlackHearts(), p:GetNumCoins(), p:GetNumBombs(), p:GetNumKeys(),
++    p:GetCollectibleCount(), p.Damage, p.MoveSpeed, p.MaxFireDelay, p.Luck, p:GetPlayerType())
++end
++
++local function words(p, from, to)
++  local a = ptr(p)
++  local t = {}
++  for o = from, to, 4 do t[o] = r32(a + o) end
++  return t
++end
++local function diff(a, b)
++  local out = {}
++  for o, v in pairs(a) do if b[o] ~= v then out[#out + 1] = string.format("%x:%x->%x", o, v, b[o]) end end
++  table.sort(out)
++  return table.concat(out, " ")
++end
++
++local function resetplayer()
++  local p = Isaac.GetPlayer(0)
++  p:AddCollectible(1)
++  p:AddCollectible(4)
++  p:AddCollectible(CollectibleType.COLLECTIBLE_MOMS_KNIFE or 114)
++  p:AddCoins(7)
++  p:AddBombs(3)
++  p:AddSoulHearts(4)
++  p:AddMaxHearts(4)
++  p:AddHearts(4)
++  p:EvaluateItems()
++  say("before " .. snap(p))
++  local w0 = words(p, 0, 0x2400)
++  local n0 = #Isaac.FindByType(1000)
++  p:RemoveCollectible(4)
++  local vec = ptr(p) + 0x20dc
++  local cell = B.alloc(4)
++  B.w32(cell, 4)
++  call(0x0042c920, vec, r32(vec + 4), cell)
++  say("vector " .. string.format("%x %x %x", r32(vec), r32(vec + 4), r32(vec + 8)) .. " item4 count " .. p:GetCollectibleNum(4, true))
++  call(0x007daed0, ptr(p))
++  say("vector after " .. string.format("%x %x %x", r32(vec), r32(vec + 4), r32(vec + 8)) .. " item4 count " .. p:GetCollectibleNum(4, true))
++  p:EvaluateItems()
++  say("after  " .. snap(p))
++  say("word diff " .. diff(w0, words(p, 0, 0x2400)))
++  say("effects " .. n0 .. " -> " .. #Isaac.FindByType(1000))
++end
++
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  if not started then return end
++  frame = frame + 1
++  if frame == 10 then local ok, e = pcall(resetplayer) if not ok then say("error " .. tostring(e)) end end
++  if frame == 15 then
++    local p = Isaac.GetPlayer(0)
++    say("later " .. snap(p))
++    say("PROBE DONE")
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_entity_classes.lua b/scripts/recomp/rgon/lab_entity_classes.lua
 new file mode 100644
 index 0000000..4e47908
@@ -36766,6 +37440,174 @@ index 0000000..38d08dd
 +  end
 +end)
 +say("loaded N=" .. N)
+diff --git a/scripts/recomp/rgon/lab_menus_misc.lua b/scripts/recomp/rgon/lab_menus_misc.lua
+new file mode 100644
+index 0000000..5d5f661
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_menus_misc.lua
+@@ -0,0 +1,162 @@
++-- lab_menus_misc.lua (development only; ISAAC_RGON_LAB=lab_menus_misc.lua, wave 14 worker menus-misc): api_menus_misc.lua against the game.
++-- Logs "lab_menus_misc: PASS/FAIL ..", INFO lines for what is only looked at, and "lab_menus_misc: DONE n PASS m FAIL".
++--   ISAAC_LAB_MODE=menu: HEADLESS=1 FRAMES=700 LAB=lab_menus_misc.lua SCRIPT='120:enter,300:enter' scripts/mac/run.sh <support> <log>
++--     (the title menu's sprite at the main menu)
++--   ISAAC_LAB_MODE=run (default in a run): ISAAC_LAB_MODE=run HEADLESS=1 FRAMES=2600 LAB=lab_menus_misc.lua
++--     SCRIPT='until=Room 1.2(Start Room):enter,@100:esc:hold=4,@160:esc:hold=4,@300:enter:hold=4,@350:enter:hold=4,...,@1700:enter:hold=4'
++--     (an Enter every 50 frames from @300 to @1700) scripts/mac/run.sh <support> <log>
++--   ISAAC_LAB_MODE=rt ISAAC_LAB_CHAR=<type>: probe of RoomTransition's extra portrait map (prints INFO only, no check).
++--   The support folder needs one dummy mod and a played save; 0 FAIL is the pass line.
++local T = ...
++local B = T.B
++local R = T.R or REPENTOGON
++local r32, w32, ri32, log, call = B.r32, B.w32, B.ri32, B.log, B.call
++local mod = RegisterMod("rgon lab menus misc", 1)
++local pass, fail = 0, 0
++local function say(s) log("lab_menus_misc: " .. s) end
++local function check(name, ok, detail)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  say((ok and "PASS " or "FAIL ") .. name .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function info(s) say("INFO " .. s) end
++local wrap_sprite = function(a) return T.wrap("Sprite", a) end
++local MM_PTR, GAME_PTR = 0x00c72a20, 0x00c71678
++
++local NAMES = { "TitleMenu.GetSprite", "PauseMenu.GetCompletionMarksSprite", "GenericPrompt.GenericPrompt", "GenericPrompt.GetCurrentSelection" }
++local mode = B.env("ISAAC_LAB_MODE") or "run"
++for _, n in ipairs(NAMES) do check("Implemented " .. n, R.Implemented[n] == true) end
++-- names found but unprovable or unsafe here must not be claimed
++for _, n in ipairs({ "Game.ShowGenericLeaderboard", "RoomTransition.GetPlayerExtraPortraitSprite", "DailyChallengeMenu.GetSelectedElement",
++  "KeyConfigMenu.GetSelectedColumn", "ControllerSelectMenu.GetSelectedElement", "Isaac.RenderCollectionItem", "LevelGenerator.PlaceRoom",
++  "Renderer.StartTransformation", "SurfaceRenderController.SetBlendMode" }) do
++  check("not claimed " .. n, R.Implemented[n] ~= true)
++end
++
++local function menu_mode()
++  local f, done = 0, false
++  mod:AddCallback(ModCallbacks.MC_MAIN_MENU_RENDER, function()
++    f = f + 1
++    if r32(MM_PTR) == 0 then return end
++    if f == 20 then
++      check("Implemented TitleMenu.GetSprite", R.Implemented["TitleMenu.GetSprite"] == true)
++      local sp = TitleMenu.GetSprite()
++      check("TitleMenu.GetSprite is TitleMenu.anm2", sp ~= nil and sp:GetFilename():find("TitleMenu.anm2", 1, true) ~= nil, sp and sp:GetFilename() or "nil")
++      check("TitleMenu.GetSprite plays an animation", sp ~= nil and sp:GetAnimation() ~= "", sp and sp:GetAnimation())
++    end
++    if f == 40 and not done then done = true say(string.format("DONE %d PASS %d FAIL", pass, fail)) end
++  end)
++end
++
++local function run_mode()
++  local PAUSE = 0x23a74
++  local frame, prompt, lastp = 0, nil, {}
++  local function pwatch(key, v) if lastp[key] ~= v then lastp[key] = v info(string.format("run frame %d: %s = %s", frame, key, tostring(v))) end end
++  local seen_completion, scanned = false, false
++  -- trials of the prompt's selection: write the current-selection word, wait for the game's own Confirm (Enter) to copy it to the submitted one
++  local trial, trial_sel = 0, { 1, 0, 1, 0 }
++  local want = { [1] = 1, [0] = 2 }
++  local armed = false
++  mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++    if not Isaac.IsInGame() then return end
++    frame = frame + 1
++    local g = r32(GAME_PTR)
++    if Game():IsPaused() and frame > 110 then
++      local sp = PauseMenu.GetCompletionMarksSprite()
++      if not scanned then
++        scanned = true
++        for o = PAUSE, PAUSE + 0x1400, 4 do
++          if r32(g + o + 0x30) == g + o and r32(g + o + 0x50) == g + o then
++            local ok, name = pcall(function() return wrap_sprite(g + o):GetFilename() end)
++            info(string.format("paused sprite pause+0x%x %s", o - PAUSE, ok and name or "?"))
++          end
++        end
++      end
++      if sp ~= nil and not seen_completion then
++        seen_completion = true
++        check("PauseMenu.GetCompletionMarksSprite is completion_widget.anm2", sp:GetFilename():find("completion_widget.anm2", 1, true) ~= nil, sp:GetFilename())
++        info("completion sprite animation " .. tostring(sp:GetAnimation()))
++      end
++    end
++    prompt = prompt or Game():GetGenericPrompt()
++    if frame == 200 then
++      local p = GenericPrompt()
++      check("GenericPrompt() returns a prompt", p ~= nil and p.address ~= nil and p.address ~= 0)
++      check("a new prompt is a different object from the game's", p.address ~= prompt.address)
++      p:Initialize(false)
++      p:SetText("own prompt", "", "", "", "")
++      p:Show()
++      check("GenericPrompt() prompt IsActive after Show", p:IsActive() == true)
++      local sp = p:GetSprite()
++      check("GenericPrompt() prompt has the prompt's sprite", sp ~= nil and sp:GetFilename() ~= "", sp and sp:GetFilename() or "nil")
++      check("GenericPrompt() prompt starts with selection 0", p:GetCurrentSelection() == 0, p:GetCurrentSelection())
++      for _ = 1, 3 do p:Update(false) p:Render() end
++      check("GenericPrompt() prompt survives Update/Render", true)
++    end
++    if frame >= 300 and frame < 1500 and trial < #trial_sel then
++      if not armed then
++        armed = true
++        if trial > 0 then prompt = GenericPrompt() end  -- trial 0 uses the game's own prompt, the others one of our own (the game's stays on Dissappear)
++        prompt:Initialize(false)
++        prompt:SetText("Menus-misc lab", "enter confirms", "", "", "")
++        prompt:Show()
++        check("GenericPrompt.GetCurrentSelection is 0 after Show", prompt:GetCurrentSelection() == 0, prompt:GetCurrentSelection())
++        w32(prompt.address + 0x128, trial_sel[trial + 1])
++        check("GenericPrompt.GetCurrentSelection reads the word the game's input code uses", prompt:GetCurrentSelection() == trial_sel[trial + 1], prompt:GetCurrentSelection())
++      end
++      prompt:Update(true)
++      prompt:Render()
++      if frame % 100 == 0 then
++        info(string.format("frame %d trial %d anim %s flag44 %d cur %d sub %d", frame, trial, prompt:GetSprite():GetAnimation(), B.r8 and B.r8(prompt.address + 0x44) or -1, prompt:GetCurrentSelection(), prompt:GetSubmittedSelection()))
++      end
++      local sub = prompt:GetSubmittedSelection()
++      if sub ~= 0 then
++        local sel = trial_sel[trial + 1]
++        check("the game's Confirm submits 2 - current (current " .. sel .. ")", sub == want[sel], sub)
++        trial, armed = trial + 1, false
++        for _ = 1, 30 do end
++      end
++    end
++    if (frame == 1500 or trial == #trial_sel) and not lastp.done then
++      lastp.done = true
++      check("all four Confirm trials happened", trial == #trial_sel, trial)
++      say(string.format("DONE %d PASS %d FAIL", pass, fail))
++    end
++  end)
++end
++-- ISAAC_LAB_MODE=rt ISAAC_LAB_CHAR=<player type>: the versus screen's extra portrait map (RoomTransition + 0x224, a std::map<int, ANM2>)
++local function rt_mode()
++  local frame, started = 0, false
++  local char = tonumber(B.env("ISAAC_LAB_CHAR") or "") or 26
++  mod:AddCallback(ModCallbacks.MC_POST_GAME_STARTED, function() started = true end)
++  mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++    if not Isaac.IsInGame() or not started then return end
++    frame = frame + 1
++    if frame == 10 then Isaac.ExecuteCommand("restart " .. char) end
++    if frame == 260 then
++      local g = r32(GAME_PTR)
++      info("player type " .. Isaac.GetPlayer(0):GetPlayerType())
++      local ok, err = pcall(RoomTransition.StartBossIntro, BossType.MONSTRO)
++      info("StartBossIntro " .. tostring(ok) .. " " .. tostring(err))
++    end
++    if frame == 270 then
++      local g = r32(GAME_PTR)
++      local rt = g + 0x1b83c
++      local head = r32(rt + 0x224)
++      info(string.format("map head %x size %d (+0x228)", head, ri32(rt + 0x228)))
++      local function walk(n, depth)
++        if n == 0 or n == head or depth > 12 then return end
++        local isnil = B.r8 and B.r8(n + 0xd) or -1
++        if isnil == 1 then return end
++        walk(r32(n), depth + 1)
++        local key = ri32(n + 0x10)
++        local a = n + 0x14
++        local okn, name = pcall(function() return T.wrap("Sprite", a):GetFilename() end)
++        info(string.format("node %x key %d sprite@%x self30=%x self50=%x file %s", n, key, a, r32(a + 0x30), r32(a + 0x50), okn and name or "?"))
++        walk(r32(n + 8), depth + 1)
++      end
++      walk(r32(head + 4), 0)
++      say(string.format("DONE %d PASS %d FAIL", pass, fail))
++    end
++  end)
++end
++if mode == "run" then run_mode() elseif mode == "rt" then rt_mode() else menu_mode() end
 diff --git a/scripts/recomp/rgon/lab_menus_more.lua b/scripts/recomp/rgon/lab_menus_more.lua
 new file mode 100644
 index 0000000..2b5bd4f
@@ -37729,6 +38571,269 @@ index 0000000..9e67735
 +    say("DONE")
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_misc_lua.lua b/scripts/recomp/rgon/lab_misc_lua.lua
+new file mode 100644
+index 0000000..7e54672
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_misc_lua.lua
+@@ -0,0 +1,257 @@
++-- lab_misc_lua.lua (development only; LAB=lab_misc_lua.lua DBG=true, wave 14 worker misc-lua): every name of api_misc_lua.lua plus
++-- FXParams.ColorModifier (api_rooms_more.lua), in a run started by
++-- SCRIPT='until=Room 1.2(Start Room):enter'. Needs the test mod scripts/mac/testmods/misc_lua_req in the support folder's mods
++-- (a symlink) and DBG=true (the game's debug console, for Isaac.OpenConsole). Lines "lab_misc_lua: PASS|FAIL <what>" and a last
++-- "lab_misc_lua: DONE n PASS m FAIL". Steps run on MC_POST_UPDATE; the floor change (RailManager in the Mines) is last.
++local T = ...
++local B = T.B
++local r32, ri32, w32, ptr = B.r32, B.ri32, B.w32, B.ptr
++local mod = RegisterMod("rgon lab misc lua", 1)
++local pass, fail = 0, 0
++local game = Game()
++local function check(ok, what, detail)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log("lab_misc_lua: " .. (ok and "PASS " or "FAIL ") .. what .. (detail ~= nil and (" " .. tostring(detail)) or ""))
++end
++local function note(s) B.log("lab_misc_lua: note " .. s) end
++local function try(what, f)
++  local ok, err = pcall(f)
++  if not ok then check(false, what, "error: " .. tostring(err)) end
++end
++local function near(a, b, e) return math.abs(a - b) <= (e or 1e-5) end
++
++local NAMES = {
++  "Isaac.GetLoadedModules", "Isaac.OpenConsole", "Debug.ListLoadedFiles", "Debug.ForceUnload", "Options.QuickRoomClear",
++  "Options.PreventModUpdates", "Seeds.SetStageSeed", "RailManager.GetRailsSprite", "ItemConfigCard.Weight", "FXParams.ColorModifier",
++}
++local con, con_opened
++local steps, cur, wait_until = {}, 1, 0
++local function step(f) steps[#steps + 1] = f end
++local function frames(n) wait_until = Isaac.GetFrameCount() + n end
++
++-- 1. names and the loaded-module functions
++step(function()
++  for _, n in ipairs(NAMES) do check(REPENTOGON.Implemented[n] == true, "Implemented " .. n) end
++  try("loaded modules", function()
++    local loaded = Isaac.GetLoadedModules()
++    check(type(loaded) == "table" and loaded._G == _G, "GetLoadedModules is the table of loaded modules (_G is in it)")
++    check(type(loaded.string) == "table" and type(loaded.math) == "table", "the libraries are in it")
++    check(type(loaded.misc_lua_req_helper) == "table" and loaded.misc_lua_req_helper.loaded == 1, "the test mod's required file is in it, with its return value")
++    check(MISC_LUA_REQ_COUNT == 1, "the helper ran once", MISC_LUA_REQ_COUNT)
++    local files = Debug.ListLoadedFiles()
++    local seen, n = {}, 0
++    for _, k in ipairs(files) do seen[k] = true n = n + 1 end
++    local c = 0
++    for _ in pairs(loaded) do c = c + 1 end
++    check(n == c and n >= 9 and seen._G and seen.misc_lua_req_helper, "ListLoadedFiles lists every key", n .. " of " .. c)
++    check(Debug.ForceUnload("nothing_like_this_zz") ~= nil and #Debug.ForceUnload("nothing_like_this_zz") == 0, "ForceUnload of an unknown prefix unloads nothing")
++    check(type(loaded.misc_lua_req_helper) == "table", "...and the helper is still there")
++    local out = Debug.ForceUnload("misc_lua_req")
++    check(#out == 1 and out[1] == "misc_lua_req_helper", "ForceUnload('misc_lua_req') answers the unloaded names", table.concat(out, ","))
++    check(Isaac.GetLoadedModules().misc_lua_req_helper == nil, "the entry is gone")
++    require("misc_lua_req_helper")
++    check(MISC_LUA_REQ_COUNT == 2, "the next require runs the file again", MISC_LUA_REQ_COUNT)
++    check(Isaac.GetLoadedModules().misc_lua_req_helper ~= nil, "and it is loaded again")
++    check(not pcall(Debug.ForceUnload, 5), "ForceUnload wants a string")
++  end)
++end)
++
++-- 2. Seeds:SetStageSeed
++step(function()
++  try("SetStageSeed", function()
++    local s = game:GetSeeds()
++    local old3, old0 = s:GetStageSeed(3), s:GetStageSeed(0)
++    s:SetStageSeed(3, 123456789)
++    check(s:GetStageSeed(3) == 123456789, "SetStageSeed(3, n) reads back through the game's GetStageSeed", s:GetStageSeed(3))
++    check(s:GetStageSeed(0) == old0 and s:GetStageSeed(4) ~= 123456789, "the neighbouring stages are untouched")
++    s:SetStageSeed(3, 0)
++    check(s:GetStageSeed(3) == 1, "seed 0 is stored as 1", s:GetStageSeed(3))
++    s:SetStageSeed(13, 77)
++    check(s:GetStageSeed(13) == 77, "stage 13 (the last)", s:GetStageSeed(13))
++    check(not pcall(s.SetStageSeed, s, 14, 5), "stage 14 is an error")
++    check(not pcall(s.SetStageSeed, s, -1, 5), "stage -1 is an error")
++    check(not pcall(s.SetStageSeed, s, 3, "x"), "a string seed is an error")
++    s:SetStageSeed(3, old3)
++    check(s:GetStageSeed(3) == old3, "restored")
++  end)
++end)
++
++-- 3. FXParams.ColorModifier
++step(function()
++  try("FXParams.ColorModifier", function()
++    local room = game:GetRoom()
++    local fx = room:GetFXParams()
++    local cm = fx.ColorModifier
++    local words = {}
++    for i, off in ipairs({ 0, 4, 8, 12, 0x14, 0x18 }) do words[i] = B.rf32(ptr(fx) + off) end
++    check(near(cm.R, words[1]) and near(cm.G, words[2]) and near(cm.B, words[3]) and near(cm.A, words[4]) and near(cm.Brightness, words[5]) and near(cm.Contrast, words[6]),
++      "ColorModifier is the room's colour words (R G B A, brightness, contrast)")
++    local old = ColorModifier(cm.R, cm.G, cm.B, cm.A, cm.Brightness, cm.Contrast)
++    fx.ColorModifier = ColorModifier(0.5, 0.25, 0.75, 1, 0.125, 1.5)
++    local back = fx.ColorModifier
++    check(near(back.R, 0.5) and near(back.G, 0.25) and near(back.B, 0.75) and near(back.A, 1) and near(back.Brightness, 0.125) and near(back.Contrast, 1.5), "a set ColorModifier reads back")
++    room:UpdateColorModifier(false, false)
++    local target = game:GetTargetColorModifier()
++    check(near(target.R, 0.5) and near(target.G, 0.25) and near(target.B, 0.75) and near(target.Brightness, 0.125) and near(target.Contrast, 1.5),
++      "Room:UpdateColorModifier(false, false) hands it to the game (Game:GetTargetColorModifier)",
++      string.format("%.3f %.3f %.3f %.3f %.3f", target.R, target.G, target.B, target.Brightness, target.Contrast))
++    check(not pcall(function() fx.ColorModifier = 5 end), "a number is not a ColorModifier")
++    fx.ColorModifier = old
++    room:UpdateColorModifier(false, false)
++  end)
++end)
++
++-- 4. ItemConfigCard.Weight
++local function draws(n, only_runes)
++  local pool, count = game:GetItemPool(), {}
++  local rng = RNG()
++  rng:SetSeed(424242, 35)
++  for _ = 1, n do
++    local c = pool:GetCard(rng:Next(), false, true, only_runes)
++    count[c] = (count[c] or 0) + 1
++  end
++  return count
++end
++step(function()
++  try("ItemConfigCard.Weight", function()
++    local cfg = Isaac.GetItemConfig()
++    local base = draws(400, true)
++    local top, topn, kinds = nil, 0, 0
++    for c, n in pairs(base) do kinds = kinds + 1 if n > topn then top, topn = c, n end end
++    note("rune draws: " .. kinds .. " kinds, most frequent card " .. tostring(top) .. " x" .. topn)
++    check(kinds >= 3 and top ~= nil and top ~= 0, "a baseline of several rune cards")
++    local card = cfg:GetCard(top)
++    check(card.Weight == 1.0 and card.InitialWeight == 1.0, "Weight starts at InitialWeight (1)", card.Weight)
++    card.Weight = 0
++    check(card.Weight == 0 and card.InitialWeight == 1.0, "Weight 0 reads back, InitialWeight is unchanged")
++    local none = draws(400, true)
++    check((none[top] or 0) == 0, "a card of weight 0 is never handed out in 400 draws (it was " .. topn .. " of 400 before)", none[top])
++    local other, on = nil, 0
++    for c, n in pairs(none) do if c ~= 0 and n > on then other, on = c, n end end
++    card.Weight = 1
++    local oc = cfg:GetCard(other)
++    oc.Weight = 40
++    check(oc.Weight == 40.0, "Weight 40 reads back")
++    local heavy = draws(400, true)
++    check((heavy[other] or 0) > 250, "a card of weight 40 takes most of the draws (" .. tostring(on) .. " before)", heavy[other])
++    local kinds_heavy = 0
++    for _ in pairs(heavy) do kinds_heavy = kinds_heavy + 1 end
++    check(kinds_heavy >= 3, "the other cards still appear beside the heavy one", kinds_heavy)
++    oc.Weight = -3
++    check(oc.Weight == 0, "a negative weight is stored as 0", oc.Weight)
++    check(not pcall(function() oc.Weight = "x" end), "a string weight is an error")
++    oc.Weight = 1
++    local after = draws(400, true)
++    check(math.abs((after[other] or 0) - (base[other] or 0)) < 60 and (after[top] or 0) >= 1, "weights back at 1: the draws look like the baseline again", tostring(after[other]) .. " vs " .. tostring(base[other]))
++  end)
++end)
++
++-- 5. Options: QuickRoomClear, PreventModUpdates, Isaac.OpenConsole
++mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++  if con ~= "wait" then return end
++  local g = r32(0x00c71678)
++  if r32(g + 0x68d78) == 2 then
++    con_opened = 2
++    w32(g + 0x68d78, 4)           -- the closing state the game's Escape handler writes (measured by the probe)
++    con = "closing"
++  end
++end)
++step(function()
++  try("Options", function()
++    check(Options.QuickRoomClear == false, "QuickRoomClear starts off")
++    Options.QuickRoomClear = true
++    check(Options.QuickRoomClear == true, "QuickRoomClear reads back on")
++    Options.QuickRoomClear = false
++    check(Options.QuickRoomClear == false, "and off")
++    check(not pcall(function() Options.QuickRoomClear = 1 end), "a number is not a boolean")
++    check(Options.PreventModUpdates == false, "PreventModUpdates reads false")
++    check(not pcall(function() Options.PreventModUpdates = true end), "PreventModUpdates has no setter")
++  end)
++  local g = r32(0x00c71678)
++  check(r32(g + 0x68d78) == 0, "the console is closed to start with", r32(g + 0x68d78))
++  Isaac.OpenConsole()
++  con = "wait"
++  frames(5)
++end)
++step(function()
++  local g = r32(0x00c71678)
++  check(con == "closing" and con_opened == 2, "Isaac.OpenConsole opened the debug console (state 2 seen on render; the game pauses while it is open)", con_opened)
++  check(r32(g + 0x68d78) == 0, "...and it closed again after the closing state was written", r32(g + 0x68d78))
++  frames(20)
++end)
++
++-- 6. room clear delay, champion bosses (in boss rooms)
++local cl = { on = false, t0 = nil, ticks = nil }
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  if not cl.on then return end
++  local r = game:GetRoom()
++  cl.n = (cl.n or 0) + 1                      -- MC_POST_UPDATE calls (one per game update)
++  if r:IsClear() then
++    if cl.t0 and not cl.ticks then cl.ticks = cl.n - cl.t0 end
++  elseif r:GetAliveEnemiesCount() == 0 and not cl.t0 then
++    cl.t0 = cl.n
++  end
++end)
++local function kill_all()
++  for _, e in ipairs(Isaac.GetRoomEntities()) do
++    if e:IsActiveEnemy(false) then e:Kill() end
++  end
++end
++local quick_off, quick_on
++local function clear_trial(quick, done)
++  step(function()
++    Options.QuickRoomClear = quick
++    Isaac.ExecuteCommand("goto s.boss." .. (quick and 1011 or 1010))
++    frames(100)
++  end)
++  step(function()
++    cl.on, cl.t0, cl.ticks = true, nil, nil
++    kill_all()
++    frames(400)
++  end)
++  step(function()
++    cl.on = false
++    check(game:GetRoom():IsClear(), "the room cleared (quick " .. tostring(quick) .. ")")
++    done(cl.ticks)
++    Options.QuickRoomClear = false
++  end)
++end
++clear_trial(false, function(t) quick_off = t note("room clear took " .. tostring(t) .. " updates after the last enemy (QuickRoomClear off)") end)
++clear_trial(true, function(t)
++  quick_on = t
++  note("room clear took " .. tostring(t) .. " updates after the last enemy (QuickRoomClear on)")
++  check(quick_off ~= nil and quick_on ~= nil and quick_off >= 7 and quick_on <= 5 and quick_on < quick_off, "QuickRoomClear shortens the clear delay (updates from the last enemy to the room clear)",
++    tostring(quick_off) .. " -> " .. tostring(quick_on))
++end)
++
++-- 7. RailManager (the Mines) -- the floor change, last
++step(function()
++  try("RailManager", function()
++    local rm = game:GetRoom():GetRailManager()
++    local sp = rm:GetRailsSprite()
++    check(sp ~= nil and ptr(sp) == ptr(rm) + 0x1c4, "GetRailsSprite is the ANM2 at RailManager + 0x1c4 (start room)")
++    check(type(sp:GetFilename()) == "string", "it is a Sprite", sp:GetFilename())
++    check(not pcall(rm.GetRailsSprite, nil), "called without its object it is an error")
++  end)
++  Isaac.ExecuteCommand("stage 3a")
++  frames(150)
++end)
++step(function()
++  try("RailManager Mines", function()
++    local rm = game:GetRoom():GetRailManager()
++    local sp = rm:GetRailsSprite()
++    note("Mines: stage " .. game:GetLevel():GetStage() .. " rails sprite file '" .. tostring(sp:GetFilename()) .. "' animation '" .. tostring(sp:GetAnimation()) .. "'")
++    check(game:GetLevel():GetStage() == 3, "on floor 3")
++    check(sp ~= nil and r32(ptr(sp) + 0x30) == ptr(sp), "the Mines' rails sprite is a live ANM2")
++  end)
++end)
++
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  if cur > #steps then return end
++  if Isaac.GetFrameCount() < wait_until then return end
++  local f = steps[cur]
++  cur = cur + 1
++  local ok, err = pcall(f)
++  if not ok then check(false, "step " .. (cur - 1), "error: " .. tostring(err)) end
++  if cur > #steps then B.log(string.format("lab_misc_lua: DONE %d PASS %d FAIL", pass, fail)) end
++end)
 diff --git a/scripts/recomp/rgon/lab_modhot.lua b/scripts/recomp/rgon/lab_modhot.lua
 new file mode 100644
 index 0000000..763323f
@@ -38261,10 +39366,10 @@ index 0000000..36a70c4
 +end)
 diff --git a/scripts/recomp/rgon/lab_npc_entity_misc.lua b/scripts/recomp/rgon/lab_npc_entity_misc.lua
 new file mode 100644
-index 0000000..cec4808
+index 0000000..be597d9
 --- /dev/null
 +++ b/scripts/recomp/rgon/lab_npc_entity_misc.lua
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,173 @@
 +-- lab_npc_entity_misc.lua (development only; LAB=lab_npc_entity_misc.lua): every name of api_npc_entity_misc.lua.
 +-- Lines "lab_npc_entity_misc: PASS|FAIL <name> <detail>", a last "DONE pass=N fail=M".
 +local T = ...
@@ -38290,8 +39395,9 @@ index 0000000..cec4808
 +    "EntityNPC.GetHitList", "EntityNPC.GetFireplaceLoot", "EntityNPC.GetShopkeeperLoot", "EntityEffect.CreateLootPreview" }) do
 +    check("Implemented " .. n, I[n] == true)
 +  end
-+  for _, n in ipairs({ "EntityNPC.SetFlyingOverride", "EntityNPC.GetFlyingOverride", "EntityNPC.ClearFlyingOverride", "EntityDelirium.Transform",
-+    "Entity.GetDebugShape", "Entity.TeleportToRandomPosition", "EntityFamiliar.RemoveFromPlayer", "EntityNPC.FireGridEntity", "EntityNPC.ThrowMaggot",
++  -- the flying override and EntityDelirium.Transform were registered by hook-h1 (wave 11): lab_hook_h_one covers them
++  for _, n in ipairs({
++    "Entity.TeleportToRandomPosition", "EntityFamiliar.RemoveFromPlayer", "EntityNPC.FireGridEntity", "EntityNPC.ThrowMaggot",
 +    "EntityNPC.ThrowMaggotAtPos", "EntityNPC.ShootMaggotProjectile", "EntityNPC.SpawnBloodSplash" }) do
 +    check("deferred " .. n .. " left unregistered", I[n] ~= true)
 +  end
@@ -46022,7 +47128,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..5f66a9f 100644
+index 4175f07..59c4873 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -46116,7 +47222,7 @@ index 4175f07..5f66a9f 100644
    rearm = function() arm(nil) end,
  }
 -for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_hooks.lua" }) do
-+for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_beam.lua", "api_player_fields.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_ambush.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_entity_more.lua", "api_player_health.lua", "api_npc.lua", "api_tears_more.lua", "api_eid.lua", "api_pickup_more.lua", "api_player_items.lua", "api_game_misc.lua", "api_rooms_more.lua", "api_cacheflags.lua", "api_hooks.lua", "api_hooks_hud.lua", "api_framectx.lua", "api_render.lua", "api_weapons.lua", "api_room_hooks.lua", "api_leftovers.lua", "api_charsel.lua", "api_throw_loot.lua", "api_gfx.lua", "api_isaac_misc.lua", "api_misc_b.lua", "api_locate.lua", "api_modhot.lua", "api_stage_config.lua", "api_data_values.lua", "api_challenge_param.lua", "api_familiar_pickup.lua", "api_player_calls.lua", "api_npc_blood.lua", "api_player_easy.lua", "api_cb_grid_one.lua", "api_cb_lua.lua", "api_locate_more.lua", "api_engine_names.lua", "api_console.lua", "api_entity_config.lua", "api_player_rest.lua", "api_room_calls.lua", "api_grid_npc.lua", "api_host_misc.lua", "api_score_isaac.lua", "api_level_game.lua", "api_menus_stats.lua", "api_render_misc.lua", "api_menus_rest.lua", "api_cb_level.lua", "api_cb_pocket.lua", "api_level_itempool_misc.lua", "api_room_sets.lua", "api_npc_entity_misc.lua", "api_player_cooldowns.lua", "api_menus_more.lua", "api_cb_entity.lua", "api_image_render.lua", "api_cb_hud.lua", "api_options.lua", "api_cb_ending_labs.lua", "api_cb_music_menu.lua", "api_cb_pocket_two.lua", "api_cb_backdrop.lua", "api_hook_h_one.lua", "api_hook_h_two.lua" }) do
++for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_beam.lua", "api_player_fields.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_ambush.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_entity_more.lua", "api_player_health.lua", "api_npc.lua", "api_tears_more.lua", "api_eid.lua", "api_pickup_more.lua", "api_player_items.lua", "api_game_misc.lua", "api_rooms_more.lua", "api_cacheflags.lua", "api_hooks.lua", "api_hooks_hud.lua", "api_framectx.lua", "api_render.lua", "api_weapons.lua", "api_room_hooks.lua", "api_leftovers.lua", "api_charsel.lua", "api_throw_loot.lua", "api_gfx.lua", "api_isaac_misc.lua", "api_misc_b.lua", "api_locate.lua", "api_modhot.lua", "api_stage_config.lua", "api_data_values.lua", "api_challenge_param.lua", "api_familiar_pickup.lua", "api_player_calls.lua", "api_npc_blood.lua", "api_player_easy.lua", "api_cb_grid_one.lua", "api_cb_lua.lua", "api_locate_more.lua", "api_engine_names.lua", "api_console.lua", "api_entity_config.lua", "api_player_rest.lua", "api_room_calls.lua", "api_grid_npc.lua", "api_host_misc.lua", "api_score_isaac.lua", "api_level_game.lua", "api_menus_stats.lua", "api_render_misc.lua", "api_menus_rest.lua", "api_cb_level.lua", "api_cb_pocket.lua", "api_level_itempool_misc.lua", "api_room_sets.lua", "api_npc_entity_misc.lua", "api_player_cooldowns.lua", "api_menus_more.lua", "api_cb_entity.lua", "api_image_render.lua", "api_cb_hud.lua", "api_options.lua", "api_cb_ending_labs.lua", "api_cb_music_menu.lua", "api_cb_pocket_two.lua", "api_cb_backdrop.lua", "api_hook_h_one.lua", "api_hook_h_two.lua", "api_menus_misc.lua", "api_entity_calls.lua", "api_misc_lua.lua" }) do
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)

@@ -14,11 +14,11 @@ folder next to it (`<toolchain>/env.sh`), `<game>` the Windows depot of the game
 | M1 headless, M2 picture, M3 input, M4 sound | Verified, committed, published |
 | M5 window (integer/fill scaling, fullscreen) | Verified, committed, published |
 | M6 saves, M7 mods (Workshop sync, `disable.it`) | Verified, committed, published |
-| M8 Layer (REPENTOGON support) | Rounds 1-2 committed. Verified 2026-11-18 (Verifier: Epiphany Basement I to Caves I, 95 mods with no new Lua error, headless 3000 frames). 5 of 11 REPENTOGON-using mods Shown (Unique Items API hidden again: `MC_MENU_INPUT_ACTION` and `MC_PRE_GLOWING_HOURGLASS_LOAD` not counted until seen firing); Epiphany's Tarnished page works (`Sprite:Continue`, user-checked) |
-| M9 Steam | Design and static trace pass done; bridge code written (`native/mac/host/mac_steam.c`), syntax-checked only, not built or run (`steam-bridge.md` section 8) |
-| M10 Launcher | Built, tested against a fake game; not run against the real game from the app |
-| M11 app + `build.sh` | Draft: light stages tested, signed app opens; heavy stages never run from scratch; two follow-ups open |
-| M12 publish | Per milestone; README not updated |
+| M8 Layer (REPENTOGON support) | **Working, ongoing by waves.** 1,589 of 1,727 functions and 378 of 380 callbacks (census-wave14, 2026-11-21); 9 of 13 REPENTOGON-naming mods Shown; Epiphany and Fiend Folio run with the Layer in play; 95-mod trap through 6 floors shows only Fired's Angels and Statues' own bug. Not planned: ImGui, per-sprite shaders, Windows-only calls, MC_PRE_OPENGL_RENDER. Class-by-class history in `docs/mac/layer-gaps.md` section 9 |
+| M9 Steam | Bridge verified with a stub (steps 1-5 and 7 in `steam-bridge.md` 8.4); off unless `ISAAC_STEAM=1`, which is never used in tests. Real-client steps 6 and 8 are the user's |
+| M10 Launcher | Built (SwiftUI): save import, Workshop sync, mod scan, mod list with search field and All/Enabled/Disabled filter (b6d131c); in the signed app |
+| M11 app + `build.sh` | Working: `scripts/mac/build.sh --game <game> --out <dir>` builds the signed app (last full rebuild 2026-11-21 12:24, BUILD_RC=0) |
+| M12 publish | Ongoing: each wave is published after `publish.sh` passes (public bb72db7, 2026-11-21); README holds status and numbers |
 
 Working status (what runs now, the plan, open questions) lives in the git-ignored `notes/` folder of the work
 checkout (`notes/current.md`, `notes/NEXT.md`, `notes/PROGRESS.md`). Uncommitted work at any moment: `git status`.
@@ -407,30 +407,20 @@ delete `apply.sh`.
   `play.sh --unlock-all`, then the Tarnished page on the character menu.
 - **Commit as you go.** Verified work sitting uncommitted for hours is a risk and hides progress.
 
-## 11. Next steps, in order
+## 11. Next steps
 
-1. **Secure what works.** Quick check of the uncommitted work (headless M1; a windowed Epiphany run with
-   `lab_trapdoor` to Caves I; 95-mod run with no new Lua error; Launcher tests), then commit in pieces:
-   the audio deadlock fix (`mac_audio.c`), the Layer rounds 1-2, the Launcher's bundled `sync-config.json`
-   merge, `build.sh` + `build.md` + `apply.sh` + `make_icon.py`. Publish.
-2. **Make the app playable end to end** (user value first): done 2026-11-19 except the user's check.
-   ANGLE loads from the app's Frameworks folder. `build.sh` rebuilt the app from the current game. Play from
-   the app reached the first room with 95 mods, and Fiend Folio sees REPENTOGON. `run.sh` and `fresh.sh` are
-   in `scripts/mac/`, `lab_unlock_all.lua` is in `scripts/recomp/rgon/`. Left for the user: double-click from
-   Finder, which uses the real save folder.
-3. **M9 Steam bridge**: verified with the stub 2026-11-19 (steps 1-5 and 7 in `steam-bridge.md` 8.4; 637
-   SetAchievement calls from the game's own TryUnlock reach it). Off unless `ISAAC_STEAM=1`. The game calls
-   `ResetAllStats(true)` when the stat `version` isn't 1000; it is refused and never forwarded (it would wipe a
-   real account). Before a real client is ever used: replace the token pool (it borrows never-called rows
-   such as `DefWindowProcA`, `_purecall` and `__CxxLongjmpUnwind` while live) with PROVIDED rows in
-   `gen_shims.py`. Find out why the console's `achievement N` doesn't reach Steam. The user then runs steps
-   6 and 8, dry run first. Original plan, per `steam-bridge.md` section 7 (achievements: SetAchievement + StoreStats; cloud
-   slots stay NULL; graceful failure without Steam; test with the stub in `.scratch/steam-research/`).
-4. **M10**: Launcher features against the real game, with Launcher snapshots.
-5. **M11**: a from-scratch `build.sh` run in a clean output folder (check disk first).
-6. **M12**: README with status and steps, final publish.
-7. **M8 backlog, timeboxed batches**: `MC_MENU_INPUT_ACTION` (fires or is not counted), Epiphany's characters
-   on the wheel, Browser Build rebuild and run with the new hooks, then EID and StageAPI structures.
-- **Giving the game a file at run time (worker gfx, 2026-11-20).** The game's file lookup (0x00a17180) only knows the files of its boot-time index, so `B.fs_seed("resources/...")` (host_rgon.c, an in-memory file) is not found by `T.read_file` or `Sprite:LoadGraphics`. A path with a drive letter (`C:/rgon_images/...`) is opened as it stands and the host's file table answers it: that is how `api_gfx.lua` hands the game a PNG it made. A file name must be new for each version (the game keeps a loaded image per name). The same bridge has `png_decode/png_encode/png_size/img_blit`. Game PNGs are not loose files (packed archives): read them through `T.read_file("gfx/...")`, which also resolves mods. The labs: `lab_gfx_test.lua` (HEADLESS, `FRAMES=2400`: a run needs about 520 frames to reach the first room) and `lab_gfx_shot.lua` (windowed, `SHOT=@300:<png>` after the room anchor).
-- **A sprite from an anm2 the Layer writes (worker gfx2, 2026-11-20).** `B.fs_seed("C:/rgon_images/anm/x.anm2", xml)` followed by `Sprite:Load("C:/rgon_images/anm/x.anm2", true)` works (drive-letter paths, see above), and `ReplaceSpritesheet` + `LoadGraphics` with another `C:/...` PNG binds a picture. A frame's Width/Height are fixed by the anm2, so one anm2 per source size (`api_gfx.lua`). `LayerState:GetSize/SetSize` is the layer scale (1, 1 default), `SetCropOffset` the sampled window's origin, and a sprite never `Update`d keeps the layer state you set. Screenshots: the presented-frame numbers of `SHOT=@N` count from the script anchor but the lab's own frame counter (`Isaac.GetFrameCount`) does not match them, so trigger a change on `Game():GetFrameCount()` and take two shots 300 or more frames apart (`lab_gfx2_shot.lua`: green at `@300`, red at `@650`).
-- **Host OS pieces and the 32-word call (worker host-bridge, wave 9).** `B.call` takes up to 32 stack words (Manager::StartNewGame has 26). Mac-only bridge functions (`window_set_title/window_title/clip_set/clip_get/dialog/set_icon/wheel/center_cursor/device_name`) are in `host_rgon.c` under `ISAAC_NATIVE` and call `native/mac/host/mac_sys.c`; the Layer tests `B.<name>` before registering, so the Browser Build simply lacks the names. Web-branch check without emscripten: `clang -fsyntax-only -DISAAC_NATIVE=0` on `host_rgon.c` with the build's include paths. `ISAAC_MAC_NODIALOG=1` makes `Isaac.ShowErrorDialog` log and answer the first button (labs). macOS `CLOCK_MONOTONIC` is whole microseconds: use `CLOCK_UPTIME_RAW` for a real nanosecond clock. The wheel script token is `mouse:wheel=N`; read it in `MC_POST_RENDER` (the value lasts one presented frame).
+Status, the running wave and the open play checks live in `notes/current.md` (git-ignored); this list is the stable part.
+
+1. **Layer coverage by waves** (see `prompt_rules.md`): census, class-qualified backlog (`scripts/mac/rgon_backlog.py`),
+   Sonnet workers in worktrees, merge after checking, install when hooks were added, publish. As of 2026-11-21 1,589 of
+   1,727 functions and 378 of 380 callbacks are in; what is left is mostly ImGui, per-sprite shaders and Windows-only calls
+   (see `not-implemented.md`) plus a few menu and entity calls nobody tested mods call.
+2. **Play checks by the user**: anything menus, feel or visuals; the list is in `notes/current.md` and `notes/playtest-pending.md`.
+3. **M9 Steam**: verified with the stub (`steam-bridge.md` 8.4, steps 1-5 and 7); steps 6 and 8 with a real client are the
+   user's, dry run first. Never run with `ISAAC_STEAM=1` in tests. Before a real client: replace the token pool with
+   PROVIDED rows in `gen_shims.py` and find why the console's `achievement N` does not reach Steam.
+4. **Facts worth keeping (wave 12)**: a mod's own `shaders.xml` compiles under ANGLE and `MC_GET_SHADER_PARAMS` fires with its name
+   (the first callback returning a table ends the chain, so probes use `AddPriorityCallback` with `-100000`); ANGLE rejects
+   `max(i, 1)` with a float `i` and int-minus-float in Fiend Folio's loose `coloroffset_neon.fs`, used only by
+   `Sprite:SetCustomShader` (not planned). A lab rerun needs the worker's exact env (`ISAAC_LAB_PHASE` and the like).
+   `apply.sh` copies folders under `scripts/mac` with `cp -R` (test mods live in `scripts/mac/testmods/`).

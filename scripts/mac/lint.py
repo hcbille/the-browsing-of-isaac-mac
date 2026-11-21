@@ -977,6 +977,31 @@ def rule_player_calls_names_in_lab(fs):
                    'and pass that address, never the Lua string')
 
 
+def rule_entity_calls_names_in_lab(fs):
+    """Every name api_entity_calls.lua registers is named in lab_entity_calls.lua, and no other lab still asserts it is 'left unregistered' (wave 14, worker entity-calls: lab_npc_entity_misc listed Entity.GetDebugShape as deferred while a game function for it existed; an old note had also ruled out 0x005c88a0, the D4 reroll, as 'a player reset' without looking at its callers: confirm or rule out a function by its callers and `ret N`, not by its size or neighbours)."""
+    src = text_of(RGON + '/api_entity_calls.lua')
+    lab = text_of(RGON + '/lab_entity_calls.lua')
+    if src is None or lab is None:
+        return
+    names = set()
+    for cls, name in re.findall(r'method\("(\w+)", "(\w+)"', src):
+        names.add('%s.%s' % (cls, name))
+    for name in re.findall(r'^\s*var\("(\w+)"', src, re.M):
+        names.add('EntityDelirium.' + name)
+    for n in sorted(names):
+        if '"%s"' % n not in lab:
+            yield (RGON + '/lab_entity_calls.lua', 0, 'add "%s" to REG and a check that calls it (getter by read-back, setter by effect, '
+                   'action by the game\'s reaction), or leave the name out of api_entity_calls.lua' % n)
+    for f in fs:
+        if not f.startswith(RGON + '/lab_') or f.endswith('lab_entity_calls.lua'):
+            continue
+        t = text_of(f)
+        if t and 'left unregistered' in t:
+            for n in sorted(names):
+                if '"%s"' % n in t:
+                    yield (f, 0, '%s is registered now (api_entity_calls.lua): take it out of this lab\'s "left unregistered" list' % n)
+
+
 def rule_console_box_drawn_in_console_hook(fs):
     """The console's suggestion box is drawn from the hook after Console::Render (wave 7, worker console): a draw from a callback inside Game::Render is covered by the console, and a draw from a hook after Game::Render or Manager::Render returns is never shown (measured: Sprite and Font calls ran without error and nothing reached the frame)."""
     src = text_of(RGON + '/api_hooks.lua')
@@ -1188,6 +1213,20 @@ def rule_menus_more_names_in_lab(fs):
 
 
 
+def rule_menus_misc_names_in_lab(fs):
+    """Every name api_menus_misc.lua registers is named in lab_menus_misc.lua, and nothing in that file calls Leaderboard::Show (wave 14, worker menus-misc: Game:ShowGenericLeaderboard stops the game on a NULL Steam interface without Steam; a name whose call can end the run is left out, not registered)."""
+    src = text_of(RGON + '/api_menus_misc.lua')
+    lab = text_of(RGON + '/lab_menus_misc.lua')
+    if src is None or lab is None:
+        return
+    for cls, name in sorted(set(re.findall(r'put\("(\w+)", "(\w+)"', src))):
+        if '"%s.%s"' % (cls, name) not in lab:
+            yield (RGON + '/lab_menus_misc.lua', 0, 'add "%s.%s" to NAMES and a check, or leave the name out of api_menus_misc.lua' % (cls, name))
+    for n, line in enumerate(src.splitlines(), 1):
+        if re.match(r'\s*[^-\s].*0x008580e0', line) and 'call(' in line:
+            yield (RGON + '/api_menus_misc.lua', n, 'do not call Leaderboard::Show 0x008580e0: it reaches the Steam leaderboard interface (NULL without Steam) and stops the game; leave Game:ShowGenericLeaderboard unregistered')
+
+
 def rule_entity_initseed_offset(fs):
     """An entity's InitSeed is the word at +0x3ec, never +0x34 (wave 11, worker hook-h1: +0x34 reads 0 on an NPC and on a pickup in v1.9.7.17, so every key built from it was the same; the CanReroll override was shared by all pickups and the hitbox knife's stale-pointer test never tested anything). The word at +0x3dc is the drop RNG's state and changes as it is drawn from."""
     for f in fs:
@@ -1279,6 +1318,36 @@ def rule_callback_id_local_not_reassigned(fs):
                              'give each callback its own local (id_stage, id_devil ...) or its own do-block')
 
 
+def rule_lab_console_open_on_render(fs):
+    """A lab that opens the game's debug console (Isaac.OpenConsole, or writing its state word 0x68d78) must watch for it on
+    MC_POST_RENDER: the game stops updating while the console is open, so a step driver on MC_POST_UPDATE never runs again
+    (2026-11-21, misc-lua: the lab stopped silently after Isaac.OpenConsole)."""
+    for f in fs:
+        if not (f.startswith(RGON + '/lab_') and f.endswith('.lua')):
+            continue
+        t = text_of(f)
+        if t is None or 'Isaac.OpenConsole()' not in t:
+            continue
+        if 'MC_POST_RENDER' not in t:
+            yield (f, 1, 'this lab opens the debug console, which pauses the game: close it again from an MC_POST_RENDER callback '
+                         '(write the closing state 4 to game + 0x68d78 once the state reads 2)')
+
+
+def rule_no_package_global(fs):
+    """The Layer's Lua state gives mods no `package` or `debug` global (measured 2026-11-21): `package.loaded` is nil there. The
+    table of loaded modules is `require("debug").getregistry()._LOADED` (api_misc_lua.lua)."""
+    for f in fs:
+        if not (f.startswith(RGON + '/') and f.endswith('.lua')):
+            continue
+        t = text_of(f)
+        if t is None:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            code = line.split('--')[0]
+            if re.search(r'\bpackage\.(loaded|path|cpath|preload)\b', code):
+                yield (f, n, 'there is no `package` global in the game\'s Lua: use require("debug").getregistry()._LOADED for the loaded modules')
+
+
 def rule_shader_probe_logs_first(fs):
     """A probe mod that watches MC_GET_SHADER_PARAMS must register with AddPriorityCallback and a negative number: the game stops at
     the first callback that returns a table, and StageAPI and Fiend Folio return one for their own shaders, so a plain AddCallback
@@ -1295,7 +1364,9 @@ def rule_shader_probe_logs_first(fs):
 
 
 
-RULES = [rule_hook_rows_agree, rule_shader_probe_logs_first, rule_callback_id_local_not_reassigned, rule_animation_layer_count_equality, rule_home_paths, rule_layer_files_loaded, rule_frame_line_prefix, rule_part_loads_part, rule_lab_prints_done, rule_inert_not_implemented, rule_ctor_implemented_name, rule_host_math_header, rule_image_render_not_registered, rule_layer_setsize_is_scale, rule_hurt_func_source, rule_global_pointer_plus_offset, rule_status_files_in_notes, rule_flip_default, rule_const_table_fallback, rule_lua_vararg_middle, rule_lua_mixed_table_index, rule_room_transition_stand_in, rule_roomconfig_both_tables, rule_orphan_starts_packed, rule_stale_enum_post_shuffle, rule_fast_setjmp, rule_gate_class_aware, rule_backlog_narrowing, rule_backlog_class_alias, rule_census_false_positives, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_callback_count_vs_frames, rule_entity_methods_in_lab, rule_tears_methods_in_lab, rule_read_of_call_result, rule_type_of_callback_result, rule_item_name_is_a_key, rule_conception_pairing, rule_health_field_offsets, rule_cacheflag_literals, rule_lua_format_options, rule_host_string_to_guest, rule_pgrep_game_by_name, rule_web_host_mem_base, rule_insn_hook_giant_entry, rule_stdstring_read, rule_add_cache_flags_one_arg, rule_misc_b_methods_in_lab, rule_data_values_names_in_lab, rule_host_misc_names_in_lab, rule_options_setters_take_last_argument, rule_scan_global_assignment, rule_locate_names_in_lab, rule_familiar_pickup_names_in_lab, rule_npc_entity_misc_names_in_lab, rule_player_calls_names_in_lab, rule_console_box_drawn_in_console_hook, rule_free_only_own_string_buffers, rule_console_game_lines_whitelisted, rule_lua_keyword_table_key, rule_misnamed_collectible_enums, rule_player_rest_names_in_lab, rule_lab_check_never_fails, rule_grid_npc_names_in_lab, rule_room_sets_names_in_lab, rule_menus_rest_names_in_lab, rule_image_render_names_in_lab, rule_player_cooldowns_names_in_lab, rule_stride_divisibility_only, rule_menus_more_names_in_lab, rule_entity_initseed_offset, rule_hook_h_one_names_in_lab, rule_hook_h_two_names_in_lab, rule_lab_driver_on_update_with_pause, rule_callback_ask_deferred]
+
+
+RULES = [rule_home_paths, rule_layer_files_loaded, rule_frame_line_prefix, rule_part_loads_part, rule_lab_prints_done, rule_callback_ask_deferred, rule_inert_not_implemented, rule_ctor_implemented_name, rule_host_math_header, rule_image_render_not_registered, rule_layer_setsize_is_scale, rule_animation_layer_count_equality, rule_hurt_func_source, rule_global_pointer_plus_offset, rule_status_files_in_notes, rule_flip_default, rule_const_table_fallback, rule_lua_vararg_middle, rule_lua_mixed_table_index, rule_room_transition_stand_in, rule_roomconfig_both_tables, rule_orphan_starts_packed, rule_stale_enum_post_shuffle, rule_fast_setjmp, rule_gate_class_aware, rule_backlog_narrowing, rule_backlog_class_alias, rule_census_false_positives, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_callback_count_vs_frames, rule_entity_methods_in_lab, rule_tears_methods_in_lab, rule_read_of_call_result, rule_type_of_callback_result, rule_item_name_is_a_key, rule_conception_pairing, rule_health_field_offsets, rule_cacheflag_literals, rule_lua_format_options, rule_host_string_to_guest, rule_pgrep_game_by_name, rule_web_host_mem_base, rule_insn_hook_giant_entry, rule_stdstring_read, rule_add_cache_flags_one_arg, rule_misc_b_methods_in_lab, rule_data_values_names_in_lab, rule_host_misc_names_in_lab, rule_options_setters_take_last_argument, rule_scan_global_assignment, rule_locate_names_in_lab, rule_familiar_pickup_names_in_lab, rule_npc_entity_misc_names_in_lab, rule_player_calls_names_in_lab, rule_entity_calls_names_in_lab, rule_console_box_drawn_in_console_hook, rule_free_only_own_string_buffers, rule_console_game_lines_whitelisted, rule_lua_keyword_table_key, rule_misnamed_collectible_enums, rule_player_rest_names_in_lab, rule_lab_check_never_fails, rule_grid_npc_names_in_lab, rule_room_sets_names_in_lab, rule_menus_rest_names_in_lab, rule_image_render_names_in_lab, rule_player_cooldowns_names_in_lab, rule_stride_divisibility_only, rule_menus_more_names_in_lab, rule_menus_misc_names_in_lab, rule_entity_initseed_offset, rule_hook_h_one_names_in_lab, rule_hook_rows_agree, rule_hook_h_two_names_in_lab, rule_lab_driver_on_update_with_pause, rule_callback_id_local_not_reassigned, rule_lab_console_open_on_render, rule_no_package_global, rule_shader_probe_logs_first]
 
 def main():
     if '--list' in sys.argv:
