@@ -114,6 +114,14 @@ struct ModsView: View {
     @EnvironmentObject var model: AppModel
     @State private var pendingRemove: Mod?
     @State private var byLoadOrder = Debug.value("SORT") == "load"
+    @State private var search = Debug.value("SEARCH") ?? ""
+    @State private var stateFilter = ModStateFilter(rawValue: Debug.value("STATE")?.capitalized ?? "") ?? .all
+
+    var counts: (enabled: Int, disabled: Int) { ModFilter.counts(model.mods) }
+    var visible: [Mod] {
+        let sorted = byLoadOrder ? model.mods.sorted { $0.order < $1.order } : model.mods
+        return ModFilter.apply(sorted, search: search, state: stateFilter)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -126,13 +134,24 @@ struct ModsView: View {
                 Button("Reload") { model.reload() }
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
+            HStack(spacing: 10) {
+                TextField("Search mods by name or folder", text: $search).textFieldStyle(.roundedBorder)
+                Picker("", selection: $stateFilter) {
+                    ForEach(ModStateFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }.pickerStyle(.segmented).labelsHidden().frame(width: 210)
+                Text("Enabled \(counts.enabled) / Disabled \(counts.disabled)")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12).padding(.bottom, 8)
             if model.epiphanyOnWithVanilla { VanillaEpiphanyWarning().padding(.bottom, 8) }
             Divider()
             if model.mods.isEmpty {
                 Text("No mods in this folder yet.\nMods are copied here from Steam's Workshop folder when the game starts.")
                     .multilineTextAlignment(.center).foregroundStyle(.secondary).frame(maxHeight: .infinity)
+            } else if visible.isEmpty {
+                Text("No mods match.").foregroundStyle(.secondary).frame(maxHeight: .infinity)
             } else {
-                List(byLoadOrder ? model.mods.sorted { $0.order < $1.order } : model.mods) { mod in
+                List(visible) { mod in
                     ModRow(mod: mod, remove: { pendingRemove = mod })
                 }
             }
@@ -297,7 +316,8 @@ struct LogView: View {
 /// Test helpers, driven by environment variables (command-line arguments confuse AppKit's own parsing):
 ///   REPENTANCE_MAC_LAUNCHER_TAB=play|mods|options   initial tab
 ///   REPENTANCE_MAC_LAUNCHER_SORT=load               Mods tab starts sorted by load order
-///   REPENTANCE_MAC_LAUNCHER_SNAPSHOT=<png path>     render every visible window of this app from inside it
+///   REPENTANCE_MAC_LAUNCHER_SEARCH=<text>, REPENTANCE_MAC_LAUNCHER_STATE=all|enabled|disabled   Mods tab search / filter
+///   REPENTANCE_MAC_LAUNCHER_SNAPSHOT=<png path>    render every visible window of this app from inside it
 ///   REPENTANCE_MAC_LAUNCHER_SNAPSHOT_DELAY=<secs>, REPENTANCE_MAC_LAUNCHER_EXIT=1
 enum Debug {
     static func value(_ name: String) -> String? {

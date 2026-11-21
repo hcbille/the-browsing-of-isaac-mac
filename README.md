@@ -63,7 +63,8 @@ Working, on an M2 MacBook Air:
   history HUD, completion mark, fortune text, weapon, laser, knife, sword, bone club and
   familiar laser callbacks, then level, room, throw, loot list, character select and slot
   explosion callbacks, plus real images (`CreateImage`, `RenderToImage`, `SetSpritesheet`) drawn in
-  software. A recompilation gap that crashed the game
+  software. Epiphany's Tarnished character page now swaps in on the character select (an animation-data check was too strict), and
+  Fiend Folio's character icons, completion marks, Chaos Bombs and Sin plushie drops no longer fail. A recompilation gap that crashed the game
   on a rarely used accessor is fixed, and so is a crash in a script argument check that
   handed the game a pointer from outside its memory.
   It has 1,588 of REPENTOGON's 1,727 functions and 372 of its 380 callbacks, the

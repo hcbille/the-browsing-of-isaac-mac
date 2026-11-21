@@ -791,7 +791,7 @@ index f083c69..5b5b9b0 100644
   * without marking the object for finalization: lapi.c lua_setmetatable's
   * LUA_TUSERDATA case less its luaC_checkfinalizer call (the index is read as
 diff --git a/scripts/recomp/host/src/host_rgon.c b/scripts/recomp/host/src/host_rgon.c
-index 25bd680..1e21c44 100644
+index 25bd680..6303aed 100644
 --- a/scripts/recomp/host/src/host_rgon.c
 +++ b/scripts/recomp/host/src/host_rgon.c
 @@ -35,11 +35,13 @@
@@ -897,7 +897,15 @@ index 25bd680..1e21c44 100644
  }
  
  /* xmm(n [, value]) -> the low float of SSE register n (0..7) of the hooked
-@@ -231,6 +244,17 @@ static int l_xmm(lua_State *L) {
+@@ -211,6 +224,7 @@ static int l_call(lua_State *L) {
+  * functions take a float argument there rather than on the stack (the
+  * signature says which). Outside a `before` handler it is an error. */
+ static CpuState *g_hook_cpu;
++static int g_hook_insn;   /* 1 while an instruction hook's handler runs: its ESP local is reloaded afterwards */
+ static int l_xmm(lua_State *L) {
+     const lua_Integer n = luaL_checkinteger(L, 1);
+     if (!g_hook_cpu) return luaL_error(L, "rgon: xmm outside a hook's before handler");
+@@ -231,13 +245,25 @@ static int l_xmm(lua_State *L) {
      return 1;
  }
  
@@ -915,7 +923,26 @@ index 25bd680..1e21c44 100644
  /* reg(name [, value]) -> a general register of the CpuState a handler is
   * running for (round 110): "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi",
   * "edi". In an instruction hook it is the register as it is at that
-@@ -383,8 +407,14 @@ static int gate_index(lua_State *L) {
+  * instruction (the lifted function's locals are spilled around the handler and
+  * reloaded after it, so a value set here is what the instruction then sees);
+- * in a function hook's `before` handler, at the function's entry. ESP cannot
+- * be set. Outside a handler it is an error. */
++ * in a function hook's `before` handler, at the function's entry. ESP can be
++ * set only in an instruction hook (the lifted body reloads its ESP local; a
++ * cancelled stdcall call pops its arguments that way), not in a function hook. Outside a handler it is an error. */
+ static int l_reg(lua_State *L) {
+     static const char *const NAMES[] = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", NULL };
+     const int i = luaL_checkoption(L, 1, NULL, NAMES);
+@@ -245,7 +271,7 @@ static int l_reg(lua_State *L) {
+     uint32_t *const r[8] = { &g_hook_cpu->EAX, &g_hook_cpu->ECX, &g_hook_cpu->EDX, &g_hook_cpu->EBX,
+                              &g_hook_cpu->ESP, &g_hook_cpu->EBP, &g_hook_cpu->ESI, &g_hook_cpu->EDI };
+     if (lua_gettop(L) >= 2) {
+-        if (i == 4) return luaL_error(L, "rgon: esp cannot be set from a handler");
++        if (i == 4 && !g_hook_insn) return luaL_error(L, "rgon: esp can be set only from an instruction hook's handler");
+         *r[i] = word_arg(L, 2);
+         return 0;
+     }
+@@ -383,8 +409,14 @@ static int gate_index(lua_State *L) {
      lua_pushnil(L);
      return 1;
  }
@@ -930,7 +957,7 @@ index 25bd680..1e21c44 100644
      lua_pushglobaltable(L);                                   /* 3 */
      lua_pushnil(L); lua_setfield(L, 3, "REPENTOGON");         /* the lookup must miss */
      if (!lua_getmetatable(L, 3)) { lua_newtable(L); lua_pushvalue(L, -1); lua_setmetatable(L, 3); }   /* 4 */
-@@ -416,20 +446,473 @@ static int l_load(lua_State *L) {
+@@ -416,20 +448,473 @@ static int l_load(lua_State *L) {
      if (luaL_loadbufferx(L, (const char *)src, n, chunk, "t") != LUA_OK) { lua_pushnil(L); lua_insert(L, -2); return 2; }
      return 1;
  }
@@ -1406,7 +1433,7 @@ index 25bd680..1e21c44 100644
      {NULL, NULL},
  };
  
-@@ -442,6 +925,18 @@ void isaac_rgon_push_bridge(lua_State *L) {
+@@ -442,6 +927,18 @@ void isaac_rgon_push_bridge(lua_State *L) {
      /* round 110: this engine runs instruction hooks (lift_patches.py
       * RGON_INSN_HOOKS) and has reg(); a layer asks before it defines one */
      lua_pushinteger(L, 1); lua_setfield(L, -2, "INSN");
@@ -1425,24 +1452,63 @@ index 25bd680..1e21c44 100644
      /* round 103: Lua's own os library, for the layer to hand mods the four
       * functions of it REPENTOGON gives them (date, time, clock, difftime). The
       * game opens seven libraries by name and os is not one of them, so there
-@@ -579,6 +1074,9 @@ void isaac_rgon_hook_post(int slot, CpuState *restrict s, rgon_frame *f) {
+@@ -541,7 +1038,9 @@ int isaac_rgon_hook_pre(int slot, CpuState *restrict s, rgon_frame *f) {
+     ++g_hook_calls;
+     isaac_lua_host_enter(here, f->esp);
+     CpuState *const outer = g_hook_cpu;
++    const int outer_insn = g_hook_insn;
+     g_hook_cpu = s;
++    g_hook_insn = 0;
+     const int top = lua_gettop(L);
+     lua_rawgeti(L, LUA_REGISTRYINDEX, g_pre[slot]);
+     lua_pushinteger(L, (lua_Integer)f->ecx);
+@@ -559,6 +1058,7 @@ int isaac_rgon_hook_pre(int slot, CpuState *restrict s, rgon_frame *f) {
+     }
+     lua_settop(L, top);
+     g_hook_cpu = outer;
++    g_hook_insn = outer_insn;
+     isaac_lua_host_leave(here);
+     if (skip) {
+         if (retn > 0x100u) retn = 0;
+@@ -579,6 +1079,11 @@ void isaac_rgon_hook_post(int slot, CpuState *restrict s, rgon_frame *f) {
          ++g_hook_calls;
          isaac_lua_host_enter(here, s->ESP);
          const int top = lua_gettop(L);
 +        /* wave 10 (cb-entity): xmm() works in an after handler too, so a float result (xmm0) can be read and replaced */
 +        CpuState *const outer = g_hook_cpu;
++        const int outer_insn = g_hook_insn;
 +        g_hook_cpu = s;
++        g_hook_insn = 0;
          lua_rawgeti(L, LUA_REGISTRYINDEX, g_post[slot]);
          lua_pushinteger(L, (lua_Integer)f->ecx);
          lua_pushinteger(L, (lua_Integer)f->esp);
-@@ -587,6 +1085,7 @@ void isaac_rgon_hook_post(int slot, CpuState *restrict s, rgon_frame *f) {
+@@ -587,6 +1092,8 @@ void isaac_rgon_hook_post(int slot, CpuState *restrict s, rgon_frame *f) {
          if (lua_pcall(L, 4, 1, 0) != LUA_OK) hook_error(L, slot, "after");
          else if (!lua_isnil(L, top + 1)) s->EAX = word_arg(L, top + 1);
          lua_settop(L, top);
 +        g_hook_cpu = outer;
++        g_hook_insn = outer_insn;
          isaac_lua_host_leave(here);
      }
      if (f->ref != LUA_NOREF) { luaL_unref(L, LUA_REGISTRYINDEX, f->ref); f->ref = LUA_NOREF; }
+@@ -610,7 +1117,9 @@ uint32_t isaac_rgon_insn_hook(int slot, CpuState *restrict s, uint32_t va, const
+     ++g_hook_calls;
+     isaac_lua_host_enter(here, s->ESP);
+     CpuState *const outer = g_hook_cpu;
++    const int outer_insn = g_hook_insn;
+     g_hook_cpu = s;
++    g_hook_insn = 1;
+     const int top = lua_gettop(L);
+     lua_rawgeti(L, LUA_REGISTRYINDEX, g_pre[slot]);
+     lua_pushinteger(L, (lua_Integer)va);
+@@ -628,6 +1137,7 @@ uint32_t isaac_rgon_insn_hook(int slot, CpuState *restrict s, uint32_t va, const
+     }
+     lua_settop(L, top);
+     g_hook_cpu = outer;
++    g_hook_insn = outer_insn;
+     isaac_lua_host_leave(here);
+     return go;
+ }
 diff --git a/scripts/recomp/host/src/host_shims_crt.c b/scripts/recomp/host/src/host_shims_crt.c
 index ee93d31..a10c303 100644
 --- a/scripts/recomp/host/src/host_shims_crt.c
@@ -2787,10 +2853,10 @@ index 1bd7c84..2cdccbf 100644
  
 diff --git a/scripts/recomp/rgon/api_ambush.lua b/scripts/recomp/rgon/api_ambush.lua
 new file mode 100644
-index 0000000..ee1e093
+index 0000000..0666d2d
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_ambush.lua
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,142 @@
 +-- api_ambush.lua -- the global Ambush, and RoomDescriptor.Data written (worker "ambush", 2026-11-19).
 +-- Written against REPENTOGON's behaviour (LuaAmbush.cpp, Ambush.zhl); every number below was measured in THIS
 +-- executable (v1.9.7.17), lab_ambush_test.lua is the measurement.
@@ -2875,6 +2941,7 @@ index 0000000..ee1e093
 +-- its room data makes the game crash at the next use).
 +do
 +  local DESC_DATA = 0x10
++  local DESC_FLAGS = 0x44     -- measured in this build (2026-11-21): the word the game's Flags getter returns, for every room of a floor
 +  local installed = false
 +  local function room_class()
 +    local ok, room = pcall(function() return RoomConfig.GetRoomByStageTypeAndVariant(StbType.BASEMENT, RoomType.ROOM_DEFAULT, 1, 0) end)
@@ -2891,6 +2958,16 @@ index 0000000..ee1e093
 +    w32(p + DESC_DATA, a)
 +  end
 +  local setter = B.cfn(set_data)
++  -- RoomDescriptor.SurpriseMiniboss = bool: the game reads it from Flags (descriptor +0x44) bit 4 (REPENTOGON's callback tests the same bit); Flags has no setter either
++  local function set_surprise(self, value)
++    if type(value) ~= "boolean" then error("bad argument to 'SurpriseMiniboss' (boolean expected, got " .. type(value) .. ")", 2) end
++    local p = B.ptr(self)
++    if p == 0 then error("rgon: RoomDescriptor.SurpriseMiniboss written without its descriptor", 2) end
++    local flags = B.r32(p + DESC_FLAGS)
++    if value then flags = flags | 16 else flags = flags & ~16 end
++    w32(p + DESC_FLAGS, flags)
++  end
++  local surprise_setter = B.cfn(set_surprise)
 +  local function install()
 +    if installed then return end
 +    local level = Game():GetLevel()
@@ -2904,6 +2981,7 @@ index 0000000..ee1e093
 +            local ps = rawget(t, "__propset")
 +            if type(ps) ~= "table" then ps = {} rawset(t, "__propset", ps) end
 +            if rawget(ps, "Data") == nil then rawset(ps, "Data", setter) end
++            if rawget(ps, "SurpriseMiniboss") == nil then rawset(ps, "SurpriseMiniboss", surprise_setter) end
 +            any = true
 +          end
 +        end
@@ -6706,7 +6784,7 @@ index 0000000..c831b81
 +T.console_set_line = function(text) local c = console() if c then set_line(c, text) end end   -- for the lab
 +T.console_extra_entries = extra_entries
 diff --git a/scripts/recomp/rgon/api_data.lua b/scripts/recomp/rgon/api_data.lua
-index 18c0be6..e533d6e 100644
+index 18c0be6..2e87d9a 100644
 --- a/scripts/recomp/rgon/api_data.lua
 +++ b/scripts/recomp/rgon/api_data.lua
 @@ -184,6 +184,10 @@ local function nodes_of(file, tags)
@@ -6759,7 +6837,15 @@ index 18c0be6..e533d6e 100644
      elseif spec.name == "ACHIEVEMENT" then
        next_free = next_free + 1              -- a mod's achievements follow the game's, in load order
        id = next_free
-@@ -264,6 +280,13 @@ local function entries(k)
+@@ -258,15 +274,26 @@ local function entries(k)
+     if node.source then
+       entry.sourceid = node.source.dir
+       if spec.id or spec.name == "ACHIEVEMENT" then entry.id = id and tostring(id) or nil end
++    else
++      entry.sourceid = "BaseGame"            -- REPENTOGON's value for the game's own entries (Fiend Folio concatenates it)
+     end
+     set.list[#set.list + 1] = entry
+     if id and set.by_id[id] == nil then set.by_id[id] = entry end
      if a.name and set.by_name[a.name] == nil then set.by_name[a.name] = entry end
    end
    set.first_free = next_free + 1
@@ -6767,13 +6853,27 @@ index 18c0be6..e533d6e 100644
 +  -- (a mod whose script runs before that asks too early): answer, and ask the game again next time.
 +  if spec.name == "PLAYER" and T.player_config then
 +    local mods = false
-+    for _, entry in ipairs(set.list) do if entry.sourceid then mods = true break end end
++    for _, entry in ipairs(set.list) do if T.modded(entry) then mods = true break end end
 +    if mods and not T.player_config(next_free + 1) then loaded[k] = nil end
 +  end
    return set
  end
  T.xml_entries = entries
-@@ -428,7 +451,21 @@ local function parse_save(text)
++-- an entry of a mod's (sourceid is the mod's folder); the game's own entries carry sourceid "BaseGame"
++function T.modded(e) local s = e.sourceid return s ~= nil and s ~= "BaseGame" end
+ 
+ if rawget(_G, "XMLData") == nil and next(KIND) then
+   local X = {}
+@@ -348,7 +375,7 @@ end)
+ static(Isaac, "Isaac", "GetBackdropIdByName", function(name)
+   local set = XN.BACKDROP and entries(XN.BACKDROP)
+   local e = set and set.by_name[string_arg(name, "GetBackdropIdByName")]
+-  if e and not e.sourceid then return math.tointeger(tonumber(e.id)) or -1 end
++  if e and not T.modded(e) then return math.tointeger(tonumber(e.id)) or -1 end
+   if e then unsupported("a backdrop defined by a mod (Isaac.GetBackdropIdByName answers -1)") end
+   return -1
+ end)
+@@ -428,7 +455,21 @@ local function parse_save(text)
    if name then sec[name] = table.concat(buf, "\n") end
    return sec
  end
@@ -6795,7 +6895,7 @@ index 18c0be6..e533d6e 100644
    if not layer_mod then return {} end
    -- LoadModData alone (an empty string when there is no file): measured in a dist
    -- whose mods are its instance tree (dev_dist.py), HasModData answered false for a
-@@ -437,7 +474,8 @@ local function read_save()
+@@ -437,7 +478,8 @@ local function read_save()
    return parse_save(ok2 and text or nil)
  end
  local function write_save(sec)
@@ -6805,7 +6905,7 @@ index 18c0be6..e533d6e 100644
    local names = {}
    for k in pairs(sec) do names[#names + 1] = k end
    table.sort(names)
-@@ -446,6 +484,11 @@ local function write_save(sec)
+@@ -446,6 +488,11 @@ local function write_save(sec)
      out[#out + 1] = "== " .. k
      out[#out + 1] = sec[k]
    end
@@ -6817,7 +6917,52 @@ index 18c0be6..e533d6e 100644
    local ok, err = pcall(Isaac.SaveModData, layer_mod, table.concat(out, "\n"))
    if not ok then log("api_data: the layer's save file was not written: " .. tostring(err)) end
    return ok
-@@ -1057,7 +1100,12 @@ do
+@@ -602,7 +649,7 @@ local function build_gates()
+   -- players
+   local pset = XN.PLAYER and entries(XN.PLAYER)
+   for _, e in ipairs(pset and pset.list or {}) do
+-    if e.sourceid and e.name then
++    if T.modded(e) and e.name then
+       local pt = lookup(Isaac.GetPlayerTypeByName, e.name, e.bskinparent ~= nil)
+       local at = pt and player_config(pt)
+       if at and player_rows[pt] == nil then player_rows[pt] = e end
+@@ -623,7 +670,7 @@ local function build_gates()
+   local function items(kind, find, get, key, field, what)
+     local set = XN[kind] and entries(XN[kind])
+     for _, e in ipairs(set and set.list or {}) do
+-      local id = e.sourceid and named(e.achievement)
++      local id = T.modded(e) and named(e.achievement)
+       local name = e[key or "name"]
+       if id and name then
+         local n = lookup(find, name)
+@@ -644,7 +691,7 @@ local function build_gates()
+   local man = r32(0x00c7169c)
+   local c0, c1 = r32(man + ADDR.challenges), r32(man + ADDR.challenges + 4)
+   for _, e in ipairs(cset and cset.list or {}) do
+-    local list = e.sourceid and e.name and e.achievements
++    local list = T.modded(e) and e.name and e.achievements
+     local cid = list and lookup(Isaac.GetChallengeIdByName, e.name)
+     if cid and c0 + (cid + 1) * CHALLENGE_SIZE <= c1 then
+       local at = c0 + cid * CHALLENGE_SIZE
+@@ -713,7 +760,7 @@ local function save_unlocked()
+   local lines = {}
+   for _, e in ipairs(set and set.list or {}) do
+     local id = math.tointeger(tonumber(e.id))
+-    if e.sourceid and id and unlocked[id] and ach_key(e) then lines[#lines + 1] = esc(e.sourceid) .. " " .. esc(ach_key(e)) end
++    if T.modded(e) and id and unlocked[id] and ach_key(e) then lines[#lines + 1] = esc(e.sourceid) .. " " .. esc(ach_key(e)) end
+   end
+   table.sort(lines)
+   store.set("achievements", #lines > 0 and table.concat(lines, "\n") or nil)
+@@ -737,7 +784,7 @@ function T.achievements_load(no_build)
+     local set = XN.ACHIEVEMENT and entries(XN.ACHIEVEMENT)
+     local by = {}
+     for _, e in ipairs(set and set.list or {}) do
+-      if e.sourceid and ach_key(e) then by[e.sourceid .. " " .. ach_key(e)] = math.tointeger(tonumber(e.id)) end
++      if T.modded(e) and ach_key(e) then by[e.sourceid .. " " .. ach_key(e)] = math.tointeger(tonumber(e.id)) end
+     end
+     for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+       local a, b = line:match("^(%S+) (%S+)$")
+@@ -1057,7 +1104,12 @@ do
        if type(v) ~= "string" then error("bad argument #1 to '" .. what .. "' (string expected, got " .. type(v) .. ")", 3) end
        return v:lower()
      end
@@ -6831,7 +6976,7 @@ index 18c0be6..e533d6e 100644
        add(add_name, function(self, tag)
          seed()
          local k = key(self)
-@@ -1077,16 +1125,27 @@ do
+@@ -1077,16 +1129,27 @@ do
          return out
        end)
      end
@@ -6868,7 +7013,7 @@ index 18c0be6..e533d6e 100644
          end
 diff --git a/scripts/recomp/rgon/api_data_values.lua b/scripts/recomp/rgon/api_data_values.lua
 new file mode 100644
-index 0000000..65df5cd
+index 0000000..dc7117d
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_data_values.lua
 @@ -0,0 +1,464 @@
@@ -7171,7 +7316,7 @@ index 0000000..65df5cd
 +      if by_scan[id] == nil then
 +        by_scan[id] = false
 +        for _, e in ipairs(set.list) do
-+          if e.sourceid and e.name then
++          if T.modded(e) and e.name then
 +            local ok, v = pcall(Isaac.GetChallengeIdByName, e.name)
 +            if ok and v == id then by_scan[id] = e break end
 +          end
@@ -7182,7 +7327,7 @@ index 0000000..65df5cd
 +    local function key_of(id)
 +      local e = entry_of(id)
 +      if not e or not e.name then return nil end
-+      return e.name .. (e.sourceid or "")
++      return e.name .. (T.modded(e) and e.sourceid or "")
 +    end
 +    local function load()
 +      local counts = {}
@@ -8794,6 +8939,19 @@ index 0000000..0a20798
 +    B.log(string.format("ents %d room %d frame %d", count(), game():GetLevel():GetCurrentRoomIndex(), Isaac.GetFrameCount()))
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/api_game.lua b/scripts/recomp/rgon/api_game.lua
+index bf86106..ee0a537 100644
+--- a/scripts/recomp/rgon/api_game.lua
++++ b/scripts/recomp/rgon/api_game.lua
+@@ -156,7 +156,7 @@ gcall("Entity", "AddWeakness", 0x006b77d0, "R;i", "void")
+ gcall("Entity", "AddKnockback", 0x006b7a80, "R;V;i;b", "void")
+ gcall("Entity", "CanDevolve", 0x006a8f80, "", "bool")
+ gcall("Entity", "GetHitListIndex", 0x006b62b0, "", "uint")
+-gcall("EntityNPC", "UpdateDirtColor", 0x006c04b0, "b", "void")
++gcall("EntityNPC", "UpdateDirtColor", 0x006c04b0, "b=false", "void")
+ gcall("EntityNPC", "TryForceTarget", 0x006b9910, "E;i", "bool")
+ gcall("EntityTear", "MakeMultidimensionalCopy", 0x0067a190, "", "EntityTear", { 0 })
+ gcall("Game", "AchievementUnlocksDisallowed", 0x00705080, "", "bool")
 diff --git a/scripts/recomp/rgon/api_game_misc.lua b/scripts/recomp/rgon/api_game_misc.lua
 new file mode 100644
 index 0000000..fece327
@@ -9235,7 +9393,7 @@ index 0000000..fece327
 +end
 diff --git a/scripts/recomp/rgon/api_gaps.lua b/scripts/recomp/rgon/api_gaps.lua
 new file mode 100644
-index 0000000..0a385ad
+index 0000000..a8dd7ba
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_gaps.lua
 @@ -0,0 +1,540 @@
@@ -9569,7 +9727,7 @@ index 0000000..0a385ad
 +    end
 +    for _, e in ipairs(set.list) do
 +      local id = math.tointeger(tonumber(e.id))
-+      if not id and e.sourceid then top = top + 1 id = top end
++      if not id and T.modded(e) then top = top + 1 id = top end
 +      if id and e.name and ids[e.name:lower()] == nil then ids[e.name:lower()] = id end
 +    end
 +    return ids
@@ -12210,10 +12368,10 @@ index 0000000..c05a644
 +end
 diff --git a/scripts/recomp/rgon/api_host_misc.lua b/scripts/recomp/rgon/api_host_misc.lua
 new file mode 100644
-index 0000000..27278f5
+index 0000000..3fd95db
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_host_misc.lua
-@@ -0,0 +1,251 @@
+@@ -0,0 +1,284 @@
 +-- api_host_misc.lua -- wave 9, worker host-bridge: the REPENTOGON names that need the Host or the operating system.
 +--   Isaac.GetNanoTime      a monotonic clock in nanoseconds (bridge nanotime; both builds)
 +--   Isaac.SetWindowTitle   the stock window title plus the mod's text (Mac Build: bridge window_set_title); Isaac.GetWindowTitle
@@ -12383,7 +12541,17 @@ index 0000000..27278f5
 +    local path = what == nil and "" or check_str(what, 1, "SetIcon")
 +    if path == "" then return end
 +    if path == last_path then return end
-+    local bytes = T.read_file(path)
++    -- REPENTOGON's TryRedirectPath: a mod's own file is found by its resources-relative path ("gfx/icon.ico"), the last
++    -- enabled mod that has it winning, else the game's own tree
++    local bytes
++    local dirs = {}
++    for _, m in ipairs(T.mods and T.mods() or {}) do if m.enabled then dirs[#dirs + 1] = m.dir end end
++    for i = #dirs, 1, -1 do
++      bytes = T.read_file("mods/" .. dirs[i] .. "/resources/" .. path)
++      if bytes and #bytes > 0 then break end
++    end
++    if not bytes or #bytes == 0 then bytes = T.read_file(path) end
++    if not bytes or #bytes == 0 then bytes = T.read_file("resources/" .. path) end
 +    if not bytes or #bytes == 0 then error("Icon has failed to load!", 2) end
 +    local pick, why = ico_pick(bytes, ignore_cap and 256 or 32)
 +    if not pick then error("Icon has failed to load! (" .. tostring(why) .. ")", 2) end
@@ -12462,6 +12630,29 @@ index 0000000..27278f5
 +      local mgr = B.r32(MANAGER)
 +      B.call(START, mgr, table.unpack(words, 1, 26))
 +      B.free(buf)
++    end)
++  end
++end
++
++-- ---- Isaac.Spawn takes the const spawner MC_PRE_ENTITY_SPAWN hands out ----
++-- The callback's spawner is a `const Entity*` object and the game's Isaac.Spawn refuses one ("bad argument #6 to 'Spawn' (cannot be const)"),
++-- which Fiend Folio's Sin plushie drops hit (it passes the spawner on). The same pointer under the non-const Entity class is what it wants.
++do
++  local game_spawn = rawget(Isaac, "Spawn") or Isaac.Spawn
++  local getmetatable, rawset, select, unpack = getmetatable, rawset, select, table.unpack
++  if type(game_spawn) == "function" then
++    rawset(Isaac, "Spawn", function(...)
++      local spawner = select(6, ...)
++      if type(spawner) == "userdata" then
++        local mt = getmetatable(spawner)
++        local cls = type(mt) == "table" and rawget(mt, "__class")
++        if cls then
++          local args, n = { ... }, select("#", ...)
++          args[6] = B.obj(cls, B.ptr(spawner), T.vt_ptr())
++          return game_spawn(unpack(args, 1, n))
++        end
++      end
++      return game_spawn(...)
 +    end)
 +  end
 +end
@@ -18107,10 +18298,10 @@ index 0000000..a7e598c
 +end
 diff --git a/scripts/recomp/rgon/api_render.lua b/scripts/recomp/rgon/api_render.lua
 new file mode 100644
-index 0000000..d48099f
+index 0000000..f28c354
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_render.lua
-@@ -0,0 +1,340 @@
+@@ -0,0 +1,361 @@
 +-- api_render.lua -- sprite state and the render-side value classes (wave 4, chunk 8).
 +--
 +--   Sprite:Stop([stopOverlay]), :StopOverlay, :Continue([continueOverlay]), :ContinueOverlay
@@ -18149,6 +18340,27 @@ index 0000000..d48099f
 +end
 +local function argerr(n, fname, want, v)
 +  error("bad argument #" .. n .. " to '" .. fname .. "' (" .. want .. " expected, got " .. type(v) .. ")", 3)
++end
++
++------------------------------------------------------------------------------
++-- RNG:RandomInt(min, max)
++------------------------------------------------------------------------------
++-- REPENTOGON's second form: min .. max, both included (like math.random). The game's own RandomInt takes only a max, so a call with two
++-- numbers answered 0 and Fiend Folio's Chaos Bombs table.remove(effects, 0) failed. One number is left to the game.
++do
++  local c = T.class_tables("RNG")
++  local game_int = c and rawget(c, "RandomInt")
++  if game_int then
++    define("RNG", "RandomInt", function(self, a, b)
++      if b == nil then return game_int(self, a) end
++      if mathtype(a) ~= "integer" then argerr(1, "RandomInt", "number", a) end
++      if mathtype(b) ~= "integer" then argerr(2, "RandomInt", "number", b) end
++      if a > b then error("bad argument #1 to 'RandomInt' (interval is empty)", 2) end
++      return game_int(self, b - a + 1) + a
++    end)
++  else
++    log("api_render: RNG.RandomInt not found on the class table; the two-number form is left out")
++  end
 +end
 +
 +------------------------------------------------------------------------------
@@ -20640,10 +20852,31 @@ index 0000000..849126b
 +
 +-- Shape and DebugRenderer.Get are the game's own objects now: api_image_render.lua.
 diff --git a/scripts/recomp/rgon/api_sprite.lua b/scripts/recomp/rgon/api_sprite.lua
-index 806bce2..51b6b16 100644
+index 806bce2..df57b73 100644
 --- a/scripts/recomp/rgon/api_sprite.lua
 +++ b/scripts/recomp/rgon/api_sprite.lua
-@@ -200,3 +200,27 @@ local function null(name, state)
+@@ -8,7 +8,8 @@
+ -- the animation the sprite says it is playing (the game's own GetAnimation)
+ -- must be the name at the head of the record the sprite points at, that
+ -- record must be one of the sprite's own array of 0x13c-byte records, and
+--- its layer count must be the sprite's (the game's own GetLayerCount).
++-- its layer count must not exceed the sprite's (the game's own GetLayerCount);
++-- an animation may animate fewer layers than the sprite has.
+ -- test_layer2.lua goes further and compares every animation's length and
+ -- loop flag with the .anm2 file the sprite was loaded from.
+ --
+@@ -135,7 +136,9 @@ local function current(self, what, state)
+   local a, anims, count = sprite(self, what)
+   local record = r32(a + state + 4)
+   if record == 0 then return a, 0 end
+-  if not one_of(anims, count, record) or ri32(record + 0x1c) ~= self:GetLayerCount()
++  -- an animation may animate fewer layers than the sprite has (Epiphany's menu transition: 19 of 20), never more
++  local animated = ri32(record + 0x1c)
++  if not one_of(anims, count, record) or animated < 0 or animated > self:GetLayerCount()
+      or (state == STATE and stdstr(record) ~= self:GetAnimation()) then
+     error("rgon: this sprite's animation data is not laid out as expected (" .. what .. ")", 3)
+   end
+@@ -200,3 +203,27 @@ local function null(name, state)
  end
  null("GetNullFrame", STATE)
  null("GetOverlayNullFrame", OVERLAY)

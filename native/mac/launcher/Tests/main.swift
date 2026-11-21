@@ -280,5 +280,43 @@ do {
     check(SyncConfig.load(base.appendingPathComponent("missing.json")).workshopFallback.isEmpty, "missing config file = empty")
 }
 
+// ---- Mods tab: search + enabled/disabled filter ----
+do {
+    func m(_ id: String, _ name: String, _ on: Bool) -> Mod {
+        Mod(id: id, name: name, version: "", enabled: on, order: 0, unsubscribed: false, gate: nil)
+    }
+    let mods = [m("3012345", "Epiphany", false), m("alpha-items", "Alpha Items", true),
+                m("zeta-hud", "Zeta HUD", true), m("old-pack", "Old Pack", false), m("Bravo", "Bravo Character", true)]
+    func ids(_ s: String, _ f: ModStateFilter) -> [String] { ModFilter.apply(mods, search: s, state: f).map { $0.id } }
+    check(ids("", .all).count == 5, "filter: empty search + All shows everything")
+    check(ids("   ", .all).count == 5, "filter: whitespace-only search shows everything")
+    check(ids("EPIPH", .all) == ["3012345"], "filter: case-insensitive match on the name")
+    check(ids("3012", .all) == ["3012345"], "filter: matches the folder name / id")
+    check(ids("ITEMS", .all) == ["alpha-items"] && ids("a-i", .all) == ["alpha-items"], "filter: substring on name and folder")
+    check(ids("", .enabled) == ["alpha-items", "zeta-hud", "Bravo"], "filter: Enabled keeps order, drops disabled")
+    check(ids("", .disabled) == ["3012345", "old-pack"], "filter: Disabled only")
+    check(ids("epiph", .enabled).isEmpty && ids("epiph", .disabled) == ["3012345"], "filter: search combines with the state")
+    check(ids("zzz", .all).isEmpty, "filter: no match = empty")
+    let c = ModFilter.counts(mods)
+    check(c.enabled == 3 && c.disabled == 2, "counts: Enabled 3 / Disabled 2 (ignore the search)")
+    let big = (0..<500).map { m("mod\($0)", "Mod Number \($0)", $0 % 5 != 0) }
+    let t0 = Date()
+    for _ in 0..<100 { _ = ModFilter.apply(big, search: "number 4", state: .enabled) }
+    check(Date().timeIntervalSince(t0) < 2, "filter: 100 searches over 500 mods are fast")
+
+    // The disable.it rule: ModStore.load marks a mod disabled exactly when the file is in its folder.
+    let base = root.appendingPathComponent("modfilter-mods")
+    for f in ["on-mod", "off-mod"] { write(base.appendingPathComponent(f + "/metadata.xml"), "<metadata><name>\(f)</name></metadata>") }
+    write(base.appendingPathComponent("off-mod/disable.it"), "")
+    setenv("REPENTANCE_MAC_MODS_DIR", base.path, 1)
+    let loaded = ModStore.load()
+    if loaded.count == 2 {
+        check(loaded.first { $0.id == "off-mod" }?.enabled == false && loaded.first { $0.id == "on-mod" }?.enabled == true,
+              "ModStore.load: disable.it present = disabled, absent = enabled")
+        let f = ModFilter.apply(loaded, search: "", state: .disabled).map { $0.id }
+        check(f == ["off-mod"], "filter: Disabled shows the mod with disable.it")
+    } else { check(false, "ModStore.load read the fixture mods folder (got \(loaded.count) mods)") }
+}
+
 print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

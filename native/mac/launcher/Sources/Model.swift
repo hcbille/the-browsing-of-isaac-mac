@@ -194,6 +194,34 @@ struct Mod: Identifiable {
     var folder: URL { Paths.modsDir.appendingPathComponent(id) }
 }
 
+/// The Mods tab's enabled/disabled filter. Enabled = no `disable.it` in the mod's folder (`Mod.enabled`).
+enum ModStateFilter: String, CaseIterable {
+    case all = "All", enabled = "Enabled", disabled = "Disabled"
+}
+
+enum ModFilter {
+    /// Mods matching the search text and the state filter, in the given order. The search is a
+    /// case-insensitive substring match on the display name or the folder name (the id); empty or
+    /// whitespace-only text matches everything.
+    static func apply(_ mods: [Mod], search: String, state: ModStateFilter) -> [Mod] {
+        let q = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return mods.filter { m in
+            switch state {
+            case .all: break
+            case .enabled: if !m.enabled { return false }
+            case .disabled: if m.enabled { return false }
+            }
+            return q.isEmpty || m.name.lowercased().contains(q) || m.id.lowercased().contains(q)
+        }
+    }
+
+    /// (enabled, disabled) over all mods, ignoring the search.
+    static func counts(_ mods: [Mod]) -> (enabled: Int, disabled: Int) {
+        let e = mods.reduce(0) { $0 + ($1.enabled ? 1 : 0) }
+        return (e, mods.count - e)
+    }
+}
+
 enum ModStore {
     private static func tag(_ xml: String, _ name: String) -> String? {
         guard let r = xml.range(of: "<\(name)>[^<]*</\(name)>", options: .regularExpression) else { return nil }

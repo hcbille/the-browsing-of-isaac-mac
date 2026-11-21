@@ -22,6 +22,10 @@ game runs (Steam tracks the process it started) and quits when the game exits.
   folder), the Shown / Hidden state from the gate log, what each hidden mod is
   missing, "No longer subscribed" with **Remove...** (asks first, then moves the
   folder to the Trash; never a hard delete).
+- **Mods search and filter**: a search field above the list (case-insensitive substring of the display name or
+  the folder name; empty shows all) and an All / Enabled / Disabled control, combinable, with the counts
+  "Enabled N / Disabled M" beside it (counts cover all mods, not just the visible ones). Disabled means a
+  `disable.it` file in the mod's folder. The logic is `ModFilter` in `Model.swift` (tested in `Tests/main.swift`).
 - **Vanilla Launch warning**: shown on Play, Mods and Options when Vanilla Launch
   is on and an enabled mod is Epiphany (folder or metadata name contains
   "epiphany"; Epiphany is the Hard Dependent).
@@ -108,7 +112,7 @@ environment variable, for tests.
 | Layer info | `Repentance+.app/Contents/Resources/layer-info.json` | `REPENTANCE_MAC_LAYER_INFO` | the build |
 | Game program | `Repentance+.app/Contents/MacOS/isaac-mac` | `REPENTANCE_MAC_GAME_EXE` | the build |
 
-Test-only: `REPENTANCE_MAC_LAUNCHER_TAB=play|mods|options`, `REPENTANCE_MAC_LAUNCHER_SORT=load`,
+Test-only: `REPENTANCE_MAC_LAUNCHER_TAB=play|mods|options`, `REPENTANCE_MAC_LAUNCHER_SORT=load`, `REPENTANCE_MAC_LAUNCHER_SEARCH=<text>`, `REPENTANCE_MAC_LAUNCHER_STATE=all|enabled|disabled`,
 `REPENTANCE_MAC_LAUNCHER_FORCE=1` (act as if Option were held), `REPENTANCE_MAC_LAUNCHER_FORCE_NOTCH=1` (show the NotchFill option on a Mac without a notch),
 `REPENTANCE_MAC_LAUNCHER_SNAPSHOT=<png>` (+ `_SNAPSHOT_DELAY`, `_EXIT=1`) renders
 every visible window from inside the app (no screen-recording permission needed).

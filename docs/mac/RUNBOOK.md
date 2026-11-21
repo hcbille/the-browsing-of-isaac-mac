@@ -345,6 +345,16 @@ means the cloud guard failed. Never run it against the real client without `ISAA
   Cambion Conception, 413 Immaculate Conception (their code is 0x19c / 0x19d). Pocket slots are `{id, type}` at player +0x17a0 + 8 * i (type 1 card, 0 pill,
   2 pocket active). Conception familiar flags are at +0x1938, the Immaculate counter at +0x1930, Cambion at +0x1934. An insn hook may only redirect to a
   label of the same lifted function; `hook_table.py` accepts a lifted entry inside a larger index function (`lo <= fva <= iva`).
+- **Fiend Folio / Epiphany Layer lessons (2026-11-21).** An animation may animate fewer layers than its sprite has (Epiphany's menu transition: 19 of
+  20), so the AnimationData check is `animated > GetLayerCount`, never `~=` (it broke `Sprite:Continue`, so the Tarnished page never swapped in).
+  The game's own XML entries carry `sourceid = "BaseGame"` (REPENTOGON's value; Fiend Folio concatenates it for every character); `T.modded(e)` tells a
+  mod's entry apart. `Isaac.SetIcon(path)` resolves a mod's own file by its resources-relative path, last enabled mod first. `EntityNPC:UpdateDirtColor`
+  takes the boolean as optional (Fiend Folio calls it bare). `reg("esp", v)` works only in an instruction hook (the lifted body reloads its ESP local),
+  which a cancelled stdcall render call needs (`RenderPage` / `RenderWheel` modded branches); a function hook still refuses it.
+  MC_PRE_ENTITY_SPAWN's spawner is a const Entity (metatable with `__class` = the non-const class); the game's `Isaac.Spawn` refuses one, so
+  `api_host_misc.lua` wraps `Isaac.Spawn` to re-wrap the same pointer under `__class` (Fiend Folio's Sin plushie drops pass it on).
+  `RNG:RandomInt(min, max)` (REPENTOGON's inclusive form; the game takes only a max) is in `api_render.lua`. `RoomDescriptor.SurpriseMiniboss` is writable
+  (`api_ambush.lua`): descriptor Flags word at +0x44 (measured, same as the game's getter on every room), bit 4; the game has no setter for Flags.
 
 ## 8. Committing
 
