@@ -791,7 +791,7 @@ index f083c69..5b5b9b0 100644
   * without marking the object for finalization: lapi.c lua_setmetatable's
   * LUA_TUSERDATA case less its luaC_checkfinalizer call (the index is read as
 diff --git a/scripts/recomp/host/src/host_rgon.c b/scripts/recomp/host/src/host_rgon.c
-index 25bd680..22c4af0 100644
+index 25bd680..1e21c44 100644
 --- a/scripts/recomp/host/src/host_rgon.c
 +++ b/scripts/recomp/host/src/host_rgon.c
 @@ -35,11 +35,13 @@
@@ -805,7 +805,7 @@ index 25bd680..22c4af0 100644
 +#include <time.h>
  
 -#define RGON_HOOKS 192
-+#define RGON_HOOKS 400
++#define RGON_HOOKS 440
  
  /* read by the lift's wrappers: slot -> a handler is installed */
  uint8_t g_rgon_hook_on[RGON_HOOKS];
@@ -2281,7 +2281,7 @@ index 6aa6b68..133df95 100644
        > ISAAC_GUARD_VA) {
      printf("  FAIL shim tokens overrun the guard\n");
 diff --git a/scripts/recomp/lift/lift_patches.py b/scripts/recomp/lift/lift_patches.py
-index 659f7ce..24a1921 100644
+index 659f7ce..07e0a2a 100644
 --- a/scripts/recomp/lift/lift_patches.py
 +++ b/scripts/recomp/lift/lift_patches.py
 @@ -1339,7 +1339,7 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
@@ -2293,7 +2293,7 @@ index 659f7ce..24a1921 100644
      (22, 0x007ebca0, "Room::SpawnGridEntity"),    # ret 0x14; reg Room.SpawnGridEntity; sig Room::SpawnGridEntity
      (23, 0x00709db0, "GridEntity::Init"),    # ret 0x4; sig GridEntity::Init
      (24, 0x0082f1c0, "RoomTransition::StartBossIntro"),    # ret 0x8; sig RoomTransition::StartBossIntro
-@@ -1419,6 +1419,134 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
+@@ -1419,6 +1419,140 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
      (98, 0x004199d0, "Room::RenderEntityPass_004199d0"),    # ret 0x8; asm
      (99, 0x008151e0, "Room::GetShopItemPrice"),    # ret 0x10; asm
      (169, 0x0094d500, "Menu_Character::UpdateRotations"),    # ret 0x0; sig Menu_Character::UpdateRotations
@@ -2425,10 +2425,16 @@ index 659f7ce..24a1921 100644
 +    (388, 0x00806c20, "Room::RenderEntityLight"),    # ret 0x8; asm (worker cb-backdrop)
 +    (357, 0x006ac6c0, "Entity::IsFlying"),    # ret 0x0; asm (worker hook-h1)
 +    (358, 0x009b98e0, "PlayerManager::SpawnCoPlayerBaby"),    # ret 0x4; asm (worker hook-h1)
++    (376, 0x0074ef70, "Level::HasMirrorDimension"),    # ret 0x0; asm (worker hook-h2)
++    (389, 0x0074efd0, "Level::HasAbandonedMineshaft"),    # ret 0x0; asm (worker hook-h2)
++    (406, 0x009aca90, "ItemOverlay::Update"),    # ret 0x4; asm (worker hook-h2)
++    (407, 0x009acfe0, "ItemOverlay::Render"),    # ret 0x0; asm (worker hook-h2)
++    (408, 0x009b7190, "PauseScreen::Render"),    # ret 0x0; asm (worker hook-h2)
++    (398, 0x00745ca0, "GetLevelName"),    # ret 0x0, the caller pops 0x14; asm (worker hook-h2)
      (100, 0x006a93a0, "Entity::Init"),    # ret 0x10; sig Init; vtable 0x00b6730c slot 1
      (101, 0x00755470, "Entity_Player::Init"),    # ret 0x10; vtable 0x00b6bdd0 slot 1
      (102, 0x006b8b20, "Entity_NPC::Init"),    # ret 0x10; vtable 0x00b67468 slot 1
-@@ -1523,7 +1651,7 @@ if len({_s for _s, _, _ in RGON_HOOKS}) != len(RGON_HOOKS) or len({_v for _, _v,
+@@ -1523,7 +1657,7 @@ if len({_s for _s, _, _ in RGON_HOOKS}) != len(RGON_HOOKS) or len({_v for _, _v,
  # reaches it: spill, set the trampoline's next block, return.
  #
  # Each entry: (slot, function VA, instruction VA, name, (redirect targets...)).
@@ -2437,7 +2443,7 @@ index 659f7ce..24a1921 100644
  # The table is checked by scripts/recomp/rgon/tools/hook_table.py, which prints
  # it (`--write`); edit it there. A build error, never a silent skip: the
  # function not in exactly one TU, the marker not exactly once in it, a target
-@@ -1539,8 +1667,77 @@ RGON_INSN_HOOKS: list[tuple[int, int, int, str, tuple[int, ...]]] = [
+@@ -1539,8 +1673,83 @@ RGON_INSN_HOOKS: list[tuple[int, int, int, str, tuple[int, ...]]] = [
      (167, 0x00676be0, 0x006770c2, "Entity_Tear::Collision_00676be0@ParasiteSplit", ()),    # 0x006770c2  mov eax, dword ptr [ebp - 0x64]
      (168, 0x00676be0, 0x00677498, "Entity_Tear::Collision_00676be0@BoneSplit", ()),    # 0x00677498  mov eax, dword ptr [ebp - 0x60]
      (170, 0x008f8860, 0x008f89c4, "ModManager::RenderCharacterPortrait_008f8860@Frame", ()),    # 0x008f89c4  mov edx, dword ptr [edi + 0x138]
@@ -2510,13 +2516,67 @@ index 659f7ce..24a1921 100644
 +    (366, 0x004a6500, 0x004a74fc, "Entity_NPC::delirium_update@PostTransform", ()),    # jmp 0x4a831b
 +    (367, 0x00794e50, 0x0079edc5, "Entity_Player::update_camo@SeedCamo", (0x0079ee43,)),    # mov ecx, [0xc71678]
 +    (368, 0x007fb250, 0x007fc05f, "Room::SpawnClearAward@MegaSatanEnding", (0x007fc073,)),    # cmp byte [ebp - 0x74], 0
++    (400, 0x008279d0, 0x008279e6, "Room::TrySpawnSpecialQuestDoor@StageTypeTest", (0x008279f4, 0x00827a9d)),    # cmp ecx, 4
++    (401, 0x00834350, 0x008343ac, "Ambush::Update@MaxWaves", ()),    # add ebx, 2
++    (402, 0x007ed897, 0x007ee65f, "Room::SpawnSavedGrid@CopyA", (0x007ee664,)),    # call 0x70b2e0
++    (403, 0x007ed8ea, 0x007ee65f, "Room::SpawnSavedGrid@CopyB", (0x007ee664,)),    # call 0x70b2e0
++    (404, 0x007ed8ee, 0x007ee65f, "Room::SpawnSavedGrid@CopyC", (0x007ee664,)),    # call 0x70b2e0
++    (405, 0x007ed926, 0x007ee65f, "Room::SpawnSavedGrid@CopyD", (0x007ee664,)),    # call 0x70b2e0
  ]
 -RGON_SLOTS = 192            # host_rgon.c RGON_HOOKS
-+RGON_SLOTS = 400            # host_rgon.c RGON_HOOKS
++RGON_SLOTS = 440            # host_rgon.c RGON_HOOKS
  INSN_REGS = ("EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI")
  _RE_INSN_BLOCK = re.compile(
      r"^[ \t]*/\* LIFT-PATCH insn 0x([0-9a-f]{8}) slot (\d+) begin[^\n]*\n.*?"
-@@ -1715,6 +1912,19 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
+@@ -1564,8 +1773,9 @@ def check_insn_table(hooks=None, wrap_hooks=None) -> None:
+             raise SystemExit("insn hook %s: slot %d is a function hook's (RGON_HOOKS)" % (what, slot))
+         if slot in seen_slot:
+             raise SystemExit("insn hooks %s and %s: both on slot %d" % (seen_slot[slot], what, slot))
+-        if iva in seen_va:
+-            raise SystemExit("insn hooks %s and %s: both at 0x%08x" % (seen_va[iva], what, iva))
++        # the same instruction in two lifted functions (overlapping chunks of one game function) may have one slot each
++        if (fva, iva) in seen_va:
++            raise SystemExit("insn hooks %s and %s: both at 0x%08x" % (seen_va[(fva, iva)], what, iva))
+         if iva == fva:
+             raise SystemExit("insn hook %s: 0x%08x is the function's entry (that is a function hook)" % (what, iva))
+         if len(set(targets)) != len(targets) or iva in targets or 0 in targets:
+@@ -1573,7 +1783,7 @@ def check_insn_table(hooks=None, wrap_hooks=None) -> None:
+         if "*/" in what or "\n" in what:
+             raise SystemExit("insn hook %s: the name cannot go in a C comment" % what)
+         seen_slot[slot] = what
+-        seen_va[iva] = what
++        seen_va[(fva, iva)] = what
+ 
+ 
+ def _fn_spans(text: str, fva: int) -> list[tuple[str, int, int]]:
+@@ -1664,7 +1874,7 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
+     TUs that would be (and says why)."""
+     hooks = RGON_INSN_HOOKS if hooks is None else hooks
+     check_insn_table(hooks)
+-    live = {iva for _, _, iva, _, _ in hooks}
++    live = {(iva, slot) for slot, _, iva, _, _ in hooks}
+     texts: dict[Path, str] = {}
+     changed: set[Path] = set()
+     tus = sorted(lift_dir.glob("lifted_*.c"))
+@@ -1691,7 +1901,7 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
+     for tu in list(texts):
+         t = texts[tu]
+         for m in reversed(list(_RE_INSN_BLOCK.finditer(t))):
+-            if int(m.group(1), 16) not in live:
++            if (int(m.group(1), 16), int(m.group(2))) not in live:
+                 print("insn-hook 0x%s (slot %s): retired, %s %s" % (m.group(1), m.group(2), "would be removed from" if check_only else "removed from", tu.name))
+                 t = t[:m.start()] + t[m.end():]
+                 changed.add(tu)
+@@ -1706,7 +1916,7 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
+         # the block already there (if any) goes first, so that the marker search sees the lifted text
+         old = None
+         for m in _RE_INSN_BLOCK.finditer(t):
+-            if int(m.group(1), 16) == iva:
++            if int(m.group(1), 16) == iva and int(m.group(2)) == slot:
+                 if old is not None:
+                     raise SystemExit("insn hook %s: two blocks for 0x%08x in %s" % (what, iva, tu.name))
+                 old = (m.start(), m.end(), m.group(0))
+@@ -1715,6 +1925,19 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
          spans = _fn_spans(t, fva)
          if not spans:
              raise SystemExit("insn hook %s: %s has no body in %s" % (what, name, tu.name))
@@ -2727,10 +2787,10 @@ index 1bd7c84..2cdccbf 100644
  
 diff --git a/scripts/recomp/rgon/api_ambush.lua b/scripts/recomp/rgon/api_ambush.lua
 new file mode 100644
-index 0000000..16ab5c7
+index 0000000..ee1e093
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_ambush.lua
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,130 @@
 +-- api_ambush.lua -- the global Ambush, and RoomDescriptor.Data written (worker "ambush", 2026-11-19).
 +-- Written against REPENTOGON's behaviour (LuaAmbush.cpp, Ambush.zhl); every number below was measured in THIS
 +-- executable (v1.9.7.17), lab_ambush_test.lua is the measurement.
@@ -2798,8 +2858,10 @@ index 0000000..16ab5c7
 +  n = int_arg(n, 1, "SetNumBossesPerWave")
 +  w32(ambush("SetNumBossesPerWave") + F_BOSSES, n & 0xffffffff)
 +end)
-+put("GetMaxChallengeWaves", function() return 3 end)
-+put("GetMaxBossChallengeWaves", function() return 2 end)
++-- the wave maxima: the game's own 3 and 2 until Set* (api_hook_h_two.lua, instruction hook 401) changes them
++T.ambush_waves = { normal = 3, boss = 2 }
++put("GetMaxChallengeWaves", function() return T.ambush_waves.normal end)
++put("GetMaxBossChallengeWaves", function() return T.ambush_waves.boss end)
 +put("StartChallenge", function() call(START_CHALLENGE, ambush("StartChallenge")) end)
 +put("SpawnWave", function() call(SPAWN_WAVE, ambush("SpawnWave")) end)
 +put("SpawnBossrushWave", function() call(SPAWN_BOSSRUSH, ambush("SpawnBossrushWave")) end)
@@ -9173,10 +9235,10 @@ index 0000000..fece327
 +end
 diff --git a/scripts/recomp/rgon/api_gaps.lua b/scripts/recomp/rgon/api_gaps.lua
 new file mode 100644
-index 0000000..1bfe19c
+index 0000000..0a385ad
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_gaps.lua
-@@ -0,0 +1,536 @@
+@@ -0,0 +1,540 @@
 +-- api_gaps.lua -- gaps the Mac Build's gate log named for the Target Mods (milestone M8),
 +-- Epiphany first. Each piece says what in the log it answers.
 +--
@@ -9686,6 +9748,10 @@ index 0000000..1bfe19c
 +-- and Dross II (Curse of the Labyrinth makes the first floor of each the one that has it), not in Greed Mode.
 +-- The game's own rule as miniMAPI states it for itself (cache.lua); the game gives the layer no field for it.
 +T.method("Level", "HasMirrorDimension", function(self)
++  if T.quest_check then   -- Level:SetForceSpecialQuest is in force (api_hook_h_two.lua): the same answer the game's own function now gives
++    local forced = T.quest_check(T.B.ptr(self), 1)
++    if forced ~= nil then return forced end
++  end
 +  if Game():IsGreedMode() then return false end
 +  local alt = self:GetStageType()
 +  if alt ~= StageType.STAGETYPE_REPENTANCE and alt ~= StageType.STAGETYPE_REPENTANCE_B then return false end
@@ -10593,6 +10659,261 @@ index 0000000..79bf4e5
 +      if res == true then return 0x007fc073 end
 +    end, nil)
 +  end
++end
+diff --git a/scripts/recomp/rgon/api_hook_h_two.lua b/scripts/recomp/rgon/api_hook_h_two.lua
+new file mode 100644
+index 0000000..74a7eb3
+--- /dev/null
++++ b/scripts/recomp/rgon/api_hook_h_two.lua
+@@ -0,0 +1,249 @@
++-- api_hook_h_two.lua -- final hook wave, part 2 (worker hook-h2): hook slots 376, 389, 398, 400-405 (tools/hook_table.py, hook_slots.lua).
++-- Written against REPENTOGON's behaviour (LuaLevel.cpp, ASMLevel.cpp, ASMRoom.cpp, LuaAmbush.cpp, ASMGridEntitySpawn.cpp); every
++-- address measured in THIS executable (v1.9.7.17) and checked by lab_hook_h_two.lua.
++--   Level:Get/SetForceSpecialQuest   function hooks 376 (Level::HasMirrorDimension 0x0074ef70) and 389 (Level::HasAbandonedMineshaft 0x0074efd0),
++--       both thiscall, no arguments, plain ret. The value is -1 (no quest at all), 0 (the game's own rules, the default), 1 (mirror world) or 2
++--       (abandoned mineshaft). Instruction hook 400 (Room::TrySpawnSpecialQuestDoor 0x008279d0, the stage-type test at 0x008279e6) is installed
++--       but NOT armed: the door did not spawn in the lab even with the game's own rule, so Room:TrySpawnSpecialQuestDoor(force) is deferred.
++--   Level:SetName(name)   function hook 398 on the global GetLevelName (0x00745ca0, ecx = the std::string answered, stage in edx, the caller pops
++--       five stack words, plain ret): its `after` overwrites the answer with the name (REPENTOGON does the same on the global).
++--   Ambush.Set/GetMax(Boss)ChallengeWaves   instruction hook 401 in Ambush::Update (0x00834350): the `add ebx, 2` at 0x008343ac makes the wave
++--       maximum from `eax == 1` (a boss challenge: 2, else 3); the handler writes ebx = wanted - 2.
++--   MC_PRE_ROOM_GRID_ENTITY_SPAWN (1192)   instruction hooks 402-405: the `call 0x70b2e0` (CreateGridEntity(type<ecx>, index<edx>)) of the room's
++--       grid spawn at 0x007ee65f exists in four overlapping lifted chunks of one function (sub_007ed897, sub_007ed8ea, sub_007ed8ee, sub_007ed926),
++--       one slot each. The hook answers (type, variant, var data, index, seed); false spawns nothing, a table replaces type, variant, var data and seed.
++local T = ...
++local B, R, method, wrap = T.B, T.R, T.method, T.wrap
++local ptr, r32, ri32, w32, call, log, reg = B.ptr, B.r32, B.ri32, B.w32, B.call, B.log, B.reg
++local type, error, pairs, ipairs, rawget, rawset, pcall, tostring = type, error, pairs, ipairs, rawget, rawset, pcall, tostring
++local mathtype = math.type
++local M = ModCallbacks
++
++local SLOTS
++do
++  local chunk = B.load("hook_slots.lua")
++  if not chunk then return end
++  SLOTS = chunk()
++end
++if B.HOOKS < 440 or not B.INSN or not reg then return end
++local function slot_of(name)
++  local s = SLOTS[name]
++  if type(s) ~= "table" then log("api_hook_h_two: no hook slot for " .. name) return nil end
++  return s[1], s[3]
++end
++local function argerr(n, fname, want, got)
++  error("bad argument #" .. n .. " to '" .. fname .. "' (" .. want .. " expected, got " .. type(got) .. ")", 3)
++end
++local function int_arg(v, n, fname)
++  if mathtype(v) == "integer" then return v end
++  if type(v) == "number" and v == v // 1 then return math.tointeger(v) end
++  argerr(n, fname, "number", v)
++end
++local GAME_PTR = 0x00c71678
++
++------------------------------------------------------------------------------
++-- Level:Get/SetForceSpecialQuest (slots 376, 389; the door site 400 is installed but not armed)
++------------------------------------------------------------------------------
++do
++  local s_mirror = slot_of("Level::HasMirrorDimension")
++  local s_mine = slot_of("Level::HasAbandonedMineshaft")
++  if s_mirror and s_mine then
++    local force = 0
++    -- REPENTOGON's CheckQuest: false when the quest is off (-1) or in Greed Mode; otherwise, on the floors where the stage-type rule applies (a
++    -- stage past 6, or the first six without the level-state flag 0x10000 and on an alt path), the quest holds when it is the forced one or the game's
++    -- own stage rule holds (stage == expected, or one before it with the Labyrinth curse)
++    local function quest_check(level, which)
++      if force == 0 then return nil end
++      if force < 0 then return false end
++      local g = r32(GAME_PTR)
++      if g == 0 or ri32(g + 0x269c8) >= 2 then return false end
++      local stage, stype = r32(level), r32(level + 4)
++      local alt = stype == 4 or stype == 5
++      if (stage - 1) & 0xffffffff > 5 or ((r32(g + 0x2654c) & 0x10000) == 0 and alt) then
++        local expected = which == 1 and 2 or 4
++        return force == which or stage == expected or (stage == expected - 1 and (call(0x00748490, level) & 2) ~= 0)
++      end
++      return false
++    end
++    T.quest_check = quest_check
++    local on_a = false
++    local function arm()
++      local need = force ~= 0
++      if need ~= on_a then
++        on_a = need
++        if need then
++          B.hook(s_mirror, function(self) local v = quest_check(self, 1) if v ~= nil then return true, v and 1 or 0, 0 end end)
++          B.hook(s_mine, function(self) local v = quest_check(self, 2) if v ~= nil then return true, v and 1 or 0, 0 end end)
++        else
++          B.hook(s_mirror) B.hook(s_mine)
++        end
++      end
++    end
++    method("Level", "SetForceSpecialQuest", function(self, v)
++      force = int_arg(v, 1, "SetForceSpecialQuest")
++      arm()
++    end)
++    method("Level", "GetForceSpecialQuest", function(self) return force end)
++    -- Room:TrySpawnSpecialQuestDoor(force) and the door site (instruction hook 400) are NOT armed: the door never spawned in the lab
++    -- (not even on Downpour II with the game's own rule and a variant-34 room swapped in), so the effect is unproven.
++  end
++end
++
++------------------------------------------------------------------------------
++-- Level:SetName (slot 398)
++------------------------------------------------------------------------------
++do
++  local slot = slot_of("GetLevelName")
++  if slot then
++    local name, armed = nil, false
++    -- write `s` into the std::string at `at` (MSVC layout: 16-byte inline buffer or a heap pointer, size +0x10, capacity +0x14); a heap buffer
++    -- the answer held is freed (the game's allocator, as the game's own destructor would), a longer name gets one from the same allocator
++    local function put(at, s)
++      local n = #s
++      local size, cap = r32(at + 16), r32(at + 20)
++      if size > cap or cap > (1 << 20) then log("api_hook_h_two: the level name's target is not a std::string") return end
++      local old = cap >= 16 and r32(at) or 0
++      if n <= 15 then
++        for i = 1, n do B.w8(at + i - 1, s:byte(i)) end
++        for i = n, 15 do B.w8(at + i, 0) end
++        w32(at + 16, n) w32(at + 20, 15)
++      else
++        local buf = B.alloc(n + 1)
++        if buf == 0 then return end
++        for i = 1, n do B.w8(buf + i - 1, s:byte(i)) end
++        B.w8(buf + n, 0)
++        w32(at, buf) w32(at + 4, 0) w32(at + 8, 0) w32(at + 12, 0)
++        w32(at + 16, n) w32(at + 20, n)
++      end
++      if old ~= 0 then B.free(old) end
++    end
++    method("Level", "SetName", function(self, s)
++      if type(s) ~= "string" then
++        if type(s) == "number" then s = tostring(s) else argerr(1, "SetName", "string", s) end
++      end
++      if #s >= 4000 then error("rgon: Level:SetName: a name of " .. #s .. " bytes is too long", 2) end
++      name = s ~= "" and s or nil
++      local want = name ~= nil
++      if want ~= armed then
++        armed = want
++        if want then
++          B.hook(slot, nil, function(out) if name and out ~= 0 then put(out, name) end end)
++        else
++          B.hook(slot)
++        end
++      end
++    end)
++  end
++end
++
++------------------------------------------------------------------------------
++-- Ambush.SetMaxChallengeWaves / SetMaxBossChallengeWaves (slot 401)
++------------------------------------------------------------------------------
++do
++  local slot, at = slot_of("Ambush::Update@MaxWaves")
++  local Ambush = rawget(_G, "Ambush")
++  if slot and type(Ambush) == "table" and T.ambush_waves then
++    local W, armed = T.ambush_waves, false
++    local function arm()
++      local want = W.normal ~= 3 or W.boss ~= 2
++      if want == armed then return end
++      armed = want
++      if want then
++        B.hook(slot, function(va, esp, ebp)
++          if va ~= at then return end
++          local n = reg("eax") == 1 and W.boss or W.normal
++          reg("ebx", (n - 2) & 0xffffffff)       -- the game adds 2
++        end)
++      else
++        B.hook(slot)
++      end
++    end
++    T.static(Ambush, "Ambush", "SetMaxChallengeWaves", function(n) W.normal = int_arg(n, 1, "SetMaxChallengeWaves") arm() end)
++    -- Ambush.SetMaxBossChallengeWaves is deferred: a boss challenge has no proof in the lab, and boss waves above 2 would have no room to pick.
++  end
++end
++
++------------------------------------------------------------------------------
++-- MC_POST_ITEM_OVERLAY_UPDATE (1075), MC_POST_ITEM_OVERLAY_RENDER (1139), MC_PRE/POST_PAUSE_SCREEN_RENDER (1218, 1219) (slots 406, 407, 408)
++------------------------------------------------------------------------------
++do
++  if M.MC_POST_ITEM_OVERLAY_UPDATE == nil then M.MC_POST_ITEM_OVERLAY_UPDATE = 1075 end
++  if M.MC_POST_ITEM_OVERLAY_RENDER == nil then M.MC_POST_ITEM_OVERLAY_RENDER = 1139 end
++  if M.MC_PRE_PAUSE_SCREEN_RENDER == nil then M.MC_PRE_PAUSE_SCREEN_RENDER = 1218 end
++  if M.MC_POST_PAUSE_SCREEN_RENDER == nil then M.MC_POST_PAUSE_SCREEN_RENDER = 1219 end
++  local UPD, REN = M.MC_POST_ITEM_OVERLAY_UPDATE, M.MC_POST_ITEM_OVERLAY_RENDER
++  local PRE_P, POST_P = M.MC_PRE_PAUSE_SCREEN_RENDER, M.MC_POST_PAUSE_SCREEN_RENDER
++  local OVERLAY, PAUSE = 0x1c034, 0x23a74
++  local function game_at(off) local g = r32(GAME_PTR) return g ~= 0 and g + off or 0 end
++  local s_upd, s_ren, s_pause = slot_of("ItemOverlay::Update"), slot_of("ItemOverlay::Render"), slot_of("PauseScreen::Render")
++  if s_upd and T.define then
++    -- ItemOverlay::Update(bool unk): the callback runs after the game's update, param = the overlay id
++    T.define(s_upd, { UPD }, function(self, esp)
++      if self ~= game_at(OVERLAY) then return end
++      return { r32(esp + 4) & 0xff ~= 0 }
++    end, function(self, esp, eax, k)
++      if not k then return end
++      local id = ri32(self + 4)
++      T.run(UPD, id, id, k[1])
++    end)
++  end
++  if s_ren and T.define then
++    -- ItemOverlay::Render(): after it, unless the overlay is inactive (state 0) or waiting (1)
++    T.define(s_ren, { REN }, function(self, esp)
++      if self ~= game_at(OVERLAY) then return end
++      return { true }
++    end, function(self, esp, eax, k)
++      if not k then return end
++      if r32(self) < 2 then return end
++      local id = ri32(self + 4)
++      T.run(REN, id, id)
++    end)
++  end
++  if s_pause and T.define then
++    -- PauseScreen::Render(): (mainSprite, statsSprite), no param. PRE: true skips the render (and the POST); POST after the render
++    T.define(s_pause, { PRE_P, POST_P }, function(self, esp)
++      if self ~= game_at(PAUSE) then return end
++      local main, stats = wrap("Sprite", self + 0x2c), wrap("Sprite", self + 0x254)
++      local res = T.run(PRE_P, nil, main, stats)
++      if res == true then return true, 0, 0 end
++      return { main, stats }
++    end, function(self, esp, eax, k)
++      if not k then return end
++      T.run(POST_P, nil, k[1], k[2])
++    end)
++  end
++end
++
++------------------------------------------------------------------------------
++-- MC_PRE_ROOM_GRID_ENTITY_SPAWN (1192; slots 402-405)
++------------------------------------------------------------------------------
++do
++  local id = M.MC_PRE_ROOM_GRID_ENTITY_SPAWN
++  if id == nil then M.MC_PRE_ROOM_GRID_ENTITY_SPAWN = 1192 id = 1192 end
++  local B_VARDATA, B_SEED, B_TYPE = 0x5c, 0x44, 0x18
++  local function handler(name)
++    local slot, at = slot_of(name)
++    if not slot or not T.define then return end
++    T.define(slot, { id }, function(va, esp, ebp)
++      if va ~= at then log("api_hook_h_two: " .. name .. " ran at 0x" .. string.format("%08x", va)) return end
++      local typ, idx, variant = reg("ecx"), reg("edx"), reg("edi")
++      local vardata, seed = ri32(ebp - B_VARDATA), r32(ebp - B_SEED)
++      local res = T.run(id, typ, typ, variant, vardata, idx, seed)
++      if res == false then
++        reg("eax", 0)
++        return 0x007ee664                    -- as if CreateGridEntity answered nothing
++      end
++      if type(res) == "table" then
++        local t, v, d, s = res[1], res[2], res[3], res[4]
++        if mathtype(t) == "integer" then
++          if r32(ebp - B_TYPE) == typ then w32(ebp - B_TYPE, t & 0xffffffff) end
++          reg("ecx", t & 0xffffffff)
++        end
++        if mathtype(v) == "integer" then reg("edi", v & 0xffffffff) end
++        if mathtype(d) == "integer" then w32(ebp - B_VARDATA, d & 0xffffffff) end
++        if mathtype(s) == "integer" then w32(ebp - B_SEED, s & 0xffffffff) end
++      end
++    end, nil)
++  end
++  for _, n in ipairs({ "CopyA", "CopyB", "CopyC", "CopyD" }) do handler("Room::SpawnSavedGrid@" .. n) end
 +end
 diff --git a/scripts/recomp/rgon/api_hooks.lua b/scripts/recomp/rgon/api_hooks.lua
 index 92f9c5b..0200bf7 100644
@@ -22416,7 +22737,7 @@ index 3b6d51e..488241e 100644
  ]],
  }
 diff --git a/scripts/recomp/rgon/hook_slots.lua b/scripts/recomp/rgon/hook_slots.lua
-index 2187a0e..f187b2e 100644
+index 2187a0e..3948ae2 100644
 --- a/scripts/recomp/rgon/hook_slots.lua
 +++ b/scripts/recomp/rgon/hook_slots.lua
 @@ -100,6 +100,42 @@ return {
@@ -22496,7 +22817,7 @@ index 2187a0e..f187b2e 100644
    -- instruction hooks (round 110): slot, false, the instruction's address
    ["Entity_Player::EvaluateItems@TearsUp"] = { 160, false, 0x00764864 },
    ["Entity_Player::EvaluateItems@FlatTears"] = { 161, false, 0x00764f2e },
-@@ -170,4 +233,138 @@ return {
+@@ -170,4 +233,150 @@ return {
    ["Entity_Tear::Collision_00676be0@ParasiteSplit"] = { 167, false, 0x006770c2 },
    ["Entity_Tear::Collision_00676be0@BoneSplit"] = { 168, false, 0x00677498 },
    ["ModManager::RenderCharacterPortrait_008f8860@Frame"] = { 170, false, 0x008f89c4 },
@@ -22596,6 +22917,12 @@ index 2187a0e..f187b2e 100644
 +  ["Room::RenderEntityLight"] = { 388, 0x8 },
 +  ["Entity::IsFlying"] = { 357, 0x0 },
 +  ["PlayerManager::SpawnCoPlayerBaby"] = { 358, 0x4 },
++  ["Level::HasMirrorDimension"] = { 376, 0x0 },
++  ["Level::HasAbandonedMineshaft"] = { 389, 0x0 },
++  ["GetLevelName"] = { 398, 0x0 },
++  ["ItemOverlay::Update"] = { 406, 0x4 },
++  ["ItemOverlay::Render"] = { 407, 0x0 },
++  ["PauseScreen::Render"] = { 408, 0x0 },
 +  ["Camera::ClampedToRoom@Flag"] = { 307, false, 0x0094355b },
 +  ["Camera::Update_009439d0@SlowStopClamp"] = { 308, false, 0x0094433b },
 +  ["Level::GetRandomRoomIndex"] = { 329, 0x8 },
@@ -22634,6 +22961,12 @@ index 2187a0e..f187b2e 100644
 +  ["Entity_NPC::delirium_update@PostTransform"] = { 366, false, 0x004a74fc },
 +  ["Entity_Player::update_camo@SeedCamo"] = { 367, false, 0x0079edc5 },
 +  ["Room::SpawnClearAward@MegaSatanEnding"] = { 368, false, 0x007fc05f },
++  ["Room::TrySpawnSpecialQuestDoor@StageTypeTest"] = { 400, false, 0x008279e6 },
++  ["Ambush::Update@MaxWaves"] = { 401, false, 0x008343ac },
++  ["Room::SpawnSavedGrid@CopyA"] = { 402, false, 0x007ee65f },
++  ["Room::SpawnSavedGrid@CopyB"] = { 403, false, 0x007ee65f },
++  ["Room::SpawnSavedGrid@CopyC"] = { 404, false, 0x007ee65f },
++  ["Room::SpawnSavedGrid@CopyD"] = { 405, false, 0x007ee65f },
  }
 diff --git a/scripts/recomp/rgon/lab_ambush_test.lua b/scripts/recomp/rgon/lab_ambush_test.lua
 new file mode 100644
@@ -33383,6 +33716,334 @@ index 0000000..3318faa
 +  local f = steps[i]
 +  if not f then
 +    if i == #steps + 1 then B.log(string.format("lab_hook_h_one: DONE %d PASS %d FAIL", pass, fail)) end
++    return
++  end
++  local ok, err = pcall(f)
++  if not ok then check(false, "step " .. i .. " raised: " .. tostring(err)) end
++end)
+diff --git a/scripts/recomp/rgon/lab_hook_h_two.lua b/scripts/recomp/rgon/lab_hook_h_two.lua
+new file mode 100644
+index 0000000..a2d58fa
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_hook_h_two.lua
+@@ -0,0 +1,322 @@
++-- lab_hook_h_two.lua (development only; ISAAC_RGON_LAB=lab_hook_h_two.lua, worker hook-h2, final hook wave part 2)
++-- ISAAC_LAB_PHASE=main (default): Level force special quest (getters, mirror and mineshaft answers), Level:SetName, 1192.
++-- ISAAC_LAB_PHASE=ambush : a challenge room with Ambush.SetMaxChallengeWaves(ISAAC_LAB_WAVES, default 5): how many waves the game runs.
++-- Prints "lab_hook_h_two: DONE n PASS m FAIL". Steps run one after another on MC_POST_UPDATE.
++local T = ...
++local B = T.B
++local M = ModCallbacks
++local mod = RegisterMod("rgon lab hook-h-two", 1)
++local phase = B.env("ISAAC_LAB_PHASE") or "main"
++local pass, fail = 0, 0
++local game = Game()
++local function say(s) B.log("lab_hook_h_two: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_hook_h_two: %s %s", ok and "PASS" or "FAIL", what))
++end
++local function listed(name) return REPENTOGON == nil or REPENTOGON.Implemented == nil or REPENTOGON.Implemented[name] == true end
++local steps = {}
++local frame, i = 0, 0
++local function step(f) steps[#steps + 1] = f end
++local waiting, wait_left, wait_cond
++local function wait(frames, cond) waiting, wait_left, wait_cond = true, frames, cond or function() return false end end
++local function level() return game:GetLevel() end
++local function room() return game:GetRoom() end
++local function stage_info() return string.format("stage %d type %d", level():GetStage(), level():GetStageType()) end
++
++if phase == "main" then
++  local base_name
++  ------------------------------------------------------------------------------------------------ Level:SetName
++  step(function()
++    Isaac.ExecuteCommand("debug 3")
++    say("start: " .. stage_info())
++    base_name = level():GetName()
++    say("vanilla name: " .. tostring(base_name))
++    check(type(base_name) == "string" and base_name ~= "", "Level:GetName answers the game's name")
++    check(listed("Level.SetName") and listed("Level.SetForceSpecialQuest") and listed("Level.GetForceSpecialQuest"), "REPENTOGON.Implemented lists the Level names")
++    level():SetName("Hook Test Floor")
++    check(level():GetName() == "Hook Test Floor", "SetName short: GetName reads it back (" .. tostring(level():GetName()) .. ")")
++    level():SetName("A name that is longer than fifteen bytes for sure")
++    check(level():GetName() == "A name that is longer than fifteen bytes for sure", "SetName long: GetName reads it back (" .. tostring(level():GetName()) .. ")")
++    check(not pcall(function() level():SetName({}) end), "SetName(table) raises")
++    level():SetName("")
++    check(level():GetName() == base_name, "SetName('') restores the game's name (" .. tostring(level():GetName()) .. ")")
++    level():SetName("Hook Test Floor")
++  end)
++  -- the title: a new floor shows the name (a screenshot of this frame is taken by the runner's SHOT list)
++  step(function() Isaac.ExecuteCommand("stage 2") wait(120) end)
++  step(function()
++    say("floor 2: " .. stage_info() .. " name " .. tostring(level():GetName()))
++    check(level():GetName() == "Hook Test Floor", "the name holds on the next floor")
++    wait(150)
++  end)
++  step(function()
++    level():SetName("")
++    check(level():GetName() ~= "Hook Test Floor" and level():GetName() ~= "", "name cleared on the new floor: " .. tostring(level():GetName()))
++  end)
++
++  step(function()
++    check(level():GetForceSpecialQuest() == 0, "GetForceSpecialQuest is 0 by default")
++  end)
++
++  ------------------------------------------------------------------------------------------------ mirror and mineshaft answers
++  local function goto_alt(cmds)
++    for _, c in ipairs(cmds) do
++      Isaac.ExecuteCommand("stage " .. c)
++      if level():GetStageType() >= 4 then return c end
++    end
++  end
++  step(function() Isaac.ExecuteCommand("stage 1d") wait(150) end)
++  step(function()
++    say("alt floor: " .. stage_info())
++    if level():GetStageType() < 4 then Isaac.ExecuteCommand("stage 1c") wait(150) end
++  end)
++  step(function()
++    say("alt floor: " .. stage_info())
++    local l = level()
++    check(l:GetStageType() >= 4 and l:GetStage() == 1, "on an alt-path floor 1 (" .. stage_info() .. ")")
++    check(l:HasMirrorDimension() == false, "Downpour I: HasMirrorDimension false")
++    check(l:HasAbandonedMineshaft() == false, "Downpour I: HasAbandonedMineshaft false")
++    l:SetForceSpecialQuest(1)
++    check(l:GetForceSpecialQuest() == 1, "SetForceSpecialQuest(1) reads back")
++    check(l:HasMirrorDimension() == true, "force 1: HasMirrorDimension true")
++    check(l:HasAbandonedMineshaft() == false, "force 1: HasAbandonedMineshaft false")
++    l:SetForceSpecialQuest(2)
++    check(l:HasMirrorDimension() == false, "force 2: HasMirrorDimension false")
++    check(l:HasAbandonedMineshaft() == true, "force 2: HasAbandonedMineshaft true")
++    l:SetForceSpecialQuest(-1)
++    check(l:HasMirrorDimension() == false and l:HasAbandonedMineshaft() == false, "force -1: both false")
++    l:SetForceSpecialQuest(0)
++    check(l:HasMirrorDimension() == false and l:HasAbandonedMineshaft() == false, "force 0: both false again")
++    check(not pcall(function() l:SetForceSpecialQuest("x") end), "SetForceSpecialQuest(string) raises")
++    Isaac.ExecuteCommand("stage 2d")
++    wait(150)
++  end)
++  step(function()
++    say("floor: " .. stage_info())
++    local l = level()
++    if l:GetStageType() >= 4 and l:GetStage() == 2 then
++      check(l:HasMirrorDimension() == true, "Downpour II: HasMirrorDimension true (the game's own rule)")
++      l:SetForceSpecialQuest(-1)
++      check(l:HasMirrorDimension() == false, "Downpour II, force -1: HasMirrorDimension false (the quest is switched off)")
++      check(l:HasAbandonedMineshaft() == false, "Downpour II, force -1: no mineshaft")
++      l:SetForceSpecialQuest(0)
++      check(l:HasMirrorDimension() == true, "Downpour II, force 0: HasMirrorDimension true again")
++    else
++      check(false, "reached Downpour II: " .. stage_info())
++    end
++  end)
++
++  ------------------------------------------------------------------------------------------------ item overlay and pause screen
++  local c = { upd = 0, ren = 0, pre = 0, post = 0, upd_id = nil, ren_id = nil, upd_arg = nil, spr = nil, skip = false }
++  mod:AddCallback(M.MC_POST_ITEM_OVERLAY_UPDATE, function(_, id, unk) c.upd = c.upd + 1 c.upd_id = id c.upd_arg = unk end)
++  mod:AddCallback(M.MC_POST_ITEM_OVERLAY_RENDER, function(_, id) c.ren = c.ren + 1 c.ren_id = id end)
++  mod:AddCallback(M.MC_PRE_PAUSE_SCREEN_RENDER, function(_, main, stats)
++    c.pre = c.pre + 1
++    c.spr = main
++    if c.skip then return true end
++  end)
++  mod:AddCallback(M.MC_POST_PAUSE_SCREEN_RENDER, function(_, main, stats) c.post = c.post + 1 end)
++  step(function()
++    say("overlay: state " .. B.r32(B.r32(0x00c71678) + 0x1c034) .. " id " .. B.r32(B.r32(0x00c71678) + 0x1c038))
++    c.upd, c.ren = 0, 0
++    ItemOverlay.Show(5, 0)
++    wait(90)
++  end)
++  step(function()
++    local o = B.r32(0x00c71678) + 0x1c034
++    say(string.format("overlay after Show(5): state %d id %d; update callbacks %d (id %s, unk %s), render callbacks %d (id %s)", B.r32(o), B.r32(o + 4), c.upd, tostring(c.upd_id), tostring(c.upd_arg), c.ren, tostring(c.ren_id)))
++    check(c.upd > 10, "MC_POST_ITEM_OVERLAY_UPDATE fires every frame (" .. c.upd .. ")")
++    check(c.upd_id == 5 or c.upd_id == B.r32(o + 4), "MC_POST_ITEM_OVERLAY_UPDATE param is the overlay id (" .. tostring(c.upd_id) .. ")")
++    check(c.ren > 0, "MC_POST_ITEM_OVERLAY_RENDER fires while the overlay shows (" .. c.ren .. ")")
++    check(c.ren_id == 5, "MC_POST_ITEM_OVERLAY_RENDER gets the overlay id 5 (" .. tostring(c.ren_id) .. ")")
++    c.pre, c.post = 0, 0
++    wait(200, function() return B.r32(o) == 0 end)
++  end)
++  step(function()
++    local o = B.r32(0x00c71678) + 0x1c034
++    say("overlay state now " .. B.r32(o) .. ", render callbacks " .. c.ren)
++    check(c.pre == 0 and c.post == 0, "pause callbacks are silent while the game is not paused")
++    PauseMenu.SetState(1)
++    wait(30)
++  end)
++  step(function()
++    say("pause open: pre " .. c.pre .. " post " .. c.post .. " state " .. tostring(PauseMenu.GetState()))
++    check(c.pre > 5 and c.post > 5, "MC_PRE / MC_POST_PAUSE_SCREEN_RENDER fire while the pause screen is open (" .. c.pre .. " / " .. c.post .. ")")
++    check(type(c.spr) == "userdata", "the pre callback gets the pause screen's sprite")
++    c.skip = true
++    local p0, q0 = c.pre, c.post
++    c.p0, c.q0 = p0, q0
++    wait(30)
++  end)
++  step(function()
++    say("pause with PRE answering true: pre +" .. (c.pre - c.p0) .. " post +" .. (c.post - c.q0))
++    check(c.pre - c.p0 > 5 and c.post - c.q0 == 0, "PRE answering true skips the render and the POST")
++    c.skip = false
++    PauseMenu.SetState(0)
++    wait(10)
++  end)
++
++  ------------------------------------------------------------------------------------------------ 1192
++  local rec, mode, mine, first_type = {}, "record", {}, nil
++  local fired = 0
++  mod:AddCallback(M.MC_PRE_ROOM_GRID_ENTITY_SPAWN, function(_, typ, variant, vardata, idx, seed)
++    fired = fired + 1
++    rec[#rec + 1] = { typ, variant, vardata, idx, seed }
++    if mode == "cancel" then
++      first_type = first_type or (typ ~= 1 and typ or nil)
++      if typ == first_type then mine[idx] = typ return false end
++    elseif mode == "retype" then
++      first_type = first_type or (typ ~= 1 and typ or nil)
++      if typ == first_type then
++        local nt = typ == 3 and 2 or 3
++        mine[idx] = nt
++        return { nt, variant, vardata, seed }
++      end
++    end
++  end)
++  local function grids()
++    local out = {}
++    local r = room()
++    for gi = 0, r:GetGridSize() - 1 do
++      local ge = r:GetGridEntity(gi)
++      if ge then out[gi] = ge end
++    end
++    return out
++  end
++  step(function()
++    say("1192: ids in the enum " .. tostring(M.MC_PRE_ROOM_GRID_ENTITY_SPAWN))
++    mode, rec = "record", {}
++    Isaac.ExecuteCommand("goto s.treasure.1")
++    wait(80)
++  end)
++  step(function()
++    say("1192 record: " .. #rec .. " calls, room type " .. room():GetType())
++    check(#rec > 0, "MC_PRE_ROOM_GRID_ENTITY_SPAWN fired on entering a room (" .. #rec .. ")")
++    local gs = grids()
++    local same_t, same_v, same_d, nz_v, nz_d, found = 0, 0, 0, 0, 0, 0
++    for _, r in ipairs(rec) do
++      local ge = gs[r[4]]
++      if ge then
++        found = found + 1
++        if ge:GetType() == r[1] then same_t = same_t + 1 end
++        if ge:GetVariant() == r[2] then same_v = same_v + 1 end
++        local okd, vd = pcall(function() return ge.VarData end)
++        if okd and vd == r[3] then same_d = same_d + 1 end
++        if r[2] ~= 0 then nz_v = nz_v + 1 end
++        if r[3] ~= 0 then nz_d = nz_d + 1 end
++      end
++    end
++    say(string.format("1192 args vs the spawned grids: %d found, type %d, variant %d (nonzero %d), vardata %d (nonzero %d)", found, same_t, same_v, nz_v, same_d, nz_d))
++    for k = 1, math.min(#rec, 6) do say("rec " .. table.concat(rec[k], " ")) end
++    check(found > 0 and same_t == found, "the type argument is the spawned grid's type")
++    check(same_v == found, "the variant argument is the grid's variant")
++    check(same_d == found, "the var data argument is the grid's var data")
++    local seeds = 0
++    for _, r in ipairs(rec) do if r[5] ~= 0 then seeds = seeds + 1 end end
++    check(seeds > 0, "seeds are passed (" .. seeds .. " nonzero)")
++  end)
++  step(function()
++    mode, rec, mine, first_type = "cancel", {}, {}, nil
++    Isaac.ExecuteCommand("goto d.12")
++    wait(80)
++  end)
++  step(function()
++    local gs = grids()
++    local n_cancel, n_left_cancel, n_other = 0, 0, 0
++    for idx, t in pairs(mine) do
++      n_cancel = n_cancel + 1
++      if gs[idx] ~= nil then n_left_cancel = n_left_cancel + 1 end
++    end
++    for _, g in pairs(gs) do n_other = n_other + 1 end
++    say(string.format("1192 cancel: %d calls, cancelled type %s at %d indexes, %d of them still hold a grid, %d grids in the room", #rec, tostring(first_type), n_cancel, n_left_cancel, n_other))
++    check(n_cancel > 0, "a spawn was answered false")
++    check(n_left_cancel == 0, "a cancelled spawn leaves no grid entity")
++  end)
++  step(function()
++    mode, rec, mine, first_type = "retype", {}, {}, nil
++    Isaac.ExecuteCommand("goto d.14")
++    wait(80)
++  end)
++  local retype_try = 0
++  step(function()
++    if #rec == 0 and retype_try < 4 then
++      retype_try = retype_try + 1
++      Isaac.ExecuteCommand("goto d." .. (14 + 2 * retype_try))
++      wait(80)
++      i = i - 1
++      return
++    end
++    local gs = grids()
++    local n, ok = 0, 0
++    for idx, nt in pairs(mine) do
++      n = n + 1
++      if gs[idx] and gs[idx]:GetType() == nt then ok = ok + 1 end
++    end
++    say(string.format("1192 retype: %d calls, type %s changed at %d indexes, %d now have the new type", #rec, tostring(first_type), n, ok))
++    check(n > 0, "a spawn was answered with a table")
++    check(n > 0 and ok == n, "a table answer changes the spawned grid's type (" .. ok .. " of " .. n .. ")")
++    mode = "off"
++  end)
++elseif phase == "ambush" then
++  local want = tonumber(B.env("ISAAC_LAB_WAVES") or "5")
++  local maxwave, wait_frames = 0, 0
++  local function amb() return B.r32(0x00c71678) + 0x265c8 end
++  local cleared_at
++  step(function()
++    Isaac.ExecuteCommand("debug 3")
++    Ambush.SetMaxChallengeWaves(want)
++    check(Ambush.GetMaxChallengeWaves() == want, "GetMaxChallengeWaves reads " .. want)
++    check(Ambush.GetMaxBossChallengeWaves() == 2, "GetMaxBossChallengeWaves still 2")
++    check(listed("Ambush.SetMaxChallengeWaves") and listed("Ambush.SetMaxBossChallengeWaves"), "REPENTOGON.Implemented lists the setters")
++    Isaac.ExecuteCommand("goto s.challenge.0")
++    wait(60)
++  end)
++  step(function()
++    say("room type " .. room():GetType())
++    check(room():GetType() == RoomType.ROOM_CHALLENGE, "in a challenge room")
++    Ambush.StartChallenge()
++    check(B.r8(amb() + 0x20) == 1, "the ambush is active")
++    wait_frames = 0
++    wait(2400, function()
++      wait_frames = wait_frames + 1
++      local w = Ambush.GetCurrentWave()
++      if w > maxwave then maxwave = w say("wave " .. w .. " at wait frame " .. wait_frames) end
++      for _, e in ipairs(Isaac.GetRoomEntities()) do
++        if e:IsActiveEnemy(false) and e:IsVulnerableEnemy() then e:Kill() end
++      end
++      if B.r8(amb() + 0x20) == 0 and wait_frames > 60 then cleared_at = wait_frames return true end
++      return false
++    end)
++  end)
++  step(function()
++    say("ambush ended at wait frame " .. tostring(cleared_at) .. ", highest wave counter " .. maxwave .. ", wanted maximum " .. want)
++    check(cleared_at ~= nil, "the challenge ended (active byte back to 0)")
++    check(maxwave == want, "the wave counter ran to the maximum " .. want .. " (highest seen " .. maxwave .. ")")
++  end)
++else
++  step(function() say("unknown phase") end)
++end
++
++-- MC_POST_RENDER, not MC_POST_UPDATE: the game does not update while the pause screen is open, so the pause phase
++-- would never advance.
++mod:AddCallback(M.MC_POST_RENDER, function()
++  frame = frame + 1
++  if frame < 5 then return end
++  if waiting then
++    if wait_cond() then waiting = false
++    else
++      wait_left = wait_left - 1
++      if wait_left <= 0 then waiting = false else return end
++    end
++  end
++  if frame % 3 ~= 0 then return end
++  i = i + 1
++  local f = steps[i]
++  if not f then
++    if i == #steps + 1 then B.log(string.format("lab_hook_h_two: DONE %d PASS %d FAIL", pass, fail)) end
 +    return
 +  end
 +  local ok, err = pcall(f)
@@ -44403,7 +45064,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..6136b3b 100644
+index 4175f07..f00066e 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -44462,7 +45123,7 @@ index 4175f07..6136b3b 100644
    rearm = function() arm(nil) end,
  }
 -for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_hooks.lua" }) do
-+for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_beam.lua", "api_player_fields.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_ambush.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_entity_more.lua", "api_player_health.lua", "api_npc.lua", "api_tears_more.lua", "api_eid.lua", "api_pickup_more.lua", "api_player_items.lua", "api_game_misc.lua", "api_rooms_more.lua", "api_cacheflags.lua", "api_hooks.lua", "api_hooks_hud.lua", "api_framectx.lua", "api_render.lua", "api_weapons.lua", "api_room_hooks.lua", "api_leftovers.lua", "api_charsel.lua", "api_throw_loot.lua", "api_gfx.lua", "api_isaac_misc.lua", "api_misc_b.lua", "api_locate.lua", "api_modhot.lua", "api_stage_config.lua", "api_data_values.lua", "api_challenge_param.lua", "api_familiar_pickup.lua", "api_player_calls.lua", "api_npc_blood.lua", "api_player_easy.lua", "api_cb_grid_one.lua", "api_cb_lua.lua", "api_locate_more.lua", "api_engine_names.lua", "api_console.lua", "api_entity_config.lua", "api_player_rest.lua", "api_room_calls.lua", "api_grid_npc.lua", "api_host_misc.lua", "api_score_isaac.lua", "api_level_game.lua", "api_menus_stats.lua", "api_render_misc.lua", "api_menus_rest.lua", "api_cb_level.lua", "api_cb_pocket.lua", "api_level_itempool_misc.lua", "api_room_sets.lua", "api_npc_entity_misc.lua", "api_player_cooldowns.lua", "api_menus_more.lua", "api_cb_entity.lua", "api_image_render.lua", "api_cb_hud.lua", "api_options.lua", "api_cb_ending_labs.lua", "api_cb_music_menu.lua", "api_cb_pocket_two.lua", "api_cb_backdrop.lua", "api_hook_h_one.lua" }) do
++for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_beam.lua", "api_player_fields.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_ambush.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_entity_more.lua", "api_player_health.lua", "api_npc.lua", "api_tears_more.lua", "api_eid.lua", "api_pickup_more.lua", "api_player_items.lua", "api_game_misc.lua", "api_rooms_more.lua", "api_cacheflags.lua", "api_hooks.lua", "api_hooks_hud.lua", "api_framectx.lua", "api_render.lua", "api_weapons.lua", "api_room_hooks.lua", "api_leftovers.lua", "api_charsel.lua", "api_throw_loot.lua", "api_gfx.lua", "api_isaac_misc.lua", "api_misc_b.lua", "api_locate.lua", "api_modhot.lua", "api_stage_config.lua", "api_data_values.lua", "api_challenge_param.lua", "api_familiar_pickup.lua", "api_player_calls.lua", "api_npc_blood.lua", "api_player_easy.lua", "api_cb_grid_one.lua", "api_cb_lua.lua", "api_locate_more.lua", "api_engine_names.lua", "api_console.lua", "api_entity_config.lua", "api_player_rest.lua", "api_room_calls.lua", "api_grid_npc.lua", "api_host_misc.lua", "api_score_isaac.lua", "api_level_game.lua", "api_menus_stats.lua", "api_render_misc.lua", "api_menus_rest.lua", "api_cb_level.lua", "api_cb_pocket.lua", "api_level_itempool_misc.lua", "api_room_sets.lua", "api_npc_entity_misc.lua", "api_player_cooldowns.lua", "api_menus_more.lua", "api_cb_entity.lua", "api_image_render.lua", "api_cb_hud.lua", "api_options.lua", "api_cb_ending_labs.lua", "api_cb_music_menu.lua", "api_cb_pocket_two.lua", "api_cb_backdrop.lua", "api_hook_h_one.lua", "api_hook_h_two.lua" }) do
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)
@@ -44836,7 +45497,7 @@ index 1a209cf..8d72794 100644
      else if (GL.has(name)) { used++; if (!HAVECLASS.has(name)) missing.push(name); }
      else if (name.startsWith('MC_')) { const id = CB.get(name); if (id >= 1000) { used++; if (!HAVEID.has(id)) missing.push(name); } }
 diff --git a/scripts/recomp/rgon/tools/hook_table.py b/scripts/recomp/rgon/tools/hook_table.py
-index 0d1d8bd..e604232 100644
+index 0d1d8bd..b587866 100644
 --- a/scripts/recomp/rgon/tools/hook_table.py
 +++ b/scripts/recomp/rgon/tools/hook_table.py
 @@ -68,7 +68,7 @@ HOOKS = [
@@ -44848,7 +45509,7 @@ index 0d1d8bd..e604232 100644
      (21, "Game::RestoreState", 0x006bb790, "sig", None, ""),
      (22, "Room::SpawnGridEntity", 0x007ebca0, "reg", None, ""),
      (23, "GridEntity::Init", 0x00709db0, "sig", None, ""),
-@@ -206,6 +206,281 @@ HOOKS = [
+@@ -206,6 +206,288 @@ HOOKS = [
       "character it sets [this+5] from Menu_Character_Entry::IsCharacterAvailable (0x0094d64a, 0x0094d657) and "
       "shows layers 4..15 or 16 of the big page; for a mod's (selected id [this+0x10] >= 0x12, 0x0094d62d) it "
       "always sets [this+5] = 1 (0x0094d700)"),
@@ -45118,6 +45779,13 @@ index 0d1d8bd..e604232 100644
 +    # worker hook-h1 (final hook wave, slots 357-359, 365-368)
 +    (357, "Entity::IsFlying", 0x006ac6c0, "asm", 0, "Entity::IsFlying, thiscall no arguments; signature `8b81????????85c074??83f80374??83f80174??83f80274??32c0` matches once; two plain `ret` (0x006ac6db, 0x006ac6de); 20 direct callers; the game's Lua binding pushes it as Entity:IsFlying"),
 +    (358, "PlayerManager::SpawnCoPlayerBaby", 0x009b98e0, "asm", 4, "PlayerManager::SpawnCoPlayerBaby(int babyID); `ret 4` (0x009b9955, 0x009b9c0e); 4 callers, one is spawn_selected_baby 0x009bd3b0 at 0x009bd49a (push -1)"),
++    # worker hook-h2 (final hook wave part 2, slots 376, 389, 398, 400-439)
++    (376, "Level::HasMirrorDimension", 0x0074ef70, "asm", 0, "Level::HasMirrorDimension(), thiscall on the Level, plain `ret`; 0x0074ef70 (unique `...83fa02`), 15 callers; stage [this], stage type [this+4], greed difficulty [game+0x269c8] 2 or 3"),
++    (389, "Level::HasAbandonedMineshaft", 0x0074efd0, "asm", 0, "Level::HasAbandonedMineshaft(), thiscall on the Level, plain `ret`; 0x0074efd0 (unique `...83fa04`), 19 callers; same shape as HasMirrorDimension with stage 4 (3 with Curse of the Labyrinth)"),
++    (406, "ItemOverlay::Update", 0x009aca90, "asm", 4, "ItemOverlay::Update(bool), thiscall on game+0x1c034, `ret 4` (0x009acac1, 0x009acf02, 0x009acf98, 0x009acfcf); signature `558bec83ec085356578bf98b07` matches once; callers 0x006fa17d, 0x006fb5a2, 0x0092ff5b"),
++    (407, "ItemOverlay::Render", 0x009acfe0, "asm", 0, "ItemOverlay::Render(), thiscall on game+0x1c034, plain `ret` (0x009ad20a); state [this] 0 or 1 returns at once, id [this+4], 0x2d special; its one caller is Game::Render at 0x006fc3c9 (`lea ecx,[edi+0x1c034]`)"),
++    (408, "PauseScreen::Render", 0x009b7190, "asm", 0, "PauseScreen::Render(), thiscall on game+0x23a74, plain `ret` (0x009b7467 and four more); draws the sprites at +0x2c and +0x140; its one caller is Game::Render at 0x006fc5b7 (only when the state word is not 0)"),
++    (398, "GetLevelName", 0x00745ca0, "asm", 0, "GetLevelName(std::string* out<ecx>, stage<edx>, stage type, curse, basement number, jumble, mode), the caller pops five stack words (`add esp, 0x14`); plain `ret` at 0x00746094; six direct callers, one is Level::GetName 0x007460b0"),
 +    (343, "RoomTransition::Render", 0x00832850, "asm", 0,"RoomTransition::Render, thiscall no arguments, ecx = game+0x1b83c; its one caller (0x006fc0a1 in Game::Render) calls it only while the game state is 2 or 3 (a transition); six plain `ret` (0x00832be9 .. 0x0083300e). The retired slot 12 note (a false signature match for the zhl Render) was about the signature, not this address"),
 +    # wave 11, worker cb-backdrop: the backdrop render passes and the room's lighting (ecx = the Backdrop at room+0x1bc8, or the Room)
 +    (382, "Backdrop::RenderWalls", 0x0093f1d0, "asm", 0x30, "Backdrop::RenderWalls(Vector const* offset, ColorMod color: eleven floats by value), thiscall on room+0x1bc8; four `ret 0x30`; Room::Render calls it at 0x0080feff with the ColorMod at room+0x72d0, the water-room pass at 0x00821281; REPENTOGON's byte signature does not match this build"),
@@ -45130,16 +45798,16 @@ index 0d1d8bd..e604232 100644
  ]
  # the entity classes' virtual functions: slots 100 + 12 * k + class index
  _k = 0
-@@ -213,7 +488,7 @@ for _fn in ("Init", "Update", "Render", "TakeDamage", "HandleCollision"):
+@@ -213,7 +495,7 @@ for _fn in ("Init", "Update", "Render", "TakeDamage", "HandleCollision"):
      for _i, _cls in enumerate(ENTITY_CLASSES):
          HOOKS.append((100 + 12 * _k + _i, "%s::%s" % (_cls, _fn), None, "vt", None, ""))
      _k += 1
 -MAX_SLOTS = 192
-+MAX_SLOTS = 400
++MAX_SLOTS = 440
  
  # Round 110: instruction hooks (lift_patches.py RGON_INSN_HOOKS): a handler right
  # before one instruction inside a function, which reads and writes the registers
-@@ -280,6 +555,250 @@ INSN_HOOKS = [
+@@ -280,6 +562,260 @@ INSN_HOOKS = [
       "before 0x008f89c4, which every way reaches (the target of `jb` at 0x008f8994), and drawn after it "
       "(0x008f8a10..). Called by the wheel 0x0094bee0 (return address 0x0094c44a) and by 0x00982100 "
       "(0x0098256a). REPENTOGON's signature for its RenderCustomCharacterPortraits matches nothing here"),
@@ -45387,10 +46055,20 @@ index 0d1d8bd..e604232 100644
 +     "`mov ecx,[0xc71678]; push 3; call HasSeedEffect; test al,al; jne 0x79ee43` in the giant 0x00794e50 (split part), edi = the player; jumping to 0x79ee43 takes the camo path"),
 +    (368, "Room::SpawnClearAward@MegaSatanEnding", 0x007fb250, 0x007fc05f, (0x007fc073,),
 +     "boss id 0x37 (Mega Satan) branch of the room-clear function 0x007fb250: `cmp [ebp-0x74],0; je 0x7fc104; cmp [ebp-0x65],0; je 0x7fc104` else the portal path 0x007fc073; 0x7fc104 is `Game::End(8)`; going to 0x7fc073 suppresses the ending"),
++    # worker hook-h2
++    (400, "Room::TrySpawnSpecialQuestDoor@StageTypeTest", 0x008279d0, 0x008279e6, (0x008279f4, 0x00827a9d),
++     "`cmp ecx, 4; je 0x8279f4; cmp ecx, 5; jne 0x827a9d` at the start of TrySpawnSpecialQuestDoor: ecx = stage type, ebx = stage; 0x8279f4 goes on to the quest tests, 0x827a9d answers false"),
++    (401, "Ambush::Update@MaxWaves", 0x00834350, 0x008343ac, (),
++     "`xor ebx,ebx; cmp eax,1; setne bl; add ebx,2` (eax = the room subtype, 1 a boss challenge): ebx is the wave maximum compared with [ambush+0x24] at 0x008343bd; edi = the Ambush"),
++    (402, "Room::SpawnSavedGrid@CopyA", 0x007ed897, 0x007ee65f, (0x007ee664,),
++     "`call 0x70b2e0` (CreateGridEntity(type<ecx>, index<edx>), plain ret) of the room's saved-grid spawn, chunk 0x007ed897: ecx = type, edx = index, edi = variant, [ebp-0x5c] = var data, [ebp-0x44] = seed; going to 0x007ee664 with eax = 0 spawns nothing"),
++    (403, "Room::SpawnSavedGrid@CopyB", 0x007ed8ea, 0x007ee65f, (0x007ee664,), "the same instruction, lifted chunk 0x007ed8ea"),
++    (404, "Room::SpawnSavedGrid@CopyC", 0x007ed8ee, 0x007ee65f, (0x007ee664,), "the same instruction, lifted chunk 0x007ed8ee"),
++    (405, "Room::SpawnSavedGrid@CopyD", 0x007ed926, 0x007ee65f, (0x007ee664,), "the same instruction, lifted chunk 0x007ed926"),
  ]
  
  
-@@ -293,7 +812,8 @@ def check_insn(pe_root, taken):
+@@ -293,7 +829,8 @@ def check_insn(pe_root, taken):
          seen.add(slot)
          f = run_pequery(pe_root, "func", "0x%08x" % iva)
          m = re.search(r"start 0x([0-9a-f]+)\s+end 0x([0-9a-f]+)", f)

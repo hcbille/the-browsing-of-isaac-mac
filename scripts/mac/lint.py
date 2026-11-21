@@ -1184,7 +1184,33 @@ def rule_hook_h_one_names_in_lab(fs):
             yield (RGON + '/lab_hook_h_one.lua', 0, 'call %s.%s in a check (getter by read-back, setter by effect, action by the game\'s reaction), or leave it out of api_hook_h_one.lua' % (cls, name))
 
 
-RULES = [rule_home_paths, rule_layer_files_loaded, rule_frame_line_prefix, rule_part_loads_part, rule_lab_prints_done, rule_inert_not_implemented, rule_ctor_implemented_name, rule_host_math_header, rule_image_render_not_registered, rule_layer_setsize_is_scale, rule_hurt_func_source, rule_global_pointer_plus_offset, rule_status_files_in_notes, rule_flip_default, rule_const_table_fallback, rule_lua_vararg_middle, rule_lua_mixed_table_index, rule_room_transition_stand_in, rule_roomconfig_both_tables, rule_orphan_starts_packed, rule_stale_enum_post_shuffle, rule_fast_setjmp, rule_gate_class_aware, rule_backlog_narrowing, rule_backlog_class_alias, rule_census_false_positives, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_callback_count_vs_frames, rule_entity_methods_in_lab, rule_tears_methods_in_lab, rule_read_of_call_result, rule_type_of_callback_result, rule_item_name_is_a_key, rule_conception_pairing, rule_health_field_offsets, rule_cacheflag_literals, rule_lua_format_options, rule_host_string_to_guest, rule_pgrep_game_by_name, rule_web_host_mem_base, rule_insn_hook_giant_entry, rule_stdstring_read, rule_add_cache_flags_one_arg, rule_misc_b_methods_in_lab, rule_data_values_names_in_lab, rule_host_misc_names_in_lab, rule_options_setters_take_last_argument, rule_scan_global_assignment, rule_locate_names_in_lab, rule_familiar_pickup_names_in_lab, rule_npc_entity_misc_names_in_lab, rule_player_calls_names_in_lab, rule_console_box_drawn_in_console_hook, rule_free_only_own_string_buffers, rule_console_game_lines_whitelisted, rule_lua_keyword_table_key, rule_misnamed_collectible_enums, rule_player_rest_names_in_lab, rule_lab_check_never_fails, rule_grid_npc_names_in_lab, rule_room_sets_names_in_lab, rule_menus_rest_names_in_lab, rule_image_render_names_in_lab, rule_player_cooldowns_names_in_lab, rule_stride_divisibility_only, rule_menus_more_names_in_lab, rule_entity_initseed_offset, rule_hook_h_one_names_in_lab]
+def rule_hook_h_two_names_in_lab(fs):
+    """Every name api_hook_h_two.lua registers (method / static / a string callback id) is named in lab_hook_h_two.lua (wave 11, worker hook-h2)."""
+    src = text_of(RGON + '/api_hook_h_two.lua')
+    lab = text_of(RGON + '/lab_hook_h_two.lua')
+    if src is None or lab is None:
+        return
+    names = set(re.findall(r'method\("(\w+)", "(\w+)"', src))
+    names |= set(re.findall(r'static\(\w+, "(\w+)", "(\w+)"', src))
+    for cls, name in sorted(names):
+        if name not in lab:
+            yield (RGON + '/lab_hook_h_two.lua', 0, 'call %s.%s in a check (getter by read-back, setter by effect), or leave it out of api_hook_h_two.lua' % (cls, name))
+
+
+def rule_lab_driver_on_update_with_pause(fs):
+    """A lab that opens the pause menu (PauseMenu.SetState) must drive its steps from MC_POST_RENDER, never MC_POST_UPDATE."""
+    for f in fs:
+        if not (f.startswith(RGON + '/lab_') and f.endswith('.lua')):
+            continue
+        t = text_of(f)
+        if t is None or 'PauseMenu.SetState(1)' not in t or 'wait_left' not in t:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            if 'AddCallback(M.MC_POST_UPDATE' in line or 'AddCallback(ModCallbacks.MC_POST_UPDATE' in line:
+                yield (f, n, 'the game stops updating while the pause screen is open, so a step driver on MC_POST_UPDATE hangs there: drive the steps from MC_POST_RENDER')
+
+
+RULES = [rule_home_paths, rule_layer_files_loaded, rule_frame_line_prefix, rule_part_loads_part, rule_lab_prints_done, rule_inert_not_implemented, rule_ctor_implemented_name, rule_host_math_header, rule_image_render_not_registered, rule_layer_setsize_is_scale, rule_hurt_func_source, rule_global_pointer_plus_offset, rule_status_files_in_notes, rule_flip_default, rule_const_table_fallback, rule_lua_vararg_middle, rule_lua_mixed_table_index, rule_room_transition_stand_in, rule_roomconfig_both_tables, rule_orphan_starts_packed, rule_stale_enum_post_shuffle, rule_fast_setjmp, rule_gate_class_aware, rule_backlog_narrowing, rule_backlog_class_alias, rule_census_false_positives, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_callback_count_vs_frames, rule_entity_methods_in_lab, rule_tears_methods_in_lab, rule_read_of_call_result, rule_type_of_callback_result, rule_item_name_is_a_key, rule_conception_pairing, rule_health_field_offsets, rule_cacheflag_literals, rule_lua_format_options, rule_host_string_to_guest, rule_pgrep_game_by_name, rule_web_host_mem_base, rule_insn_hook_giant_entry, rule_stdstring_read, rule_add_cache_flags_one_arg, rule_misc_b_methods_in_lab, rule_data_values_names_in_lab, rule_host_misc_names_in_lab, rule_options_setters_take_last_argument, rule_scan_global_assignment, rule_locate_names_in_lab, rule_familiar_pickup_names_in_lab, rule_npc_entity_misc_names_in_lab, rule_player_calls_names_in_lab, rule_console_box_drawn_in_console_hook, rule_free_only_own_string_buffers, rule_console_game_lines_whitelisted, rule_lua_keyword_table_key, rule_misnamed_collectible_enums, rule_player_rest_names_in_lab, rule_lab_check_never_fails, rule_grid_npc_names_in_lab, rule_room_sets_names_in_lab, rule_menus_rest_names_in_lab, rule_image_render_names_in_lab, rule_player_cooldowns_names_in_lab, rule_stride_divisibility_only, rule_menus_more_names_in_lab, rule_entity_initseed_offset, rule_hook_h_one_names_in_lab, rule_hook_h_two_names_in_lab, rule_lab_driver_on_update_with_pause]
 
 def main():
     if '--list' in sys.argv:
