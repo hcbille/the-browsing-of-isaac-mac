@@ -112,7 +112,7 @@ game.
   `1.1.3-unstable-94-g0cd8f863f`, not a release. It targets game v1.9.7.12; this build
   runs v1.9.7.17 (Steam build 22878971), which is why every struct field is re-measured.
   Function and callback counts are taken against this snapshot. The layer reports itself
-  to mods as `REPENTOGON.Version` `"1.1.2"` (what `REPENTOGON.MeetsVersion` compares).
+  to mods as `REPENTOGON.Version` `"1.1.3"` (what `REPENTOGON.MeetsVersion` compares).
 - **Progress:** 1,601 of its 1,727 functions and 378 of its 380 callbacks, the ones
   the tested mods use coming first. `scripts/mac/rgon_census.py` compares the layer
   against a REPENTOGON checkout, and `docs/mac/layer-gaps.md` has the details.

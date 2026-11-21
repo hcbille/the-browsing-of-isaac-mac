@@ -147,7 +147,7 @@ index 03f7af3..5389fc9 100644
      cpu.FS_OFFSET = ISAAC_TEB_VA;
      cpu.ESP = ISAAC_STACK_TOP_VA - 0x4000;
 diff --git a/scripts/recomp/host/src/host_gl_clientarrays.c b/scripts/recomp/host/src/host_gl_clientarrays.c
-index dedfd58..dbe738f 100644
+index dedfd58..66ed923 100644
 --- a/scripts/recomp/host/src/host_gl_clientarrays.c
 +++ b/scripts/recomp/host/src/host_gl_clientarrays.c
 @@ -95,7 +95,7 @@
@@ -159,35 +159,138 @@ index dedfd58..dbe738f 100644
  #include <GLES3/gl3.h>
  #else
  /* Host-test build: the logic is exercised without a GL context. */
-@@ -369,7 +369,7 @@ static uint32_t ring_put(GLenum target, gl_ring *r, uint32_t initial,
+@@ -152,7 +152,8 @@ static attrib_state g_attribs[ISAAC_MAX_ATTRIBS];
+  * dies with the draws that read it). 4 MB holds ~90 frames of the menus'
+  * 45 KB a frame. The head is reported by isaac_gl_ring_head() for the
+  * selftest. */
+-typedef struct { GLuint buf; uint32_t cap, head, orphans, gen; } gl_ring;   /* gen: bumps when the storage is replaced */
++#define RING_POOL 16      /* buffers each ring rotates through, one step every RING_ROT_DRAWS draws */
++typedef struct { GLuint buf; uint32_t cap, head, orphans, gen; GLuint bufs[RING_POOL]; uint32_t caps[RING_POOL]; unsigned cur; } gl_ring;   /* gen: bumps when the storage is replaced */
+ /* Round 48: the engine draws quads with the same six-index pattern over and
+  * over; an index block identical to the last one uploaded is drawn from the
+  * ring offset it already has, as long as that storage is still the one it
+@@ -240,8 +241,8 @@ void isaac_gl_quad_census(uint32_t *quad_draws, uint32_t *other_blocks, uint32_t
+     if (pattern) memcpy(pattern, g_quad_pat, sizeof g_quad_pat);
+ }
+ static gl_ring g_vring, g_iring;
+-#define RING_VERTEX_BYTES (4u << 20)
+-#define RING_INDEX_BYTES  (1u << 20)
++#define RING_VERTEX_BYTES (512u << 10)       /* per pool buffer (it was one 4 MB buffer before the rotation) */
++#define RING_INDEX_BYTES  (128u << 10)
+ 
+ /* Round 107: the attribute state WebGL is sent only when it changes. In the
+  * heavy room 61% of all WebGL calls per frame were attribute churn: the engine
+@@ -323,6 +324,17 @@ static void point_attrib(unsigned i, const attrib_state *a, uint32_t off) {
+ /* stats, reported by isaac_gl_report() -- this is a hot path, so it is
+  * measured rather than guessed at. */
+ static uint64_t g_draws, g_indices_scanned, g_vertex_bytes, g_index_bytes;
++#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
++#include <time.h>
++static uint64_t g_sub_ns, g_sub_n, g_sub_slow;
++static void timed_sub(GLenum t, GLintptr o, GLsizeiptr n, const void *d) {
++    uint64_t a = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++    glBufferSubData(t, o, n, d);
++    uint64_t b = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - a;
++    g_sub_ns += b; ++g_sub_n; if (b > 400000) ++g_sub_slow;
++}
++void isaac_gl_subtimes(uint64_t *ns, uint64_t *n, uint64_t *slow) { *ns = g_sub_ns; *n = g_sub_n; *slow = g_sub_slow; }
++#endif
+ 
+ static unsigned type_size(GLenum t) {
+     switch (t) {
+@@ -345,8 +357,36 @@ void isaac_gl_reset_state(void) {
+ }
+ 
+ static void ensure_buffers(void) {
+-    if (!g_vring.buf) glGenBuffers(1, &g_vring.buf);
+-    if (!g_iring.buf) glGenBuffers(1, &g_iring.buf);
++    if (!g_vring.buf) { glGenBuffers(1, &g_vring.buf); g_vring.bufs[0] = g_vring.buf; }
++    if (!g_iring.buf) { glGenBuffers(1, &g_iring.buf); g_iring.bufs[0] = g_iring.buf; }
++}
++
++/* Every RING_ROT_DRAWS draws each ring moves on to the next of RING_POOL buffers and starts at offset 0.
++ * ANGLE's Metal backend tracks a buffer, not the ranges drawn from it, and commits its command buffer about every
++ * 100 draws. A glBufferSubData into a buffer that a committed, unfinished command buffer reads (even at an offset
++ * no draw touches) waits for the GPU. With one ring that was a ~6.7 ms wait every ~100 draws on Downpour (water
++ * reflection makes the GPU the slower side): 4.3 ms of an 11.8 ms frame inside glBufferSubData, against 2.5 ms on
++ * Basement II. Rotating once per presented frame did not help (the wait comes from the same frame's earlier draws).
++ * A buffer is now rewritten RING_POOL * RING_ROT_DRAWS draws later (several frames).
++ * ISAAC_GL_RING_DRAWS=0 turns it off, another number changes the step. */
++static void ring_next(gl_ring *r) {
++    if (!r->buf) return;                       /* never used yet */
++    r->caps[r->cur] = r->cap;
++    r->cur = (r->cur + 1u) % RING_POOL;
++    if (!r->bufs[r->cur]) { glGenBuffers(1, &r->bufs[r->cur]); r->caps[r->cur] = 0; }
++    r->buf = r->bufs[r->cur];
++    r->cap = r->caps[r->cur];
++    r->head = 0;
++    ++r->gen;                                  /* cached segment bases and index blocks name the old storage */
++}
++static int g_rot_every = -1;
++static uint32_t g_rot_count;
++static void rotate_rings(void) {
++    if (g_rot_every < 0) { const char *e = getenv("ISAAC_GL_RING_DRAWS"); g_rot_every = e && *e ? atoi(e) : 16; }
++    if (g_rot_every <= 0 || ++g_rot_count < (uint32_t)g_rot_every) return;
++    g_rot_count = 0;
++    ring_next(&g_vring);
++    ring_next(&g_iring);
+ }
+ 
+ /* Append `bytes` (from `src`, or reserve them when src is NULL) to a ring and
+@@ -369,8 +409,8 @@ static uint32_t ring_put(GLenum target, gl_ring *r, uint32_t initial,
          ++r->orphans;
      }
      uint32_t off = r->head;
 -#ifdef __EMSCRIPTEN__
+-    if (src) glBufferSubData(target, (GLintptr)off, (GLsizeiptr)bytes, src);
 +#if defined(__EMSCRIPTEN__) || (defined(ISAAC_NATIVE) && ISAAC_NATIVE)
-     if (src) glBufferSubData(target, (GLintptr)off, (GLsizeiptr)bytes, src);
++    if (src) timed_sub(target, (GLintptr)off, (GLsizeiptr)bytes, src);
  #else
      (void)src;
-@@ -502,7 +502,7 @@ static uint32_t stage_attributes(uint32_t vertex_count, uint32_t shift_limit) {
+ #endif
+@@ -502,8 +542,8 @@ static uint32_t stage_attributes(uint32_t vertex_count, uint32_t shift_limit) {
                  uint64_t at = g_seg.base + k * unit;
                  if (at + bytes <= g_vring.cap && 4u * k + vertex_count <= shift_limit) {
                      bind_array_buffer(g_vring.buf);
 -#ifdef __EMSCRIPTEN__
+-                    glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)at, (GLsizeiptr)bytes, isaac_g(base));
 +#if defined(__EMSCRIPTEN__) || (defined(ISAAC_NATIVE) && ISAAC_NATIVE)
-                     glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)at, (GLsizeiptr)bytes, isaac_g(base));
++                    timed_sub(GL_ARRAY_BUFFER, (GLintptr)at, (GLsizeiptr)bytes, isaac_g(base));
  #endif
                      g_vring.head = (uint32_t)at + ((bytes + 15u) & ~15u);
-@@ -544,7 +544,7 @@ static uint32_t stage_attributes(uint32_t vertex_count, uint32_t shift_limit) {
+                     g_vertex_bytes += bytes;
+@@ -544,8 +584,8 @@ static uint32_t stage_attributes(uint32_t vertex_count, uint32_t shift_limit) {
          if (!a->enabled || !a->configured || !a->client_ptr) continue;
          if (vertex_count) off = attribute_offset(off, a);
          uint32_t bytes = attribute_span(a, vertex_count);
 -#ifdef __EMSCRIPTEN__
+-        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)(at + off), (GLsizeiptr)bytes,
 +#if defined(__EMSCRIPTEN__) || (defined(ISAAC_NATIVE) && ISAAC_NATIVE)
-         glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)(at + off), (GLsizeiptr)bytes,
++        timed_sub(GL_ARRAY_BUFFER, (GLintptr)(at + off), (GLsizeiptr)bytes,
                          isaac_g(a->client_ptr));
  #endif
-@@ -619,7 +619,7 @@ void isaac_gl_draw_arrays_instanced(GLenum mode, GLint first, GLsizei count,
+         point_attrib(i, a, at + off);
+@@ -559,6 +599,7 @@ void isaac_gl_draw_elements(GLenum mode, GLsizei count, GLenum type,
+                             uint32_t indices_va) {
+     if (count <= 0) return;
      ensure_buffers();
++    rotate_rings();
+ 
+     int ok = 0;
+     uint32_t maxi = max_index(indices_va, count, type, &ok);
+@@ -605,6 +646,7 @@ void isaac_gl_draw_elements(GLenum mode, GLsizei count, GLenum type,
+ void isaac_gl_draw_arrays(GLenum mode, GLint first, GLsizei count) {
+     if (count <= 0) return;
+     ensure_buffers();
++    rotate_rings();
+     sync_enables();                                  /* round 107 */
+     /* Exact: no scan needed, the range is stated by the call. The draw may
+      * start past the pointers' base (round 107): first + v0. */
+@@ -617,9 +659,10 @@ void isaac_gl_draw_arrays_instanced(GLenum mode, GLint first, GLsizei count,
+                                     GLsizei prims) {
+     if (count <= 0 || prims <= 0) return;
+     ensure_buffers();
++    rotate_rings();
      sync_enables();                                  /* round 107 */
      uint32_t v0 = stage_attributes((uint32_t)first + (uint32_t)count, first >= 0 ? (1u << 30) : 0u);
 -#ifdef __EMSCRIPTEN__
@@ -195,6 +298,18 @@ index dedfd58..dbe738f 100644
      glDrawArraysInstanced(mode, first + (GLint)v0, count, prims);
  #else
      (void)v0;
+@@ -628,6 +671,11 @@ void isaac_gl_draw_arrays_instanced(GLenum mode, GLint first, GLsizei count,
+     ++g_draws;
+ }
+ 
++/* per-interval counters for the Host's frame stats line (native/mac/host/mac_gl.c) */
++void isaac_gl_counters(uint64_t *draws, uint64_t *vbytes, uint64_t *ibytes, uint32_t *vorph, uint32_t *iorph) {
++    *draws = g_draws; *vbytes = g_vertex_bytes; *ibytes = g_index_bytes; *vorph = g_vring.orphans; *iorph = g_iring.orphans;
++}
++
+ void isaac_gl_report(void) {
+     isaac_log("[isaac][gl] client-array emulation: %llu draws, %llu indices "
+               "scanned, %llu vertex bytes staged, %llu index bytes staged; "
 diff --git a/scripts/recomp/host/src/host_gl_webgl.c b/scripts/recomp/host/src/host_gl_webgl.c
 index 98869fc..641d6c5 100644
 --- a/scripts/recomp/host/src/host_gl_webgl.c
@@ -9134,7 +9249,7 @@ index bf86106..ee0a537 100644
  gcall("Game", "AchievementUnlocksDisallowed", 0x00705080, "", "bool")
 diff --git a/scripts/recomp/rgon/api_game_misc.lua b/scripts/recomp/rgon/api_game_misc.lua
 new file mode 100644
-index 0000000..fece327
+index 0000000..94c0f12
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_game_misc.lua
 @@ -0,0 +1,433 @@
@@ -9195,7 +9310,7 @@ index 0000000..fece327
 +------------------------------------------------------------------------------
 +-- REPENTOGON.MeetsVersion, WeightedOutcomePicker's constructor
 +------------------------------------------------------------------------------
-+-- rgon.lua's R.MeetsVersion compares the numbers of "1.1.2" (REPENTOGON's also lets a letter suffix decide a tie)
++-- rgon.lua's R.MeetsVersion compares the numbers of "1.1.3" (REPENTOGON's also lets a letter suffix decide a tie)
 +if type(R.MeetsVersion) == "function" then R.Implemented["REPENTOGON.MeetsVersion"] = true end
 +if rawget(_G, "WeightedOutcomePicker") ~= nil and R.Implemented["WeightedOutcomePicker.AddOutcomeWeight"] then
 +  R.Implemented["WeightedOutcomePicker.WeightedOutcomePicker"] = true
@@ -44833,6 +44948,60 @@ index 0000000..2e0863c
 +    if not ok then fail = fail + 1 say("FAIL lab raised: " .. tostring(err)) say(string.format("DONE %d PASS, %d FAIL", pass, fail)) end
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_rooms.lua b/scripts/recomp/rgon/lab_rooms.lua
+new file mode 100644
+index 0000000..4565b0c
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_rooms.lua
+@@ -0,0 +1,48 @@
++-- lab_rooms.lua (scratch perf lab): ISAAC_LAB_CMD run once (stage change), then visit every room of the new floor,
++-- ISAAC_LAB_DWELL frames each (default 330), logging per-room mean/p95 frame time (Isaac.GetTime) and entity count.
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab rooms", 1)
++local cmd = B.env("ISAAC_LAB_CMD") or "stage 2c"
++local dwell = tonumber(B.env("ISAAC_LAB_DWELL")) or 330
++local wait, state, rooms, ri, last, samples, since = 0, "boot", {}, 0, nil, {}, 0
++local function now() return math.floor((os.clock and os.clock() or 0) * 1000000) end  -- microseconds of process CPU time (os.clock) per frame
++local function flush(tag)
++  if #samples < 20 then samples = {} return end
++  table.sort(samples)
++  local s = 0 for _, v in ipairs(samples) do s = s + v end
++  local r = Game():GetRoom()
++  B.log(string.format("lab_rooms: ROOM %s idx %d type %d shape %d ents %d n %d cpu us avg %.0f p95 %d max %d",
++    tag, Game():GetLevel():GetCurrentRoomIndex(), r:GetType(), r:GetRoomShape(), #Isaac.GetRoomEntities(), #samples,
++    s / #samples, samples[math.ceil(#samples * 0.95)], samples[#samples]))
++  samples = {}
++end
++mod:AddCallback(ModCallbacks.MC_ENTITY_TAKE_DMG, function(_, e) if e.Type == 1 then return false end end)
++mod:AddCallback(ModCallbacks.MC_POST_NEW_LEVEL, function()
++  local l = Game():GetLevel()
++  B.log(string.format("lab_rooms: NEW LEVEL stage %d type %d name '%s'", l:GetStage(), l:GetStageType(), l:GetName()))
++end)
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  wait = wait + 1
++  local t = now()
++  if last then samples[#samples + 1] = t - last end
++  last = t
++  if state == "boot" and wait == 60 then
++    B.log("lab_rooms: exec " .. cmd); Isaac.ExecuteCommand(cmd); state, since = "settle", wait
++  elseif state == "settle" and wait - since == 200 then
++    local lvl = Game():GetLevel()
++    for i = 0, lvl:GetRooms().Size - 1 do
++      local d = lvl:GetRooms():Get(i)
++      rooms[#rooms + 1] = { idx = d.SafeGridIndex, ty = d.Data.Type }
++    end
++    B.log("lab_rooms: " .. #rooms .. " rooms")
++    state, ri, since = "visit", 0, wait; samples = {}
++  elseif state == "visit" and wait - since >= dwell then
++    if ri > 0 then flush("v" .. ri) end
++    ri = ri + 1; since = wait
++    if rooms[ri] then
++      Game():ChangeRoom(rooms[ri].idx)
++      samples = {}
++    else state = "done"; B.log("lab_rooms: done") end
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_rooms_more.lua b/scripts/recomp/rgon/lab_rooms_more.lua
 new file mode 100644
 index 0000000..cbd0844
@@ -45408,6 +45577,34 @@ index 0000000..cdd4554
 +
 +  B.log(string.format("lab_shape_test: DONE %d PASS %d FAIL", pass, fail))
 +end)
+diff --git a/scripts/recomp/rgon/lab_stage.lua b/scripts/recomp/rgon/lab_stage.lua
+new file mode 100644
+index 0000000..4ea8b35
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_stage.lua
+@@ -0,0 +1,22 @@
++-- lab_stage.lua (scratch perf lab): in the start room run the console command ISAAC_LAB_CMD (e.g. "stage 2c"), log NEW LEVEL.
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab stage", 1)
++local cmd = B.env("ISAAC_LAB_CMD") or "stage 2c"
++local done, wait = false, 0
++mod:AddCallback(ModCallbacks.MC_POST_NEW_LEVEL, function()
++  local l = Game():GetLevel()
++  B.log(string.format("lab_stage: NEW LEVEL stage %d type %d name '%s' f%d", l:GetStage(), l:GetStageType(), l:GetName(), Isaac.GetFrameCount()))
++end)
++local cmds = {}
++for c in string.gmatch(cmd, "[^|]+") do cmds[#cmds + 1] = c end
++local i = 1
++mod:AddCallback(ModCallbacks.MC_POST_UPDATE, function()
++  wait = wait + 1
++  if wait >= 60 and (wait - 60) % 90 == 0 and cmds[i] then
++    B.log("lab_stage: exec " .. cmds[i] .. " ents " .. #Isaac.GetRoomEntities())
++    Isaac.ExecuteCommand(cmds[i])
++    i = i + 1
++  end
++end)
++mod:AddCallback(ModCallbacks.MC_ENTITY_TAKE_DMG, function(_, e) if e.Type == 1 then return false end end)
 diff --git a/scripts/recomp/rgon/lab_stage_config.lua b/scripts/recomp/rgon/lab_stage_config.lua
 new file mode 100644
 index 0000000..910c4ef
@@ -47128,9 +47325,18 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..59c4873 100644
+index 4175f07..4201d18 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
+@@ -45,7 +45,7 @@ local mathtype = math.type
+ 
+ -- The REPENTOGON release whose API this follows. A mod asks with
+ -- REPENTOGON.MeetsVersion("1.0.12") and the like.
+-local VERSION = "1.1.2"
++local VERSION = "1.1.3"
+ 
+ local R = {
+   Real = true,                 -- a mod reads this to tell a working API from a stub of its own
 @@ -72,7 +72,13 @@ end
  do
    local chunk, why = B.load("enums_ex.lua")

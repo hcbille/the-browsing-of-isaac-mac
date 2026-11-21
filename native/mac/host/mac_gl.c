@@ -295,6 +295,20 @@ static void stats_frame(uint64_t start, uint64_t end, uint32_t frame) {
                    g_st.first, frame, g_st.sum / g_st.n, 1000.0 * g_st.n / g_st.sum, g_st.min, g_st.max,
                    g_st.work_sum / g_st.n, g_st.work_max, g_st.slow,
                    p95(g_st_dt, g_st.n), p95(g_st_work, g_st.n));
+            {
+                extern void isaac_gl_counters(uint64_t *, uint64_t *, uint64_t *, uint32_t *, uint32_t *);
+                static uint64_t pd, pv, pi; static uint32_t pvo, pio;
+                uint64_t d, v, ib; uint32_t vo, io;
+                isaac_gl_counters(&d, &v, &ib, &vo, &io);
+                printf("[mac][gl] per frame: %.0f draws, %.1f KB vertex, %.1f KB index; ring orphans %u vertex / %u index in the interval\n",
+                       (double)(d - pd) / g_st.n, (double)(v - pv) / 1024.0 / g_st.n, (double)(ib - pi) / 1024.0 / g_st.n, vo - pvo, io - pio);
+                extern void isaac_gl_subtimes(uint64_t *, uint64_t *, uint64_t *);
+                static uint64_t pns, pn, psl; uint64_t ns, n, sl; isaac_gl_subtimes(&ns, &n, &sl);
+                printf("[mac][gl] bufferSubData per frame: %.1f calls, %.2f ms total, %.2f calls over 0.4 ms\n",
+                       (double)(n - pn) / g_st.n, (double)(ns - pns) / 1e6 / g_st.n, (double)(sl - psl) / g_st.n);
+                pns = ns; pn = n; psl = sl;
+                pd = d; pv = v; pi = ib; pvo = vo; pio = io;
+            }
             memset(&g_st, 0, sizeof g_st);
         }
     }

@@ -169,7 +169,7 @@ REPENTOGON's used, M missing: ...)`). Same fields, lower-cased folder as key:
 ```json
 {
   "version": 1,
-  "layer_version": "1.1.2",
+  "layer_version": "1.1.3",
   "game_version": "1.9.7.17",
   "implemented_names": 1043,
   "unsupported_names": 37,

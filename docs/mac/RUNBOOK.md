@@ -424,3 +424,39 @@ Status, the running wave and the open play checks live in `notes/current.md` (gi
    `max(i, 1)` with a float `i` and int-minus-float in Fiend Folio's loose `coloroffset_neon.fs`, used only by
    `Sprite:SetCustomShader` (not planned). A lab rerun needs the worker's exact env (`ISAAC_LAB_PHASE` and the like).
    `apply.sh` copies folders under `scripts/mac` with `cp -R` (test mods live in `scripts/mac/testmods/`).
+
+## 12. Finding a slowdown (recipe, from the Downpour II fix, 2026-11-21)
+
+Symptom: the user's `game.log` shows a floor or room with higher `game work` in the `[mac][frame]` lines. Method that found
+the cause in one pass; follow it in this order.
+
+1. **Save the log, read it with the tool, not by eye.** `cp game.log .scratch/orch/play-<time>.log`, then
+   `python3 scripts/mac/framestats.py <log>`: avg, game work, p95 and entity count per 600 frames with floor and room.
+   Separate the noise first: ~3 s stalls at floor loads are normal; check that logging is not the cost (`notes/perf.md`:
+   a log line is about 4 us, so 100k lines is not a slowdown). Find where the work rises (here: only Downpour II, even in
+   rooms with few entities, so it was not entity count and not one mod's room).
+2. **Reproduce windowed, same mods.** `scripts/mac/perf_floor.sh run <name> "stage 2c" 3200` forces the floor with the
+   debug console (`stage 2c` Downpour II, `stage 2` Basement II) and logs the same stats; run both floors with the same
+   support folder (`SUP=`) and the same enemies. `perf_floor.sh rooms` teleports through every room of the floor, one
+   interval each (a per-room table: type, work avg/p95, entities). Headless cannot show GPU or render cost (fake GL,
+   no frame stats), so use it only for Lua cost.
+3. **`sample` the main thread on the slow floor and on a control floor**, 10 s each (`perf_floor.sh sample`), and compare
+   shares per top frame, not totals: Lua VM/GC, mod callbacks, `guest_malloc`, lifted game code, GL. Here:
+   `glDrawElements` 27.6% vs 14.5%, and under it `stage_attributes` -> ANGLE -> `-[_MTLCommandBuffer waitUntilCompleted]`
+   19.1% vs 7.9%. The frame that differs between floors is the cause; everything else was the same.
+4. **Instrument the suspect, do not guess.** A timer around `glBufferSubData` (printed in the `[mac][gl]` stats lines)
+   showed one 6-7 ms call exactly every 100 draws: ANGLE Metal commits its command buffer about every 100 draws, and a
+   buffer write into a buffer an unfinished command buffer still reads waits for the GPU (it tracks whole buffers, not
+   ranges). The regular spacing is what named the mechanism.
+5. **Fix at the mechanism, and say what did not work.** The staging rings in `host_gl_clientarrays.c` now rotate through a
+   pool of 16 buffers every 16 draws (`ISAAC_GL_RING_DRAWS=0` turns it off). Rotating once per presented frame did not
+   help: the wait came from the same frame's earlier draws. Lint rule `gl_ring_rotates` keeps the rotation in all three
+   draw entry points. Result in the lab: Downpour II work 11.8 -> 8.4 ms, `glBufferSubData` 4.3 -> 0.23 ms per frame.
+6. **Verify by looking and by numbers**: a screenshot of the slow floor (reflections, HUD intact), the same lab before and
+   after on both floors, a clean exit. Then ask the user for a new play log and compare with `framestats.py`; the lab
+   uses a fresh character, so expect smaller absolute numbers than the user's.
+
+Lessons: windowed GL stalls live inside ANGLE, so `sample` and look for `waitUntilCompleted` under `stage_attributes`;
+compare against a control floor with identical mods; a mechanism with a regular period (every N draws) points at a
+batching or commit boundary; the controls to keep from the Layer's own cost are `notes/perf.md` (setjmp, Lua GC, malloc).
+
