@@ -791,7 +791,7 @@ index f083c69..5b5b9b0 100644
   * without marking the object for finalization: lapi.c lua_setmetatable's
   * LUA_TUSERDATA case less its luaC_checkfinalizer call (the index is read as
 diff --git a/scripts/recomp/host/src/host_rgon.c b/scripts/recomp/host/src/host_rgon.c
-index 25bd680..e2770fb 100644
+index 25bd680..22c4af0 100644
 --- a/scripts/recomp/host/src/host_rgon.c
 +++ b/scripts/recomp/host/src/host_rgon.c
 @@ -35,11 +35,13 @@
@@ -897,7 +897,25 @@ index 25bd680..e2770fb 100644
  }
  
  /* xmm(n [, value]) -> the low float of SSE register n (0..7) of the hooked
-@@ -383,8 +396,14 @@ static int gate_index(lua_State *L) {
+@@ -231,6 +244,17 @@ static int l_xmm(lua_State *L) {
+     return 1;
+ }
+ 
++/* st0([value]) -> the x87 ST0 of the hooked call (wave 11, cb-backdrop): in a function hook's after handler it is the float a
++ * function returns in st0 (Room::GetLightingAlpha); with a value, sets it (the lifted code keeps ST0 as a double in bytes 0..7). */
++static int l_st0(lua_State *L) {
++    if (!g_hook_cpu) return luaL_error(L, "rgon: st0 outside a hook's handler");
++    double d;
++    if (lua_gettop(L) >= 1) { d = (double)luaL_checknumber(L, 1); memcpy(g_hook_cpu->ST0, &d, 8); memset(g_hook_cpu->ST0 + 8, 0, 2); return 0; }
++    memcpy(&d, g_hook_cpu->ST0, 8);
++    lua_pushnumber(L, (lua_Number)d);
++    return 1;
++}
++
+ /* reg(name [, value]) -> a general register of the CpuState a handler is
+  * running for (round 110): "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi",
+  * "edi". In an instruction hook it is the register as it is at that
+@@ -383,8 +407,14 @@ static int gate_index(lua_State *L) {
      lua_pushnil(L);
      return 1;
  }
@@ -912,7 +930,7 @@ index 25bd680..e2770fb 100644
      lua_pushglobaltable(L);                                   /* 3 */
      lua_pushnil(L); lua_setfield(L, 3, "REPENTOGON");         /* the lookup must miss */
      if (!lua_getmetatable(L, 3)) { lua_newtable(L); lua_pushvalue(L, -1); lua_setmetatable(L, 3); }   /* 4 */
-@@ -416,20 +435,461 @@ static int l_load(lua_State *L) {
+@@ -416,20 +446,473 @@ static int l_load(lua_State *L) {
      if (luaL_loadbufferx(L, (const char *)src, n, chunk, "t") != LUA_OK) { lua_pushnil(L); lua_insert(L, -2); return 2; }
      return 1;
  }
@@ -1323,6 +1341,17 @@ index 25bd680..e2770fb 100644
 +int isaac_mac_sys_dialog(const char *title, const char *text, int icon, int buttons);
 +int isaac_mac_sys_set_icon(const uint8_t *rgba, int w, int h);
 +float isaac_input_wheel_now(void);
++int isaac_mac_sys_center_cursor(void);
++const char *isaac_mac_input_device_name(int idx);
++
++/* center_cursor() -> true when the cursor was moved (false headless or when the game window has no focus) */
++static int l_center_cursor(lua_State *L) { lua_pushboolean(L, isaac_mac_sys_center_cursor()); return 1; }
++/* device_name(idx) -> the input device's name (0 keyboard, 1.. the pads), nil when there is none */
++static int l_device_name(lua_State *L) {
++    const char *n = isaac_mac_input_device_name((int)luaL_checkinteger(L, 1));
++    if (n) lua_pushstring(L, n); else lua_pushnil(L);
++    return 1;
++}
 +
 +/* window_set_title(text) -> true when a window took it (false headless) */
 +static int l_window_set_title(lua_State *L) { lua_pushboolean(L, isaac_mac_sys_set_title(luaL_checkstring(L, 1))); return 1; }
@@ -1364,18 +1393,20 @@ index 25bd680..e2770fb 100644
      {"f2i", l_f2i}, {"i2f", l_i2f}, {"str", l_str}, {"stdstr", l_stdstr},
      {"alloc", l_alloc}, {"free", l_free}, {"call", l_call}, {"cfn", l_cfn}, {"obj", l_obj},
 -    {"hook", l_hook}, {"gate", l_gate}, {"log", l_log}, {"load", l_load}, {"env", l_env}, {"xmm", l_xmm}, {"registry", l_registry},
+-    {"reg", l_reg},
 +    {"hook", l_hook}, {"gate", l_gate}, {"log", l_log}, {"load", l_load}, {"save_read", l_save_read}, {"save_write", l_save_write}, {"env", l_env}, {"xmm", l_xmm}, {"registry", l_registry},
-     {"reg", l_reg},
++    {"reg", l_reg}, {"st0", l_st0},
 +    {"png_decode", l_png_decode}, {"png_size", l_png_size}, {"png_encode", l_png_encode}, {"fs_seed", l_fs_seed}, {"img_blit", l_img_blit},
 +    {"nanotime", l_nanotime},
 +#if defined(ISAAC_NATIVE) && ISAAC_NATIVE
 +    {"window_set_title", l_window_set_title}, {"window_title", l_window_title}, {"clip_set", l_clip_set}, {"clip_get", l_clip_get},
 +    {"dialog", l_dialog}, {"set_icon", l_set_icon}, {"wheel", l_wheel},
++    {"center_cursor", l_center_cursor}, {"device_name", l_device_name},
 +#endif
      {NULL, NULL},
  };
  
-@@ -442,6 +902,18 @@ void isaac_rgon_push_bridge(lua_State *L) {
+@@ -442,6 +925,18 @@ void isaac_rgon_push_bridge(lua_State *L) {
      /* round 110: this engine runs instruction hooks (lift_patches.py
       * RGON_INSN_HOOKS) and has reg(); a layer asks before it defines one */
      lua_pushinteger(L, 1); lua_setfield(L, -2, "INSN");
@@ -1394,7 +1425,7 @@ index 25bd680..e2770fb 100644
      /* round 103: Lua's own os library, for the layer to hand mods the four
       * functions of it REPENTOGON gives them (date, time, clock, difftime). The
       * game opens seven libraries by name and os is not one of them, so there
-@@ -579,6 +1051,9 @@ void isaac_rgon_hook_post(int slot, CpuState *restrict s, rgon_frame *f) {
+@@ -579,6 +1074,9 @@ void isaac_rgon_hook_post(int slot, CpuState *restrict s, rgon_frame *f) {
          ++g_hook_calls;
          isaac_lua_host_enter(here, s->ESP);
          const int top = lua_gettop(L);
@@ -1404,7 +1435,7 @@ index 25bd680..e2770fb 100644
          lua_rawgeti(L, LUA_REGISTRYINDEX, g_post[slot]);
          lua_pushinteger(L, (lua_Integer)f->ecx);
          lua_pushinteger(L, (lua_Integer)f->esp);
-@@ -587,6 +1062,7 @@ void isaac_rgon_hook_post(int slot, CpuState *restrict s, rgon_frame *f) {
+@@ -587,6 +1085,7 @@ void isaac_rgon_hook_post(int slot, CpuState *restrict s, rgon_frame *f) {
          if (lua_pcall(L, 4, 1, 0) != LUA_OK) hook_error(L, slot, "after");
          else if (!lua_isnil(L, top + 1)) s->EAX = word_arg(L, top + 1);
          lua_settop(L, top);
@@ -2250,7 +2281,7 @@ index 6aa6b68..133df95 100644
        > ISAAC_GUARD_VA) {
      printf("  FAIL shim tokens overrun the guard\n");
 diff --git a/scripts/recomp/lift/lift_patches.py b/scripts/recomp/lift/lift_patches.py
-index 659f7ce..f2bd194 100644
+index 659f7ce..24a1921 100644
 --- a/scripts/recomp/lift/lift_patches.py
 +++ b/scripts/recomp/lift/lift_patches.py
 @@ -1339,7 +1339,7 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
@@ -2262,7 +2293,7 @@ index 659f7ce..f2bd194 100644
      (22, 0x007ebca0, "Room::SpawnGridEntity"),    # ret 0x14; reg Room.SpawnGridEntity; sig Room::SpawnGridEntity
      (23, 0x00709db0, "GridEntity::Init"),    # ret 0x4; sig GridEntity::Init
      (24, 0x0082f1c0, "RoomTransition::StartBossIntro"),    # ret 0x8; sig RoomTransition::StartBossIntro
-@@ -1419,6 +1419,113 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
+@@ -1419,6 +1419,134 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
      (98, 0x004199d0, "Room::RenderEntityPass_004199d0"),    # ret 0x8; asm
      (99, 0x008151e0, "Room::GetShopItemPrice"),    # ret 0x10; asm
      (169, 0x0094d500, "Menu_Character::UpdateRotations"),    # ret 0x0; sig Menu_Character::UpdateRotations
@@ -2368,15 +2399,36 @@ index 659f7ce..f2bd194 100644
 +    (341, 0x006e8380, "Entity_Pickup::GetCoinValue"),    # ret 0x0; asm (worker cb-pocket)
 +    (342, 0x007ea1a0, "Room::TriggerEffectRemoved"),    # ret 0x8; asm (worker cb-pocket)
 +    (343, 0x00832850, "RoomTransition::Render"),    # ret 0x0; asm (worker cb-pocket)
++    (345, 0x006c1ac0, "Entity_NPC::shopkeeper_get_loot"),    # ret 0x8; asm (worker cb-pocket-2)
++    (346, 0x006d1580, "Entity_NPC::fireplace_get_loot"),    # ret 0x8; asm (worker cb-pocket-2)
++    (347, 0x007a4850, "Entity_Player::RemovePocketItem"),    # ret 0x4; asm (worker cb-pocket-2)
++    (352, 0x00663aa0, "Entity_Slot::CreateDropsFromExplosion"),    # ret 0x0; asm (worker cb-pocket-2)
++    (354, 0x00665500, "Entity_Slot::SetPrizeCollectible"),    # ret 0x4; asm (worker cb-pocket-2)
 +    (377, 0x0098dba0, "Minimap::Update"),    # ret 0x0; asm (worker cb-hud)
 +    (378, 0x0098e4d0, "Minimap::Render"),    # ret 0x0; asm (worker cb-hud)
 +    (379, 0x00848d20, "PlayerHUD::RenderInventory"),    # ret 0x4; asm (worker cb-hud)
 +    (380, 0x0084a3e0, "PlayerHUD::RenderSpellQueue"),    # ret 0x4; asm (worker cb-hud)
 +    (381, 0x00849510, "PlayerHUD::RenderCraftingTable"),    # ret 0x4; asm (worker cb-hud)
++    (369, 0x007e2580, "Music::PlayJingle"),    # ret 0xc; asm (worker cb-music-menu)
++    (370, 0x007e2280, "Music::EnableLayer"),    # ret 0x8; asm (worker cb-music-menu)
++    (371, 0x007e2410, "Music::DisableLayer"),    # ret 0x4; asm (worker cb-music-menu)
++    (372, 0x00921ce0, "NightmareScene::Show"),    # ret 0x4; asm (worker cb-music-menu)
++    (373, 0x0040bf30, "ANM2::ReplaceSpritesheet"),    # ret 0x8; reg Sprite.ReplaceSpritesheet (worker cb-music-menu)
++    (374, 0x0075d9f0, "Entity_Player::ShuffleCostumes"),    # ret 0x4; asm (worker cb-music-menu)
++    (375, 0x00770ca0, "Entity_Player::GetCollectibleNum"),    # ret 0x8; asm (worker cb-music-menu)
++    (382, 0x0093f1d0, "Backdrop::RenderWalls"),    # ret 0x30; asm (worker cb-backdrop)
++    (383, 0x0093ea00, "Backdrop::RenderFloor"),    # ret 0x30; asm (worker cb-backdrop)
++    (384, 0x00821950, "Backdrop::RenderWater"),    # ret 0x4; asm (worker cb-backdrop)
++    (385, 0x00937420, "Backdrop::pre_render_walls"),    # ret 0x0; asm (worker cb-backdrop)
++    (386, 0x0081e250, "Room::GetLightingAlpha"),    # ret 0x0; asm (worker cb-backdrop)
++    (387, 0x0080c810, "Room::RenderGridLight"),    # ret 0x8; asm (worker cb-backdrop)
++    (388, 0x00806c20, "Room::RenderEntityLight"),    # ret 0x8; asm (worker cb-backdrop)
++    (357, 0x006ac6c0, "Entity::IsFlying"),    # ret 0x0; asm (worker hook-h1)
++    (358, 0x009b98e0, "PlayerManager::SpawnCoPlayerBaby"),    # ret 0x4; asm (worker hook-h1)
      (100, 0x006a93a0, "Entity::Init"),    # ret 0x10; sig Init; vtable 0x00b6730c slot 1
      (101, 0x00755470, "Entity_Player::Init"),    # ret 0x10; vtable 0x00b6bdd0 slot 1
      (102, 0x006b8b20, "Entity_NPC::Init"),    # ret 0x10; vtable 0x00b67468 slot 1
-@@ -1523,7 +1630,7 @@ if len({_s for _s, _, _ in RGON_HOOKS}) != len(RGON_HOOKS) or len({_v for _, _v,
+@@ -1523,7 +1651,7 @@ if len({_s for _s, _, _ in RGON_HOOKS}) != len(RGON_HOOKS) or len({_v for _, _v,
  # reaches it: spill, set the trampoline's next block, return.
  #
  # Each entry: (slot, function VA, instruction VA, name, (redirect targets...)).
@@ -2385,7 +2437,7 @@ index 659f7ce..f2bd194 100644
  # The table is checked by scripts/recomp/rgon/tools/hook_table.py, which prints
  # it (`--write`); edit it there. A build error, never a silent skip: the
  # function not in exactly one TU, the marker not exactly once in it, a target
-@@ -1539,8 +1646,64 @@ RGON_INSN_HOOKS: list[tuple[int, int, int, str, tuple[int, ...]]] = [
+@@ -1539,8 +1667,77 @@ RGON_INSN_HOOKS: list[tuple[int, int, int, str, tuple[int, ...]]] = [
      (167, 0x00676be0, 0x006770c2, "Entity_Tear::Collision_00676be0@ParasiteSplit", ()),    # 0x006770c2  mov eax, dword ptr [ebp - 0x64]
      (168, 0x00676be0, 0x00677498, "Entity_Tear::Collision_00676be0@BoneSplit", ()),    # 0x00677498  mov eax, dword ptr [ebp - 0x60]
      (170, 0x008f8860, 0x008f89c4, "ModManager::RenderCharacterPortrait_008f8860@Frame", ()),    # 0x008f89c4  mov edx, dword ptr [edi + 0x138]
@@ -2445,13 +2497,26 @@ index 659f7ce..f2bd194 100644
 +    (396, 0x0074dbd0, 0x0074dcea, "Game::GetPlanetariumChance@TreasurePenalty", ()),
 +    (397, 0x007f92b0, 0x007f95dc, "Room::GetDevilRoomChance@StagePenalty", ()),
 +    (399, 0x007eeeb0, 0x007eef2f, "Room::save_entity@ShouldSave", ()),
++    (344, 0x006da530, 0x006da575, "Entity_NPC::UpdatePickupGhosts@ShouldShow", ()),    # test eax, eax
++    (348, 0x006ea558, 0x006ec058, "Entity_Pickup::HandleCollision@PreCollectCard", (0x006ebf92,)),    # push 1
++    (349, 0x006ea558, 0x006ec1ce, "Entity_Pickup::HandleCollision@PreCollectPill", (0x006ebf92,)),    # push 0
++    (350, 0x006ea558, 0x006ec475, "Entity_Pickup::HandleCollision@PreBedSleep", (0x006ec4ba,)),    # mov ecx, edx
++    (351, 0x004186c0, 0x00419443, "EntityList::Update@PreCommit", ()),    # cmp byte ptr [ebp - 0x48], 0
++    (353, 0x006647e8, 0x0066482f, "Entity_Slot::TakeDamage@DonationDropsDone", ()),    # mov ecx, [0xc71678]
++    (356, 0x0066482f, 0x0066484b, "Entity_Slot::TakeDamage@DonationDropsNone", ()),    # jmp 0x6645b9
++    (355, 0x005b39d0, 0x005c3f56, "Entity_Player::UseActiveItem@AbyssPickup", (0x005c4014,)),    # lea eax, [ebp - 0xf58]
++    (359, 0x004a6500, 0x004a6d4f, "Entity_NPC::delirium_update@Transform", ()),    # mov [ebx + 0xbc8], ecx
++    (365, 0x004a6500, 0x004a6c46, "Entity_NPC::delirium_update@PreTransform", (0x004a7501,)),    # push [ebx + 0xbe8]
++    (366, 0x004a6500, 0x004a74fc, "Entity_NPC::delirium_update@PostTransform", ()),    # jmp 0x4a831b
++    (367, 0x00794e50, 0x0079edc5, "Entity_Player::update_camo@SeedCamo", (0x0079ee43,)),    # mov ecx, [0xc71678]
++    (368, 0x007fb250, 0x007fc05f, "Room::SpawnClearAward@MegaSatanEnding", (0x007fc073,)),    # cmp byte [ebp - 0x74], 0
  ]
 -RGON_SLOTS = 192            # host_rgon.c RGON_HOOKS
 +RGON_SLOTS = 400            # host_rgon.c RGON_HOOKS
  INSN_REGS = ("EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI")
  _RE_INSN_BLOCK = re.compile(
      r"^[ \t]*/\* LIFT-PATCH insn 0x([0-9a-f]{8}) slot (\d+) begin[^\n]*\n.*?"
-@@ -1715,6 +1878,19 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
+@@ -1715,6 +1912,19 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
          spans = _fn_spans(t, fva)
          if not spans:
              raise SystemExit("insn hook %s: %s has no body in %s" % (what, name, tu.name))
@@ -3151,7 +3216,7 @@ index 0000000..0192031
 +end
 diff --git a/scripts/recomp/rgon/api_batch_two.lua b/scripts/recomp/rgon/api_batch_two.lua
 new file mode 100644
-index 0000000..a0034bf
+index 0000000..e3a0d85
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_batch_two.lua
 @@ -0,0 +1,310 @@
@@ -3440,9 +3505,9 @@ index 0000000..a0034bf
 +  -- damage callback (critical_hit.lua:248, statuses/berserk.lua:570, martyr.lua:383) and errored without the name.
 +  -- Round (cb-c): the game's own hitbox knives are linked now: api_hooks.lua's instruction hook in update_bone_swing
 +  -- (slot 223, right after the hitbox knife is spawned: esi the weapon knife, edi the hitbox) calls T.set_knife_parent.
-+  -- An entry is the two pointers and their InitSeeds (0x34): a pointer the game freed and reused answers nil.
++  -- An entry is the two pointers and their InitSeeds (the word at +0x3ec): a pointer the game freed and reused answers nil.
 +  local parent_of = {}
-+  local function seed_at(p) return r32(p + 0x34) end
++  local function seed_at(p) return r32(p + 0x3ec) end
 +  function T.set_knife_parent(hit, main)
 +    parent_of[hit] = { main = main, hseed = seed_at(hit), mseed = seed_at(main) }
 +  end
@@ -3742,6 +3807,237 @@ index 5391065..79b14e5 100644
  -- false ends the run; tables are merged into one answer, and the values a table
  -- names are what the functions after it are handed (`keys`: name -> argument)
  local function merge_or_false(keys)
+diff --git a/scripts/recomp/rgon/api_cb_backdrop.lua b/scripts/recomp/rgon/api_cb_backdrop.lua
+new file mode 100644
+index 0000000..918feee
+--- /dev/null
++++ b/scripts/recomp/rgon/api_cb_backdrop.lua
+@@ -0,0 +1,143 @@
++-- api_cb_backdrop.lua -- engine-hook callbacks of worker cb-backdrop (tools/hook_table.py rows 382-388, hook_slots.lua), wave 11.
++--   1106 MC_PRE_BACKDROP_RENDER_WALLS (Color)   Backdrop::RenderWalls 0x0093f1d0 (slot 382, `ret 0x30`): (Vector* offset, ColorMod by value =
++--   1107 MC_PRE_BACKDROP_RENDER_FLOOR (Color)   Backdrop::RenderFloor 0x0093ea00 (slot 383, `ret 0x30`)   eleven floats on the stack).
++--        The Color handed to the callbacks is a copy of the stack ColorMod; what a callback changes in it is what the pass draws with
++--        (REPENTOGON's callback gets a pointer to its by-value copy, so the effect is the same). No answer is used.
++--   1108 MC_PRE_BACKDROP_RENDER_WATER           Backdrop::RenderWater 0x00821950 (slot 384, `ret 4`), no argument.
++--   1109 MC_POST_BACKDROP_PRE_RENDER_WALLS      Backdrop::pre_render_walls 0x00937420 (slot 385), after it, no argument.
++--   1150 MC_PRE_GET_LIGHTING_ALPHA (originalAlpha)  Room::GetLightingAlpha 0x0081e250 (slot 386): the float returns in st0; REPENTOGON runs the
++--        game's function first, then the callbacks, and a number answer replaces the result (bridge st0()).
++--   1151 MC_PRE_RENDER_GRID_LIGHTING (param = grid type; grid, offset)   Room::RenderGridLight 0x0080c810 (slot 387, `ret 8`): false skips the
++--        light, a Vector is added to the offset (the game's offset is put back afterwards, so it does not leak into the next grid entity).
++--   1152 MC_PRE_RENDER_ENTITY_LIGHTING (param = entity type; entity, offset)  Room::RenderEntityLight 0x00806c20 (slot 388, `ret 8`): the same;
++--        the ANM2 light-rendering byte (0x00c7977e) is on while the callbacks run, as REPENTOGON does, so a mod's sprite draws its light layers.
++-- Each is proven by lab_cb_backdrop.lua.
++local T = ...
++local B, wrap = T.B, T.wrap
++local r8, r32, w8, w32, rf32, wf32, ptr, log = B.r8, B.r32, B.w8, B.w32, B.rf32, B.wf32, B.ptr, B.log
++local M = ModCallbacks
++for name, id in pairs({ MC_PRE_BACKDROP_RENDER_WALLS = 1106, MC_PRE_BACKDROP_RENDER_FLOOR = 1107, MC_PRE_BACKDROP_RENDER_WATER = 1108,
++  MC_POST_BACKDROP_PRE_RENDER_WALLS = 1109, MC_PRE_GET_LIGHTING_ALPHA = 1150, MC_PRE_RENDER_GRID_LIGHTING = 1151,
++  MC_PRE_RENDER_ENTITY_LIGHTING = 1152 }) do
++  if M[name] == nil then M[name] = id end
++end
++local function run(...) return T.run(...) end
++
++local SLOTS
++do
++  local chunk = B.load("hook_slots.lua")
++  if not chunk then return end
++  SLOTS = chunk()
++end
++if B.HOOKS < 389 then log("api_cb_backdrop: this engine has " .. B.HOOKS .. " hook slots; the callbacks here need a newer one") return end
++if not T.define or not T.wants then log("api_cb_backdrop: api_hooks.lua's helpers are missing") return end
++local wants = T.wants
++
++local function slot_of(name)
++  local s = SLOTS[name]
++  if type(s) ~= "table" then log("api_cb_backdrop: no hook slot for " .. name) return nil end
++  return s[1]
++end
++
++-- the two colour passes ---------------------------------------------------------------------------------------------------
++local function color_pass(fname, ID)
++  local slot = ID and slot_of(fname)
++  if not slot then return end
++  T.define(slot, { ID }, function(self, esp)
++    if not wants(ID, nil) then return false end
++    local at = esp + 8
++    local orig = {}
++    for i = 0, 10 do orig[i] = r32(at + i * 4) end
++    -- a Color is eleven floats: tint RGBA, colorize RGBA, offset RGB
++    local f = {}
++    for i = 0, 10 do f[i + 1] = rf32(at + i * 4) end
++    local c = Color(f[1], f[2], f[3], f[4], f[9], f[10], f[11])
++    c:SetColorize(f[5], f[6], f[7], f[8])
++    local cp = ptr(c)
++    local before = {}
++    for i = 0, 10 do before[i] = r32(cp + i * 4) end
++    run(ID, nil, c)
++    for i = 0, 10 do
++      local now = r32(cp + i * 4)
++      if now ~= before[i] then w32(at + i * 4, now) end
++    end
++    return false
++  end, nil)
++end
++color_pass("Backdrop::RenderWalls", M.MC_PRE_BACKDROP_RENDER_WALLS)
++color_pass("Backdrop::RenderFloor", M.MC_PRE_BACKDROP_RENDER_FLOOR)
++
++-- water, wall pre-render -------------------------------------------------------------------------------------------------
++do
++  local ID = M.MC_PRE_BACKDROP_RENDER_WATER
++  local slot = ID and slot_of("Backdrop::RenderWater")
++  if slot then
++    T.define(slot, { ID }, function()
++      if wants(ID, nil) then run(ID, nil) end
++      return false
++    end, nil)
++  end
++end
++do
++  local ID = M.MC_POST_BACKDROP_PRE_RENDER_WALLS
++  local slot = ID and slot_of("Backdrop::pre_render_walls")
++  if slot then
++    T.define(slot, { ID }, function() return wants(ID, nil) and {} or false end, function(self, esp, eax, k)
++      if k then run(ID, nil) end
++    end)
++  end
++end
++
++-- lighting alpha -----------------------------------------------------------------------------------------------------------
++do
++  local ID = M.MC_PRE_GET_LIGHTING_ALPHA
++  local slot = ID and B.st0 and slot_of("Room::GetLightingAlpha")
++  if slot then
++    local busy = false
++    T.define(slot, { ID }, function()
++      if busy or not wants(ID, nil) then return false end
++      return {}
++    end, function(self, esp, eax, k)
++      if not k then return end
++      busy = true
++      local ok, res = pcall(run, ID, nil, B.st0())
++      busy = false
++      if ok and type(res) == "number" then B.st0(res) end
++    end)
++  end
++end
++
++-- grid and entity light ----------------------------------------------------------------------------------------------------
++local function typed_entity(a)
++  local t = r32(a + 0x28)
++  local cls = t == 1 and "EntityPlayer" or t == 2 and "EntityTear" or t == 3 and "EntityFamiliar" or t == 4 and "EntityBomb"
++    or t == 5 and "EntityPickup" or t == 9 and "EntityProjectile" or (t >= 10 and t < 1000) and "EntityNPC" or nil
++  return wrap(cls or "Entity", a)
++end
++local LIGHT_FLAG = 0x00c7977e
++local function light_pass(fname, ID, type_at, make, set_flag)
++  local slot = ID and slot_of(fname)
++  if not slot then return end
++  T.define(slot, { ID }, function(self, esp)
++    local obj, off = r32(esp + 4), r32(esp + 8)
++    if obj == 0 or off == 0 then return false end
++    local t = r32(obj + type_at)
++    if not wants(ID, t) then return false end
++    local ox, oy = rf32(off), rf32(off + 4)
++    local flag
++    if set_flag then flag = r8(LIGHT_FLAG) w8(LIGHT_FLAG, 1) end
++    local ok, res = pcall(run, ID, t, make(obj), Vector(ox, oy))
++    if set_flag then w8(LIGHT_FLAG, flag) end
++    if not ok then return false end
++    if res == false then return true, 0, 8 end
++    if type(res) == "userdata" and res.X ~= nil then
++      wf32(off, ox + res.X) wf32(off + 4, oy + res.Y)
++      return { off, ox, oy }
++    end
++    return false
++  end, function(self, esp, eax, k)
++    if k then wf32(k[1], k[2]) wf32(k[1] + 4, k[3]) end
++  end)
++end
++light_pass("Room::RenderGridLight", M.MC_PRE_RENDER_GRID_LIGHTING, 4, function(a) return wrap("GridEntity", a) end, false)
++light_pass("Room::RenderEntityLight", M.MC_PRE_RENDER_ENTITY_LIGHTING, 0x28, typed_entity, true)
+diff --git a/scripts/recomp/rgon/api_cb_ending_labs.lua b/scripts/recomp/rgon/api_cb_ending_labs.lua
+new file mode 100644
+index 0000000..ab8970d
+--- /dev/null
++++ b/scripts/recomp/rgon/api_cb_ending_labs.lua
+@@ -0,0 +1,76 @@
++-- api_cb_ending_labs.lua -- callbacks that need a run state the lab has to build (worker ending-labs, wave 11). Instruction hooks
++-- 390-392 (hook_table.py); each callback is registered only where lab_ending_labs.lua proves it fires.
++--   1059 MC_PRE_SELECT_GREED_WAVE (roomConfig, seed): Room::SpawnGreedModeWave after its second RoomConfig::GetRandomRoom (insn 390),
++--     eax = the picked RoomConfig_Room*; the seed is the game's greed wave seed of the current wave, game + 4 * (0x60cd + wave)
++--     (the function's own code: `local_78 = game[0x60cd + wave]`, then the RNG built from it). A RoomConfigRoom answer replaces eax.
++local T = ...
++local B, wrap = T.B, T.wrap
++local r32, ptr, log = B.r32, B.ptr, B.log
++local M = ModCallbacks
++if M.MC_PRE_SELECT_GREED_WAVE == nil then M.MC_PRE_SELECT_GREED_WAVE = 1059 end
++local function run(...) return T.run(...) end
++
++local SLOTS
++do
++  local chunk = B.load("hook_slots.lua")
++  if not chunk then return end
++  SLOTS = chunk()
++end
++if B.HOOKS < 400 or not T.define or not B.INSN or not B.reg then return end
++local reg = B.reg
++
++local function insn(name, ids, handler)
++  for _, id in ipairs(ids) do if not id then return end end
++  local s = SLOTS[name]
++  if type(s) ~= "table" or not s[3] then log("api_cb_ending_labs: no hook slot for " .. name) return end
++  local va = s[3]
++  T.define(s[1], ids, function(at_va, esp, ebp)
++    if at_va ~= va then log("api_cb_ending_labs: " .. name .. " ran at 0x" .. string.format("%08x", at_va)) return end
++    return handler(esp, ebp)
++  end, nil)
++end
++
++-- 1059 ------------------------------------------------------------------------------------------------------------------------
++do
++  local id = M.MC_PRE_SELECT_GREED_WAVE
++  if id and T.roomconfig_room then
++    insn("Room::SpawnGreedModeWave@SelectRoom", { id }, function()
++      local eax = reg("eax")
++      local config = eax ~= 0 and T.roomconfig_room(eax) or nil
++      local g = ptr(Game())
++      local wave = r32(g + 4 * 0x60cd)
++      if wave > 11 then wave = 11 end
++      local res = run(id, nil, config, r32(g + 4 * (0x60cd + wave)))
++      if type(res) ~= "userdata" then return end
++      local ok, np = pcall(ptr, res)
++      if not ok or type(np) ~= "number" or np == 0 or np == eax then return end
++      if config and res.Shape ~= config.Shape then
++        log("MC_PRE_SELECT_GREED_WAVE: Shape mismatch. Original = " .. tostring(config.Shape) .. ", override = " .. tostring(res.Shape))
++        return
++      end
++      reg("eax", np)
++    end)
++  end
++end
++
++-- 1308 (stage, roomDescriptor, key) ------------------------------------------------------------------------------------------
++-- Level::place_rooms_backwards, after each restored boss (insn 391, ecx = loop index - 1) and treasure room (insn 392, esi + 1 = the
++-- index just placed). The room is the descriptor just appended (game + 0x14, 0xb8 each, count [game + 0x182cc]); the BackwardsStageDesc
++-- is [ebp - 0x48], stage = its index in the array at game + 0x6778c (0x320 each) + 1.
++do
++  local id = M.MC_POST_BACKWARDS_ROOM_RESTORE
++  if id then
++    local STAGES, STAGE_SIZE, ROOMS_AT, ROOM_SIZE, ROOM_COUNT = 0x6778c, 0x320, 0x14, 0xb8, 0x182cc
++    local function restored(key, index, ebp)
++      local g = ptr(Game())
++      local desc = r32(ebp - 0x48)
++      local stage = (desc - (g + STAGES)) // STAGE_SIZE + 1
++      local n = r32(g + ROOM_COUNT)
++      if n < 1 or stage < 1 or stage > 7 then return end
++      run(id, nil, stage, wrap("RoomDescriptor", g + ROOMS_AT + (n - 1) * ROOM_SIZE), key .. "_" .. index)
++    end
++    -- the registers come back unsigned: the first room of a kind is index -1 + 1 = 0, the same numbering as 1307's "boss_0"
++    insn("Level::place_rooms_backwards@BossRestore", { id }, function(esp, ebp) restored("boss", (reg("ecx") + 1) & 0xffffffff, ebp) end)
++    insn("Level::place_rooms_backwards@TreasureRestore", { id }, function(esp, ebp) restored("treasure", (reg("esi") + 1) & 0xffffffff, ebp) end)
++  end
++end
 diff --git a/scripts/recomp/rgon/api_cb_entity.lua b/scripts/recomp/rgon/api_cb_entity.lua
 new file mode 100644
 index 0000000..c22aadb
@@ -4180,21 +4476,21 @@ index 0000000..d09d89b
 +end
 diff --git a/scripts/recomp/rgon/api_cb_level.lua b/scripts/recomp/rgon/api_cb_level.lua
 new file mode 100644
-index 0000000..037fea4
+index 0000000..f24cbd6
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_cb_level.lua
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,251 @@
 +-- api_cb_level.lua -- level, room save, backwards-stage, planetarium/devil and grid spawn callbacks (worker cb-level, wave 9; hook slots
 +-- 329-337 and 390-399, tools/hook_table.py, hook_slots.lua). Every address was read off this exe (the notes sit in hook_table.py).
 +--   1058 MC_PRE_SELECT_AMBUSH_WAVE   after Ambush::SpawnWave's RoomConfig::GetRandomRoom (insn 337): (roomConfig, seed), a RoomConfigRoom replaces it
-+--   (1059 MC_PRE_SELECT_GREED_WAVE is deferred, see below)
++--   (1059 MC_PRE_SELECT_GREED_WAVE: api_cb_ending_labs.lua)
 +--   1099 MC_POST_LEVEL_LAYOUT_GENERATED  LevelGenerator::Generate 0x009adbb0 (slot 334): (levelGenerator), param 12 as REPENTOGON passes it
 +--   1290 MC_PRE_GET_RANDOM_ROOM_INDEX    Level::GetRandomRoomIndex 0x00740860 (slot 329): (roomIndex, iAmErrorRoom, seed), an integer replaces the answer
 +--   1304 MC_POST_ROOM_SAVE_STATE     Room::SaveState 0x007efa50 (slot 330): (room, roomDescriptor)
 +--   1305 MC_PRE_ROOM_RESTORE_STATE   Room::RestoreState 0x007eff50 (slot 331): (room, roomDescriptor)
 +--   1306 MC_POST_SWAP_ROOMS          Level::swap_rooms 0x00749270 (slot 332): (descriptor, descriptor)
 +--   1307 MC_POST_BACKWARDS_ROOM_SAVE Game::SaveBackwardsStage 0x00708050 (slot 333): (stage, roomDescriptor, key "boss_0" / "treasure_0")
-+--   (1308 MC_POST_BACKWARDS_ROOM_RESTORE is deferred, see below)
++--   (1308 MC_POST_BACKWARDS_ROOM_RESTORE: api_cb_ending_labs.lua)
 +--   (1110-1112, 1131 are deferred, see below)
 +--   (1192 MC_PRE_ROOM_GRID_ENTITY_SPAWN is deferred: its call site is lifted into four overlapping chunk functions, one hook cannot cover them)
 +--   1313 MC_SHOULD_SAVE_ENTITY / 1314 MC_ENTITY_SAVE / 1315 MC_ENTITY_RESTORE  Room::save_entity (insn 399, slot 335), Room::restore_entity (slot 336)
@@ -4372,8 +4668,7 @@ index 0000000..037fea4
 +    end)
 +  end
 +end
-+-- 1308 MC_POST_BACKWARDS_ROOM_RESTORE: deferred. The two restore sites (insn hooks 391, 392 in Level::place_rooms_backwards) are in the
-+-- tables, but the lab cannot run an Ascent to make them fire, so no callback is registered.
++-- 1308 MC_POST_BACKWARDS_ROOM_RESTORE: registered in api_cb_ending_labs.lua (insn hooks 391, 392).
 +
 +-- 1058 / 1059 ----------------------------------------------------------------
 +do
@@ -4394,8 +4689,7 @@ index 0000000..037fea4
 +    end)
 +  end
 +  pick(M.MC_PRE_SELECT_AMBUSH_WAVE, "Ambush::SpawnWave@SelectRoom", function() return r32(reg("edi") + 0x3c) end)
-+  -- 1059 MC_PRE_SELECT_GREED_WAVE (insn hook 390) is deferred: Room::SpawnGreedModeWave only runs in Greed Mode (called by hand it asserts
-+  -- "RNG Seed is zero"), so the lab cannot make it fire.
++  -- 1059 MC_PRE_SELECT_GREED_WAVE (insn hook 390) is registered in api_cb_ending_labs.lua (proven in a Greed Mode run).
 +end
 +
 +-- 1110 / 1111 / 1112 / 1131: deferred. The instruction hooks (slots 393-397) are in the tables and fire (lab: each ran once at the
@@ -4745,6 +5039,212 @@ index 0000000..365a2f0
 +end
 +
 +T.rearm()
+diff --git a/scripts/recomp/rgon/api_cb_music_menu.lua b/scripts/recomp/rgon/api_cb_music_menu.lua
+new file mode 100644
+index 0000000..e53bf15
+--- /dev/null
++++ b/scripts/recomp/rgon/api_cb_music_menu.lua
+@@ -0,0 +1,200 @@
++-- api_cb_music_menu.lua -- engine-hook callbacks of worker cb-music-menu (tools/hook_table.py rows 369-375, hook_slots.lua), wave 11.
++--   1094 MC_PRE_MUSIC_PLAY_JINGLE (param = music id; id)   Music::PlayJingle 0x007e2580 (slot 369), thiscall on the music object,
++--        (int id, int, bool), `ret 0xc`. An integer answer plays that id, false plays nothing. This hook is armed whoever listens:
++--        its `after` stores the id the game really started (16 bits at music +0x32a, the field REPENTOGON keeps it in), which is what
++--        MusicManager:GetCurrentJingleID answers (0 once the countdown at +0x364 is below 1). The game's own jingles
++--        (boss victory, item room, ...) reach it too, not only the ones a mod starts.
++--   1035 MC_PRE_MUSIC_LAYER_TOGGLE (param = layer id; id, enabling)   Music::EnableLayer 0x007e2280 (slot 370, `ret 8`) and
++--        Music::DisableLayer 0x007e2410 (slot 371, `ret 4`). An integer answer toggles that layer instead, false leaves the layer as it is.
++--   1103 MC_POST_NIGHTMARE_SCENE_SHOW (isDogma)   NightmareScene::Show 0x00921ce0 (slot 372, `ret 4`), after it; no param.
++--   1116 / 1117 MC_PRE / POST_REPLACE_SPRITESHEET (param = the sprite's .anm2 file; layerId, png)   ANM2::ReplaceSpritesheet 0x0040bf30
++--        (slot 373, `ret 8`, the game's own Lua method too). PRE answers a table {layerId, png} to replace both; the POST hears what was done.
++--   1494 / 1495 MC_PRE / POST_SHUFFLE_COSTUMES (param = player type; player, seed)   Entity_Player::ShuffleCostumes 0x0075d9f0 (slot 374,
++--        `ret 4`). PRE false skips the shuffle (and the POST).
++--   1092 MC_PRE_PLAYER_APPLY_INNATE_COLLECTIBLE_NUM (no param; modCount, player, collectibleId, onlyTrue)   Entity_Player::GetCollectibleNum
++--        0x00770ca0 (slot 375, `ret 8`), deprecated in REPENTOGON: the integer the callbacks add up is ADDED to the game's count. The `after`
++--        returns the new count. A call made from inside the callback (a mod asking for a count) is not hooked again.
++--   1333 MC_PRE_RENDER_CUSTOM_CHARACTER_MENU is deferred: REPENTOGON fires it after a MODDED character's page was drawn (pt, pos, defaultSprite),
++--        which is api_charsel.lua's POST_RENDER_CHARACTER_SELECT_PAGE hook (slot 258) for a modded page; proving it needs a custom character mod.
++-- Each is proven by lab_cb_music_menu.lua.
++local T = ...
++local B = T.B
++local r32, ri32, w32, log, stdstr = B.r32, B.ri32, B.w32, B.log, B.stdstr
++local M = ModCallbacks
++local mathtype = math.type
++local type = type
++-- the Layer stages REPENTOGON's enums_ex.lua from an older snapshot that may not name these (REPENTOGON's own numbers)
++for name, id in pairs({ MC_PRE_MUSIC_LAYER_TOGGLE = 1035, MC_PRE_PLAYER_APPLY_INNATE_COLLECTIBLE_NUM = 1092, MC_PRE_MUSIC_PLAY_JINGLE = 1094,
++  MC_POST_NIGHTMARE_SCENE_SHOW = 1103, MC_PRE_REPLACE_SPRITESHEET = 1116, MC_POST_REPLACE_SPRITESHEET = 1117,
++  MC_PRE_SHUFFLE_COSTUMES = 1494, MC_POST_SHUFFLE_COSTUMES = 1495 }) do
++  if M[name] == nil then M[name] = id end
++end
++-- the staged enums_ex.lua still names MC_POST_SHUFFLE_COSTUMES 1945 (REPENTOGON's typo, fixed to 1495 later): the right number always wins
++M.MC_POST_SHUFFLE_COSTUMES = 1495
++local function run(...) return T.run(...) end
++
++local SLOTS
++do
++  local chunk = B.load("hook_slots.lua")
++  if not chunk then return end
++  SLOTS = chunk()
++end
++if B.HOOKS < 376 then log("api_cb_music_menu: this engine has " .. B.HOOKS .. " hook slots; the callbacks here need a newer one") return end
++if not T.define or not T.wants then log("api_cb_music_menu: api_hooks.lua's helpers are missing") return end
++local wants = T.wants
++
++local function slot_of(name)
++  local s = SLOTS[name]
++  if type(s) ~= "table" then log("api_cb_music_menu: no hook slot for " .. name) return nil end
++  return s[1], s[2]
++end
++
++-- music: jingle, layers ---------------------------------------------------------------------------------------------------
++local JINGLE_ID, COUNTDOWN = 0x32a, 0x364
++do
++  local PRE = M.MC_PRE_MUSIC_PLAY_JINGLE
++  local slot = slot_of("Music::PlayJingle")
++  if slot then
++    T.jingle_hooked = true
++    T.define(slot, { PRE, T.ALWAYS }, function(self, esp)
++      local id = ri32(esp + 4)
++      if wants(PRE, id) then
++        local res = run(PRE, id, id)
++        if mathtype(res) == "integer" then
++          id = res
++          w32(esp + 4, res)
++        elseif res == false then
++          return true, 0, 0xc
++        end
++      end
++      return { id }
++    end, function(self, esp, eax, k)
++      if k then B.w16(self + JINGLE_ID, k[1] & 0xffff) end
++    end)
++  end
++  T.method("MusicManager", "GetCurrentJingleID", function(self)
++    local m = T.this(self, "GetCurrentJingleID")
++    if ri32(m + COUNTDOWN) < 1 then return 0 end
++    return B.r16(m + JINGLE_ID)
++  end)
++end
++
++do
++  local ID = M.MC_PRE_MUSIC_LAYER_TOGGLE
++  for _, e in ipairs({ { "Music::EnableLayer", true }, { "Music::DisableLayer", false } }) do
++    local slot, pops = slot_of(e[1])
++    local enabling = e[2]
++    if ID and slot then
++      T.define(slot, { ID }, function(self, esp)
++        local id = ri32(esp + 4)
++        if not wants(ID, id) then return false end
++        local res = run(ID, id, id, enabling)
++        if mathtype(res) == "integer" then
++          w32(esp + 4, res)
++        elseif res == false then
++          return true, 0, pops
++        end
++        return false
++      end)
++    end
++  end
++end
++
++-- nightmare scene ---------------------------------------------------------------------------------------------------------
++do
++  local ID = M.MC_POST_NIGHTMARE_SCENE_SHOW
++  local slot = ID and slot_of("NightmareScene::Show")
++  if slot then
++    T.define(slot, { ID }, function(self, esp)
++      if not wants(ID, nil) then return false end
++      return { (r32(esp + 4) & 0xff) ~= 0 }
++    end, function(self, esp, eax, k)
++      if k then run(ID, nil, k[1]) end
++    end)
++  end
++end
++
++-- replace spritesheet -----------------------------------------------------------------------------------------------------
++-- the std::string a PRE answer asks for is built here (a temporary the game's function copies from) and freed after the call
++local function make_string(text)
++  local s = B.alloc(24)
++  if s == 0 then return nil end
++  w32(s, 0) w32(s + 4, 0) w32(s + 8, 0) w32(s + 12, 0) w32(s + 16, 0) w32(s + 20, 15)
++  T.set_stdstr(s, text)
++  return s
++end
++local function free_string(s)
++  if r32(s + 20) >= 16 then B.free(r32(s)) end
++  B.free(s)
++end
++do
++  local PRE, POST = M.MC_PRE_REPLACE_SPRITESHEET, M.MC_POST_REPLACE_SPRITESHEET
++  local slot = PRE and POST and slot_of("ANM2::ReplaceSpritesheet")
++  if slot and T.set_stdstr then
++    T.define(slot, { PRE, POST }, function(self, esp)
++      local layer, sp = ri32(esp + 4), r32(esp + 8)
++      if sp == 0 then return false end
++      local file = stdstr(self)
++      local tmp
++      local png = stdstr(sp)
++      if wants(PRE, file) then
++        local res = run(PRE, file, layer, png)
++        if type(res) == "table" then
++          if mathtype(res[1]) == "integer" then layer = res[1] end
++          if type(res[2]) == "string" then png = res[2] end
++          w32(esp + 4, layer)
++          if png ~= stdstr(sp) then
++            tmp = make_string(png)
++            if tmp then w32(esp + 8, tmp) end
++          end
++        end
++      end
++      if not tmp and not wants(POST, file) then return false end
++      return { file, layer, png, tmp }
++    end, function(self, esp, eax, k)
++      if not k then return end
++      if k[4] then free_string(k[4]) end
++      if wants(POST, k[1]) then run(POST, k[1], k[2], k[3]) end
++    end)
++  end
++end
++
++-- shuffle costumes --------------------------------------------------------------------------------------------------------
++do
++  local PRE, POST = M.MC_PRE_SHUFFLE_COSTUMES, M.MC_POST_SHUFFLE_COSTUMES
++  local slot, pops = slot_of("Entity_Player::ShuffleCostumes")
++  if slot and PRE and POST then
++    T.define(slot, { PRE, POST }, function(self, esp)
++      if not (T.listening[PRE] or T.listening[POST]) then return false end
++      local player = T.wrap("EntityPlayer", self)
++      if not player then return false end
++      local pt = player:GetPlayerType()
++      local seed = r32(esp + 4)
++      if wants(PRE, pt) and run(PRE, pt, player, seed) == false then return true, 0, pops end
++      return { player, pt, seed }
++    end, function(self, esp, eax, k)
++      if k and wants(POST, k[2]) then run(POST, k[2], k[1], k[3]) end
++    end)
++  end
++end
++
++-- MC_PRE_PLAYER_APPLY_INNATE_COLLECTIBLE_NUM ---------------------------------------------------------------------------------
++do
++  local ID = M.MC_PRE_PLAYER_APPLY_INNATE_COLLECTIBLE_NUM
++  local slot = ID and slot_of("Entity_Player::GetCollectibleNum")
++  local inside = false
++  if slot then
++    T.define(slot, { ID }, function(self, esp)
++      if inside or not wants(ID, nil) then return false end
++      return { ri32(esp + 4), (r32(esp + 8) & 0xff) ~= 0 }
++    end, function(self, esp, eax, k)
++      if not k or inside then return end
++      local player = T.wrap("EntityPlayer", self)
++      if not player then return end
++      inside = true
++      local ok, res = pcall(run, ID, nil, 0, player, k[1], k[2])
++      inside = false
++      if ok and mathtype(res) == "integer" then return (eax + res) & 0xffffffff end
++    end)
++  end
++end
 diff --git a/scripts/recomp/rgon/api_cb_pocket.lua b/scripts/recomp/rgon/api_cb_pocket.lua
 new file mode 100644
 index 0000000..d89d6a3
@@ -4884,6 +5384,293 @@ index 0000000..d89d6a3
 +          if not ok then log("api_cb_pocket: MC_POST_ROOM_TRIGGER_EFFECT_REMOVED: " .. tostring(ret)) end
 +        end
 +      end
++    end)
++  end
++end
+diff --git a/scripts/recomp/rgon/api_cb_pocket_two.lua b/scripts/recomp/rgon/api_cb_pocket_two.lua
+new file mode 100644
+index 0000000..40f3868
+--- /dev/null
++++ b/scripts/recomp/rgon/api_cb_pocket_two.lua
+@@ -0,0 +1,281 @@
++-- api_cb_pocket_two.lua -- engine-hook callbacks of worker cb-pocket-2 (tools/hook_table.py rows 344-355, hook_slots.lua):
++--   1338 MC_PRE_NPC_UPDATE_GHOST_PICKUPS (npc), param = npc type: insn hook 344 on the `test eax, eax` after UpdatePickupGhosts' Guppy's Eye
++--        test (0x006da575); the answer true/false replaces that test (shows or hides the ghost pickups of a shopkeeper / fireplace).
++--   1337/1339 MC_PRE/POST_NPC_GET_LOOT_LIST: Entity_NPC::shopkeeper_get_loot 0x006c1ac0 and fireplace_get_loot 0x006d1580 (deque*, advance), ret 8.
++--   1354/1355 MC_POST_PLAYER_REMOVE_CARD/PILL (player, id, slot), param = id: Entity_Player::RemovePocketItem 0x007a4850 (Partial).
++--   1356/1358 MC_PRE_PLAYER_COLLECT_CARD/PILL (player, pickup), param = subtype: insn hooks 348/349 before AddPocketItem in HandleCollision; false cancels.
++--   1288 MC_PRE_BED_SLEEP (player, bed), param = bed subtype: insn hook 350 in the bed branch of HandleCollision; true cancels.
++--   1227 MC_PRE_ROOM_COLLISION_PASS (): insn hook 351 in EntityList::Update before the removal commit, not during a transition.
++--   1124 MC_POST_SLOT_CREATE_EXPLOSION_DROPS (slot), param = variant: Entity_Slot::CreateDropsFromExplosion 0x00663aa0 plus insn hooks 353 and 356 (donation machine, the two lifted copies of its tail).
++--   1125/1126 MC_PRE/POST_SLOT_SET_PRIZE_COLLECTIBLE (slot, id), param = variant: Entity_Slot::SetPrizeCollectible 0x00665500, ret 4.
++--   1266 MC_PRE_PICKUP_VOIDED_ABYSS (pickup), param = variant: insn hook 355 in UseActiveItem's Abyss case; false cancels.
++-- Each is proven by lab_cb_pocket_two.lua.
++local T = ...
++local B, wrap = T.B, T.wrap
++local r8, r32, ri32, w32, log = B.r8, B.r32, B.ri32, B.w32, B.log
++local M = ModCallbacks
++local listening = T.listening
++-- the staged enums_ex.lua does not name these (REPENTOGON's own numbers)
++for name, id in pairs({ MC_PRE_NPC_GET_LOOT_LIST = 1337, MC_PRE_NPC_UPDATE_GHOST_PICKUPS = 1338, MC_POST_NPC_GET_LOOT_LIST = 1339 }) do
++  if M[name] == nil then M[name] = id end
++end
++local function run(...) return T.run(...) end
++
++local SLOTS
++do
++  local chunk = B.load("hook_slots.lua")
++  if not chunk then return end
++  SLOTS = chunk()
++end
++if B.HOOKS < 357 then log("api_cb_pocket_two: this engine has " .. B.HOOKS .. " hook slots; the callbacks here need a newer one") return end
++if not T.define or not T.wants then log("api_cb_pocket_two: api_hooks.lua's helpers are missing") return end
++local wants = T.wants
++local reg = B.reg
++
++local function slot_of(name)
++  local s = SLOTS[name]
++  if type(s) ~= "table" then log("api_cb_pocket_two: no hook slot for " .. name) return nil end
++  return s[1], s[3]
++end
++
++-- an instruction hook: handler(esp, ebp) answers nil or one of the hook's jump targets
++local told = {}
++local function at(name, ids, handler)
++  local slot, va = slot_of(name)
++  if not slot or not B.INSN or not reg then return end
++  T.define(slot, ids, function(at_va, esp, ebp)
++    if at_va ~= va then
++      if not told[name] then told[name] = true log(string.format("api_cb_pocket_two: %s was handed 0x%08x", name, at_va)) end
++      return
++    end
++    return handler(esp, ebp)
++  end, nil)
++end
++
++local E_TYPE, E_VARIANT, E_SUBTYPE = 0x28, 0x2c, 0x30
++
++-- 1338 ------------------------------------------------------------------------------------------------------------------
++do
++  local ID = M.MC_PRE_NPC_UPDATE_GHOST_PICKUPS
++  if ID then
++    at("Entity_NPC::UpdatePickupGhosts@ShouldShow", { ID }, function()
++      local npc = reg("esi")
++      local ty = r32(npc + E_TYPE)
++      if not wants(ID, ty) then return end
++      local n = wrap("EntityNPC", npc)
++      if not n then return end
++      local res = run(ID, ty, n)
++      if type(res) == "boolean" then reg("eax", res and 1 or 0) end
++    end)
++  end
++end
++
++-- 1337 / 1339 -----------------------------------------------------------------------------------------------------------
++-- The game's list is a std::deque (+4 map, +8 map size, +0xc first, +0x10 count) of 0x14-byte entries (type, variant, subtype,
++-- seed, RNG*); written back the way api_throw_loot.lua does it (the destructor 0x006da850, deque::emplace_back 0x006b84e0).
++do
++  local PRE, POST = M.MC_PRE_NPC_GET_LOOT_LIST, M.MC_POST_NPC_GET_LOOT_LIST
++  local tmp = PRE and POST and rawget(_G, "LootList") and LootList()
++  if tmp then
++    tmp:PushEntry(1, 0, 0, 1)
++    local LL, LLE = getmetatable(tmp), getmetatable(tmp._e[1])
++    local push = LL.PushEntry
++    LL.PushEntry = function(self, ...) self._dirty = true return push(self, ...) end
++    local kept, nkept = {}, 0
++    local function keep(rng)
++      nkept = nkept % 64 + 1
++      kept[nkept] = rng
++      return B.ptr(rng)
++    end
++    local function copy_rng(rp)
++      local rng = RNG()
++      local d = B.ptr(rng)
++      for i = 0, 3 do w32(d + 4 * i, r32(rp + 4 * i)) end
++      return rng
++    end
++    local function read(deque)
++      local list = setmetatable({ _e = {} }, LL)
++      local map, mapsize, first, count = r32(deque + 4), r32(deque + 8), r32(deque + 0xc), r32(deque + 0x10)
++      if mapsize == 0 then return list end
++      for i = 0, count - 1 do
++        local e = r32(map + 4 * ((first + i) % mapsize))
++        local rp = r32(e + 0x10)
++        list._e[#list._e + 1] = setmetatable({ _t = ri32(e), _v = ri32(e + 4), _s = ri32(e + 8), _seed = r32(e + 0xc),
++          _rng = rp ~= 0 and copy_rng(rp) or nil, _rp = rp ~= 0 and rp or nil }, LLE)
++      end
++      return list
++    end
++    local function write(deque, list)
++      B.call(0x006da850, deque)
++      for _, e in ipairs(list._e) do
++        local rp = e._rp or (e._rng and keep(e._rng)) or 0
++        B.call(0x006b84e0, deque, e._t & 0xffffffff, e._v & 0xffffffff, e._s & 0xffffffff, e._seed & 0xffffffff, rp)
++      end
++    end
++    local busy = false
++    for _, name in ipairs({ "Entity_NPC::shopkeeper_get_loot", "Entity_NPC::fireplace_get_loot" }) do
++      local slot = slot_of(name)
++      if slot then
++        T.define(slot, { PRE, POST }, function(self, esp)
++          if busy or not (listening[PRE] or listening[POST]) then return end
++          return { self, r32(esp + 4), (r32(esp + 8) & 0xff) ~= 0 }
++        end, function(self, esp, eax, k)
++          if not k then return end
++          local pa, deque, adv = k[1], k[2], k[3]
++          local ty = r32(pa + E_TYPE)
++          if not (wants(PRE, ty) or wants(POST, ty)) then return end
++          local npc = wrap("EntityNPC", pa)
++          if not npc then return end
++          busy = true
++          local ok, err = pcall(function()
++            local list = read(deque)
++            local rng = copy_rng(pa + 0x3dc)
++            local dirty = false
++            if wants(PRE, ty) then
++              local res = run(PRE, ty, npc, adv, rng)
++              if type(res) == "table" and type(res._e) == "table" then list, dirty = res, true end
++            end
++            if wants(POST, ty) then
++              list._dirty = nil
++              run(POST, ty, npc, list, adv, rng)
++              if list._dirty then dirty = true end
++            elseif list._dirty then
++              dirty = true
++            end
++            if adv then local d = B.ptr(rng) for i = 0, 3 do w32(pa + 0x3dc + 4 * i, r32(d + 4 * i)) end end
++            if dirty then write(deque, list) end
++          end)
++          busy = false
++          if not ok then log("api_cb_pocket_two: NPC GetLootList callbacks raised: " .. tostring(err)) end
++        end)
++      end
++    end
++  end
++end
++
++-- 1354 / 1355 -----------------------------------------------------------------------------------------------------------
++-- RemovePocketItem(slot): the entry at player+0x17a0+8*slot is (id, type); only a card (1) or a pill (0) that was there is reported.
++do
++  local CARD, PILL = M.MC_POST_PLAYER_REMOVE_CARD, M.MC_POST_PLAYER_REMOVE_PILL
++  local slot = CARD and PILL and slot_of("Entity_Player::RemovePocketItem")
++  if slot then
++    T.define(slot, { CARD, PILL }, function(self, esp)
++      if not (listening[CARD] or listening[PILL]) then return end
++      local s = ri32(esp + 4)
++      if s < 0 or s > 3 then return end
++      local id, ty = ri32(self + 0x17a0 + 8 * s), ri32(self + 0x17a4 + 8 * s)
++      if id <= 0 or (ty ~= 0 and ty ~= 1) then return end
++      return { id, ty, s }
++    end, function(self, esp, eax, k)
++      if not k then return end
++      local cb = k[2] == 1 and CARD or PILL
++      if not wants(cb, k[1]) then return end
++      run(cb, k[1], wrap("EntityPlayer", self), k[1], k[3])
++    end)
++  end
++end
++
++-- 1356 / 1358 -----------------------------------------------------------------------------------------------------------
++do
++  for _, e in ipairs({ { "Entity_Pickup::HandleCollision@PreCollectCard", M.MC_PRE_PLAYER_COLLECT_CARD },
++                       { "Entity_Pickup::HandleCollision@PreCollectPill", M.MC_PRE_PLAYER_COLLECT_PILL } }) do
++    local ID = e[2]
++    if ID then
++      at(e[1], { ID }, function()
++        local pk = reg("esi")
++        local sub = r32(pk + E_SUBTYPE)
++        if not wants(ID, sub) then return end
++        local res = run(ID, sub, wrap("EntityPlayer", reg("edi")), wrap("EntityPickup", pk))
++        if res == false then
++          reg("eax", 0)
++          return 0x006ebf92
++        end
++      end)
++    end
++  end
++end
++
++-- 1288 ------------------------------------------------------------------------------------------------------------------
++do
++  local ID = M.MC_PRE_BED_SLEEP
++  if ID then
++    at("Entity_Pickup::HandleCollision@PreBedSleep", { ID }, function()
++      local bed = reg("esi")
++      local sub = r32(bed + E_SUBTYPE)
++      if not wants(ID, sub) then return end
++      if run(ID, sub, wrap("EntityPlayer", reg("edx")), wrap("EntityPickup", bed)) == true then return 0x006ec4ba end
++    end)
++  end
++end
++
++-- 1227 ------------------------------------------------------------------------------------------------------------------
++do
++  local ID = M.MC_PRE_ROOM_COLLISION_PASS
++  if ID then
++    at("EntityList::Update@PreCommit", { ID }, function()
++      if not listening[ID] then return end
++      if r8(reg("ebx") + 8) ~= 0 then return end
++      run(ID, nil)
++    end)
++  end
++end
++
++-- 1124 ------------------------------------------------------------------------------------------------------------------
++do
++  local ID = M.MC_POST_SLOT_CREATE_EXPLOSION_DROPS
++  local slot = ID and slot_of("Entity_Slot::CreateDropsFromExplosion")
++  if slot and T.slot_obj then
++    T.define(slot, { ID }, function(self)
++      if wants(ID, r32(self + E_VARIANT)) then return { true } end
++      return false
++    end, function(self, esp, eax, k)
++      if k then run(ID, r32(self + E_VARIANT), T.slot_obj(self)) end
++    end)
++    at("Entity_Slot::TakeDamage@DonationDropsDone", { ID }, function()
++      local sa = reg("edi") - 0x3dc
++      local v = r32(sa + E_VARIANT)
++      if v ~= 8 or not wants(ID, v) then return end
++      run(ID, v, T.slot_obj(sa))
++    end)
++    at("Entity_Slot::TakeDamage@DonationDropsNone", { ID }, function()
++      local sa = reg("ebx")
++      local v = r32(sa + E_VARIANT)
++      if v ~= 8 or not wants(ID, v) then return end
++      run(ID, v, T.slot_obj(sa))
++    end)
++  end
++end
++
++-- 1125 / 1126 -----------------------------------------------------------------------------------------------------------
++do
++  local PRE, POST = M.MC_PRE_SLOT_SET_PRIZE_COLLECTIBLE, M.MC_POST_SLOT_SET_PRIZE_COLLECTIBLE
++  local slot = PRE and POST and slot_of("Entity_Slot::SetPrizeCollectible")
++  if slot and T.slot_obj then
++    T.define(slot, { PRE, POST }, function(self, esp)
++      local v = r32(self + E_VARIANT)
++      local id = ri32(esp + 4)
++      if wants(PRE, v) then
++        local res = run(PRE, v, T.slot_obj(self), id)
++        if res == false then return true, 0, 4 end
++        if math.type(res) == "integer" then id = res w32(esp + 4, res & 0xffffffff) end
++      end
++      if wants(POST, v) then return { id } end
++      return false
++    end, function(self, esp, eax, k)
++      if k then run(POST, r32(self + E_VARIANT), T.slot_obj(self), k[1]) end
++    end)
++  end
++end
++
++-- 1266 ------------------------------------------------------------------------------------------------------------------
++do
++  local ID = M.MC_PRE_PICKUP_VOIDED_ABYSS
++  if ID then
++    at("Entity_Player::UseActiveItem@AbyssPickup", { ID }, function()
++      local pk = reg("esi")
++      local v = r32(pk + E_VARIANT)
++      if not wants(ID, v) then return end
++      if run(ID, v, wrap("EntityPickup", pk)) == false then return 0x005c4014 end
 +    end)
 +  end
 +end
@@ -7947,7 +8734,7 @@ index 0000000..0a20798
 +end)
 diff --git a/scripts/recomp/rgon/api_game_misc.lua b/scripts/recomp/rgon/api_game_misc.lua
 new file mode 100644
-index 0000000..a658de1
+index 0000000..fece327
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_game_misc.lua
 @@ -0,0 +1,433 @@
@@ -8307,7 +9094,7 @@ index 0000000..a658de1
 +    if duration <= 0 then error("bad argument #2 to 'PlayJingle' (Duration must be greater than zero!)", 2) end
 +    call(0x007e2580, m, id & 0xffffffff, 140, 0)
 +    w32(m + COUNTDOWN, duration)
-+    B.w16(m + JINGLE_ID, id & 0xffff)
++    if not T.jingle_hooked then B.w16(m + JINGLE_ID, id & 0xffff) end   -- the hook (api_cb_music_menu.lua) stores the id the game started
 +  end)
 +  method("MusicManager", "StopJingle", function(self)
 +    local m = this(self, "StopJingle")
@@ -9548,8 +10335,267 @@ index 0000000..60c92d3
 +    end)
 +  end
 +end
+diff --git a/scripts/recomp/rgon/api_hook_h_one.lua b/scripts/recomp/rgon/api_hook_h_one.lua
+new file mode 100644
+index 0000000..79bf4e5
+--- /dev/null
++++ b/scripts/recomp/rgon/api_hook_h_one.lua
+@@ -0,0 +1,253 @@
++-- api_hook_h_one.lua -- final hook wave, part 1 (worker hook-h1): hook slots 357, 358, 359, 365-368 (tools/hook_table.py, hook_slots.lua).
++-- Written against REPENTOGON's behaviour (EntityPlus.cpp, LuaDelirium.cpp, ASMDelirium.cpp, ASMRoom.cpp, LuaEntityPlayer.cpp); every address
++-- measured in THIS executable (v1.9.7.17) and checked by lab_hook_h_one.lua.
++--   EntityNPC:Set/Get/ClearFlyingOverride   function hook 357 on Entity::IsFlying 0x006ac6c0 (thiscall, no arguments, plain ret, 20 callers).
++--       The override is kept here per entity (address + type + InitSeed word at +0x3ec, so a dead entity whose memory is reused is dropped);
++--       the slot is armed only while one is held. The game's Lua `Entity:IsFlying` is this very function, so Lua sees the override too.
++--   PlayerManager.SpawnSelectedBaby(baby, controller)   function hook 358 on PlayerManager::SpawnCoPlayerBaby 0x009b98e0 (`ret 4`). The game's
++--       spawn_selected_baby (0x009bd3b0, thiscall on the manager, stack (baby, controller), `ret 8`) never reads its baby argument and calls
++--       SpawnCoPlayerBaby(-1) at 0x009bd49a (return address 0x009bd49f); while a call of ours is in progress that argument is replaced.
++--   EntityDelirium.Transform and DeliriumCallbacks.PRE_TRANSFORMATION / TRANSFORMATION / POST_TRANSFORMATION   instruction hooks 365, 359, 366
++--       in Delirium's AI (0x004a6500): PRE at 0x004a6c46 (state byte +0xbd3 is 0x10 there; false sets state 8 and goes to 0x004a7501),
++--       TRANSFORMATION at 0x004a6d4f (ecx = type, edi = variant, ebx = the NPC), POST at 0x004a74fc. The callback ids are strings.
++--   EntityPlayer:Set/HasForcedCamoEffect   instruction hook 367 at 0x0079edc5 (the camo test of the player update, edi = the player): a
++--       forced player goes to 0x0079ee43, the branch the seed / Camo Undies / Faded Polaroid tests take. HasCamoEffect ORs the flag in
++--       (api_player_easy.lua asks T.forced_camo).
++--   MC_PRE_MEGA_SATAN_ENDING (1201)   instruction hook 368 at 0x007fc05f in the room-clear function 0x007fb250 (boss id 0x37 branch): true
++--       goes to 0x007fc073, the portal path, skipping the two tests that otherwise end in Game::End(8) at 0x007fc104.
++local T = ...
++local B, R, method, static, this, wrap = T.B, T.R, T.method, T.static, T.this, T.wrap
++local ptr, r8, r16, r32, ri32, w8, w16, w32, call, log, reg = B.ptr, B.r8, B.r16, B.r32, B.ri32, B.w8, B.w16, B.w32, B.call, B.log, B.reg
++local type, error, pairs, ipairs, rawget, pcall, tostring = type, error, pairs, ipairs, rawget, pcall, tostring
++local mathtype = math.type
++local M = ModCallbacks
++
++local SLOTS
++do
++  local chunk = B.load("hook_slots.lua")
++  if not chunk then return end
++  SLOTS = chunk()
++end
++if B.HOOKS < 400 or not B.INSN or not reg then return end
++local function slot_of(name)
++  local s = SLOTS[name]
++  if type(s) ~= "table" then log("api_hook_h_one: no hook slot for " .. name) return nil end
++  return s[1], s[3]
++end
++local function argerr(n, fname, want, got)
++  error("bad argument #" .. n .. " to '" .. fname .. "' (" .. want .. " expected, got " .. type(got) .. ")", 3)
++end
++local function int_arg(v, n, fname)
++  if mathtype(v) == "integer" then return v end
++  if type(v) == "number" and v == v // 1 then return math.tointeger(v) end
++  argerr(n, fname, "number", v)
++end
++local E_SEED, E_TYPE = 0x3ec, 0x28            -- the InitSeed word (read back by the lab) and the type word: stable for one entity's life
++local function sig(p) return r32(p + E_TYPE) * 0x100000000 + r32(p + E_SEED) end
++
++------------------------------------------------------------------------------
++-- EntityNPC flying override (slot 357)
++------------------------------------------------------------------------------
++do
++  local slot = slot_of("Entity::IsFlying")
++  if slot then
++    local over, count, armed = {}, 0, false      -- address -> { value, signature }
++    local function arm(on)
++      if on == armed then return end
++      armed = on
++      if on then
++        B.hook(slot, function(self, esp)
++          local o = over[self]
++          if not o then return end
++          if o[2] ~= sig(self) then over[self] = nil count = count - 1 return end
++          return true, o[1] and 1 or 0, 0
++        end)
++      else
++        B.hook(slot)
++      end
++    end
++    method("EntityNPC", "SetFlyingOverride", function(self, v)
++      local p = this(self, "SetFlyingOverride")
++      if type(v) ~= "boolean" then argerr(1, "SetFlyingOverride", "boolean", v) end
++      if not over[p] then count = count + 1 end
++      over[p] = { v, sig(p) }
++      arm(true)
++    end)
++    method("EntityNPC", "GetFlyingOverride", function(self)
++      local p = this(self, "GetFlyingOverride")
++      local o = over[p]
++      if o and o[2] == sig(p) then return o[1] end
++      return nil
++    end)
++    method("EntityNPC", "ClearFlyingOverride", function(self)
++      local p = this(self, "ClearFlyingOverride")
++      if over[p] then over[p] = nil count = count - 1 end
++      if count <= 0 then count = 0 arm(false) end
++    end)
++  end
++end
++
++------------------------------------------------------------------------------
++-- PlayerManager.SpawnSelectedBaby (slot 358)
++------------------------------------------------------------------------------
++do
++  local slot = slot_of("PlayerManager::SpawnCoPlayerBaby")
++  local PM = rawget(_G, "PlayerManager")
++  local GAME_PTR, PM_OFFSET = 0x00c71678, 0x1baa8
++  if slot and type(PM) == "table" then
++    local pending
++    static(PM, "PlayerManager", "SpawnSelectedBaby", function(baby, controller)
++      baby = int_arg(baby, 1, "SpawnSelectedBaby")
++      controller = int_arg(controller, 2, "SpawnSelectedBaby")
++      local g = r32(GAME_PTR)
++      if g == 0 then error("rgon: PlayerManager.SpawnSelectedBaby used with no game", 2) end
++      pending = baby & 0xffffffff
++      B.hook(slot, function(self, esp)
++        if pending and r32(esp) == 0x009bd49f then w32(esp + 4, pending) end
++      end)
++      local ok, err = pcall(call, 0x009bd3b0, g + PM_OFFSET, pending, controller & 0xffffffff)
++      pending = nil
++      B.hook(slot)
++      if not ok then error(err, 2) end
++    end)
++  end
++end
++
++------------------------------------------------------------------------------
++-- EntityDelirium: Transform and the three callbacks (slots 365, 359, 366)
++------------------------------------------------------------------------------
++do
++  local PRE_ID, ID, POST_ID = "DeliriumPreTransformation", "DeliriumTransformation", "DeliriumPostTransformation"
++  local BOSS_TYPE, BOSS_VARIANT, TIMER, STATE = 0xbc8, 0xbcc, 0xbd0, 0xbd3
++  local s_pre, a_pre = slot_of("Entity_NPC::delirium_update@PreTransform")
++  local s_tr, a_tr = slot_of("Entity_NPC::delirium_update@Transform")
++  local s_post, a_post = slot_of("Entity_NPC::delirium_update@PostTransform")
++  local forced = {}                            -- NPC address -> { type, variant, runCallback }
++  local function listened(id)
++    local ok, l = pcall(Isaac.GetCallbacks, id)
++    return ok and type(l) == "table" and #l > 0
++  end
++  if s_tr and s_pre and s_post then
++    B.hook(s_pre, function(va, esp, ebp)
++      if va ~= a_pre or not listened(PRE_ID) then return end
++      local npc = reg("ebx")
++      local res = T.run(PRE_ID, nil, wrap("EntityNPC", npc))
++      if res == false then
++        w8(npc + STATE, 8)           -- an attack state, so Delirium does not loop on the transformation
++        reg("eax", 8)
++        return 0x004a7501
++      end
++    end)
++    B.hook(s_tr, function(va, esp, ebp)
++      if va ~= a_tr then return end
++      local npc = reg("ebx")
++      local f = forced[npc]
++      local typ, var = reg("ecx"), reg("edi")
++      if f then
++        forced[npc] = nil
++        typ, var = f[1], f[2]
++        if not f[3] then reg("ecx", typ) reg("edi", var) return end
++        reg("ecx", typ) reg("edi", var)
++      end
++      if not listened(ID) then return end
++      local res = T.run(ID, nil, wrap("EntityNPC", npc), typ, var, f ~= nil)
++      if res == true then return end
++      if res == false then
++        reg("ecx", r32(npc + BOSS_TYPE)) reg("edi", r32(npc + BOSS_VARIANT))
++      elseif type(res) == "table" then
++        local t = res[1]
++        if mathtype(t) ~= "integer" and type(t) == "number" and t == t // 1 then t = math.tointeger(t) end
++        if mathtype(t) ~= "integer" then return end
++        local v = res[2]
++        if v ~= nil then
++          if mathtype(v) ~= "integer" and type(v) == "number" and v == v // 1 then v = math.tointeger(v) end
++          if mathtype(v) ~= "integer" then return end
++        end
++        reg("ecx", t & 0xffffffff) reg("edi", (v or 0) & 0xffffffff)
++      end
++    end)
++    B.hook(s_post, function(va, esp, ebp)
++      if va ~= a_post or not listened(POST_ID) then return end
++      T.run(POST_ID, nil, wrap("EntityNPC", reg("ebx")))
++    end)
++    method("EntityNPC", "Transform", function(self, typ, var, cb)
++      local p = this(self, "Transform")
++      if not (self.Type == 412 or (self.Type ~= 0 and r32(p + BOSS_TYPE) == self.Type and r32(p + BOSS_VARIANT) == self.Variant)) then
++        error("bad argument #1 to 'Transform' (EntityDelirium expected, got an entity of type " .. tostring(self.Type) .. ")", 2)
++      end
++      typ = int_arg(typ, 1, "Transform")
++      if typ < 10 then error("Invalid EntityType " .. typ .. " for Delirium", 2) end
++      var = var == nil and 0 or int_arg(var, 2, "Transform")
++      forced[p] = { typ & 0xffffffff, var & 0xffffffff, cb == true }
++      w16(p + TIMER, 1)
++    end)
++    R.Implemented["EntityNPC.Transform"] = nil
++    R.Implemented["EntityDelirium.Transform"] = true
++    R.Implemented[PRE_ID] = true
++    R.Implemented[ID] = true
++    R.Implemented[POST_ID] = true
++  end
++end
++
++------------------------------------------------------------------------------
++-- EntityPlayer forced camo (slot 367)
++------------------------------------------------------------------------------
++do
++  local slot, at = slot_of("Entity_Player::update_camo@SeedCamo")
++  if slot then
++    local over, count, armed = {}, 0, false      -- player address -> signature
++    local function arm(on)
++      if on == armed then return end
++      armed = on
++      if on then
++        B.hook(slot, function(va, esp, ebp)
++          if va ~= at then return end
++          local p = reg("edi")
++          local s = over[p]
++          if not s then return end
++          if s ~= sig(p) then over[p] = nil count = count - 1 return end
++          return 0x0079ee43
++        end)
++      else
++        B.hook(slot)
++      end
++    end
++    local function held(p)
++      local s = over[p]
++      if s and s ~= sig(p) then over[p] = nil count = count - 1 return false end
++      return s ~= nil
++    end
++    T.forced_camo = function(self) return held(ptr(self)) end
++    method("EntityPlayer", "SetForceCamoEffect", function(self, v)
++      local p = this(self, "SetForceCamoEffect")
++      if type(v) ~= "boolean" then argerr(1, "SetForceCamoEffect", "boolean", v) end
++      if v then
++        if not over[p] then count = count + 1 end
++        over[p] = sig(p)
++        arm(true)
++      else
++        if over[p] then over[p] = nil count = count - 1 end
++        if count <= 0 then count = 0 arm(false) end
++      end
++    end)
++    method("EntityPlayer", "HasForcedCamoEffect", function(self)
++      return held(this(self, "HasForcedCamoEffect"))
++    end)
++  end
++end
++
++------------------------------------------------------------------------------
++-- MC_PRE_MEGA_SATAN_ENDING (slot 368)
++------------------------------------------------------------------------------
++do
++  if M.MC_PRE_MEGA_SATAN_ENDING == nil then M.MC_PRE_MEGA_SATAN_ENDING = 1201 end
++  local id = M.MC_PRE_MEGA_SATAN_ENDING
++  local slot, at = slot_of("Room::SpawnClearAward@MegaSatanEnding")
++  if slot and T.define then
++    T.define(slot, { id }, function(va, esp, ebp)
++      if va ~= at then log("api_hook_h_one: MegaSatanEnding ran at 0x" .. string.format("%08x", va)) return end
++      local res = T.run(id, nil)
++      if res == true then return 0x007fc073 end
++    end, nil)
++  end
++end
 diff --git a/scripts/recomp/rgon/api_hooks.lua b/scripts/recomp/rgon/api_hooks.lua
-index 92f9c5b..0ebb6be 100644
+index 92f9c5b..0200bf7 100644
 --- a/scripts/recomp/rgon/api_hooks.lua
 +++ b/scripts/recomp/rgon/api_hooks.lua
 @@ -179,12 +179,23 @@ local CLASSES = {
@@ -10296,11 +11342,11 @@ index 92f9c5b..0ebb6be 100644
 +-- cb-c: EntityPickup:Get/Set/ClearCanRerollOverride and Room:Get/SetItemPool
 +------------------------------------------------------------------------------
 +-- Entity_Pickup::CanReroll 0x006ee200 (slot 221, thiscall, bool in AL, plain `ret`): the dead byte [ecx+0x173] answers false, an
-+-- override a mod set answers that, otherwise the game's own test runs. The override is kept per InitSeed (0x34) so it outlives the
++-- override a mod set answers that, otherwise the game's own test runs. The override is kept per InitSeed (the word at +0x3ec) so it outlives the
 +-- room (REPENTOGON keeps it in the entity's save state).
 +do
 +  local reroll = {}
-+  local E_INITSEED = 0x34
++  local E_INITSEED = 0x3ec
 +  local function pickup_of(self, what)
 +    local p = T.this(self, what)
 +    return p
@@ -10843,10 +11889,10 @@ index 0000000..c05a644
 +end
 diff --git a/scripts/recomp/rgon/api_host_misc.lua b/scripts/recomp/rgon/api_host_misc.lua
 new file mode 100644
-index 0000000..92bf2ed
+index 0000000..27278f5
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_host_misc.lua
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,251 @@
 +-- api_host_misc.lua -- wave 9, worker host-bridge: the REPENTOGON names that need the Host or the operating system.
 +--   Isaac.GetNanoTime      a monotonic clock in nanoseconds (bridge nanotime; both builds)
 +--   Isaac.SetWindowTitle   the stock window title plus the mod's text (Mac Build: bridge window_set_title); Isaac.GetWindowTitle
@@ -11039,6 +12085,21 @@ index 0000000..92bf2ed
 +-- ---- Input.GetMouseWheel ----
 +if B.wheel and Input and rawget(Input, "GetMouseWheel") == nil then
 +  static(Input, "Input", "GetMouseWheel", function() return Vector(0, B.wheel()) end)
++end
++
++-- ---- Isaac.CenterCursor, Input.GetDeviceNameByIdx (Mac Build only: the Host's SDL layer; names left out in the Browser Build) ----
++-- CenterCursor warps the cursor to the middle of the window; like REPENTOGON's it does nothing while the game window is not
++-- focused (and headless). GetDeviceNameByIdx: index 0 the keyboard, 1..4 the connected pads (SDL's name), nil past the last.
++if B.center_cursor and rawget(Isaac, "CenterCursor") == nil then
++  static(Isaac, "Isaac", "CenterCursor", function() B.center_cursor() end)
++end
++if B.device_name and Input and rawget(Input, "GetDeviceNameByIdx") == nil then
++  static(Input, "Input", "GetDeviceNameByIdx", function(idx)
++    if mathtype(idx) ~= "integer" then
++      if type(idx) == "number" and idx == idx // 1 then idx = math.tointeger(idx) else bad(1, "GetDeviceNameByIdx", "number", idx) end
++    end
++    return B.device_name(idx)
++  end)
 +end
 +
 +-- ---- Isaac.StartNewGame(playerType, challenge, difficulty, seed | Seeds, customRun) ----
@@ -14671,6 +15732,83 @@ index 40d6a51..977fd61 100644
      local function at(self, what)
        local p = ptr(self)
        if p == 0 then error("rgon: EntitySlot:" .. what .. " called without its object (use ':')", 3) end
+diff --git a/scripts/recomp/rgon/api_options.lua b/scripts/recomp/rgon/api_options.lua
+new file mode 100644
+index 0000000..7f43907
+--- /dev/null
++++ b/scripts/recomp/rgon/api_options.lua
+@@ -0,0 +1,71 @@
++-- api_options.lua -- wave 11, worker names-11: the Options fields REPENTOGON adds that are plain fields of the game's own options
++-- record (OptionsConfig). Options record = Manager ([0x00c7169c]) + 0x2a33c. Offsets are relative to the record and were measured
++-- in v1.9.7.17 against options.ini (REPENTOGON's v1.9.7.12 offsets are NOT the same from +0x5c on: the window fields moved by 8 and
++-- the online block by 4). Method: a probe dumped the record twice, once with the stock ini and once with a different value for
++-- every key (notes/names-11.md), and each field below sits where its key's value appears:
++--   +0x2c Exposure (float)    +0x30 Brightness (float)   +0x34 Contrast (float)
++--       Exposure follows the ini's Gamma (+0x28, which the game's own Options.Gamma reads); Brightness and Contrast have no ini key: they are
++--       the two floats between Exposure and the ControllerHotplug int (+0x38) in the same order as REPENTOGON's record, holding
++--       0.0 and 1.0 in a fresh options.ini (a neutral colour correction), so their offsets rest on that order and the read-back.
++--   +0x55 AimLockEnabled (bool)      +0x58 TouchMode (int)
++--   +0x74 WindowWidth  +0x78 WindowHeight  +0x7c WindowPosX  +0x80 WindowPosY (ints; the position setters clamp to 8..65535)
++--   +0x90 BossHPOnBottom (bool)      +0x9c AscentVoiceOver (bool)
++--   +0xa0 OnlineHUD (int)   +0xa4 StreamerMode (bool)   +0xa8 OnlinePlayerVolume (int)   +0xac OnlinePlayerOpacity (int)
++--   +0xb0 OnlineChatEnabled (bool)   +0xb1 OnlineChatFilterEnabled (bool)   +0xb4 OnlineColorSet (int)   +0xb8 OnlineInputDelay (int)
++-- Not done (they are REPENTOGON's own settings, kept in its ini, with no field in the game to read or write): BetterVoidGeneration,
++-- HushPanicStateFix, PreventModUpdates, QuickRoomClear, StatHUDPlanetarium. A stored value that changes nothing would be a stand-in.
++local T = ...
++local B, property = T.B, T.property
++local r8, ri32, rf32, w8, w32, wf32, r32 = B.r8, B.ri32, B.rf32, B.w8, B.w32, B.wf32, B.r32
++local type, error, math_max, math_min = type, error, math.max, math.min
++local mathtype = math.type
++
++local MANAGER, OPTIONS = 0x00c7169c, 0x2a33c
++-- the setter gets (object, value); the value is the last argument either way
++local function rec() return r32(MANAGER) + OPTIONS end
++
++local function bad(fname, want, v)
++  error("bad argument #1 to '" .. fname .. "' (" .. want .. " expected, got " .. (v == nil and "no value" or type(v)) .. ")", 3)
++end
++local function want_bool(v, name) if type(v) ~= "boolean" then bad(name, "boolean", v) end return v end
++local function want_int(v, name)
++  if mathtype(v) == "integer" then return v end
++  if type(v) == "number" and v == v // 1 and v > -2^31 and v < 2^31 then return math.tointeger(v) end
++  bad(name, "number", v)
++end
++local function want_num(v, name) if type(v) ~= "number" then bad(name, "number", v) end return v end
++
++local function bool_prop(name, off)
++  property("Options", name, function() return r8(rec() + off) ~= 0 end, function(...) w8(rec() + off, want_bool((select(-1, ...)), name) and 1 or 0) end)
++end
++local function int_prop(name, off, clamp)
++  property("Options", name, function() return ri32(rec() + off) end, function(...)
++    local v = want_int((select(-1, ...)), name)
++    if clamp then v = clamp(v) end
++    w32(rec() + off, v & 0xffffffff)
++  end)
++end
++local function float_prop(name, off)
++  property("Options", name, function() return rf32(rec() + off) end, function(...) wf32(rec() + off, want_num((select(-1, ...)), name)) end)
++end
++local function pos_clamp(v) return math_min(math_max(8, v), 65535) end
++
++float_prop("Exposure", 0x2c)
++float_prop("Brightness", 0x30)
++float_prop("Contrast", 0x34)
++bool_prop("AimLockEnabled", 0x55)
++int_prop("TouchMode", 0x58)
++int_prop("WindowWidth", 0x74)
++int_prop("WindowHeight", 0x78)
++int_prop("WindowPosX", 0x7c, pos_clamp)
++int_prop("WindowPosY", 0x80, pos_clamp)
++bool_prop("BossHPOnBottom", 0x90)
++bool_prop("AscentVoiceOver", 0x9c)
++int_prop("OnlineHUD", 0xa0)
++bool_prop("StreamerMode", 0xa4)
++int_prop("OnlinePlayerVolume", 0xa8)
++int_prop("OnlinePlayerOpacity", 0xac)
++bool_prop("OnlineChatEnabled", 0xb0)
++bool_prop("OnlineChatFilterEnabled", 0xb1)
++int_prop("OnlineColorSet", 0xb4)
++int_prop("OnlineInputDelay", 0xb8)
 diff --git a/scripts/recomp/rgon/api_pickup_more.lua b/scripts/recomp/rgon/api_pickup_more.lua
 new file mode 100644
 index 0000000..d2f9fcf
@@ -15308,10 +16446,10 @@ index 0000000..57abf68
 +end)
 diff --git a/scripts/recomp/rgon/api_player_easy.lua b/scripts/recomp/rgon/api_player_easy.lua
 new file mode 100644
-index 0000000..f8b99f0
+index 0000000..013e8e5
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_player_easy.lua
-@@ -0,0 +1,402 @@
+@@ -0,0 +1,403 @@
 +-- api_player_easy.lua -- wave 8, worker player-easy (audit batch B1): the easy names of EntityPlayer, Entity, PlayerManager,
 +-- EntitySlot, EntityEffect, LevelGeneratorRoom and MenuManager. Written against REPENTOGON's behaviour (LuaEntityPlayer.cpp,
 +-- LuaEntity.cpp, LuaPlayerManager.cpp, LuaEntitySlot.cpp, LuaEntityEffect.cpp, LuaLevelGenerator.cpp); every address and offset
@@ -15342,8 +16480,8 @@ index 0000000..f8b99f0
 +--   MenuManager: the Seeds object at +0x178: the manager constructor (0x00986450, allocates 0xf930) calls Seeds::constructor
 +--       (0x009e9290, fastcall) on `lea ecx, [edi + 0x178]` at 0x00986522.
 +--
-+-- Not done (needs an engine hook, deferred): EntityPlayer:SetForceCamoEffect / HasForcedCamoEffect. HasCamoEffect answers the
-+-- seed, Camo Undies and Faded Polaroid parts only. Where REPENTOGON refreshes the HUD's crafting preview (HUD::InvalidateCraftingItem,
++-- EntityPlayer:SetForceCamoEffect / HasForcedCamoEffect are in api_hook_h_one.lua (instruction hook 367); HasCamoEffect here ORs the flag in.
++-- Where REPENTOGON refreshes the HUD's crafting preview (HUD::InvalidateCraftingItem,
 +-- address not found) the Bag of Crafting setters leave the old preview until the game recalculates it (said once).
 +
 +local T = ...
@@ -15535,6 +16673,7 @@ index 0000000..f8b99f0
 +
 +method(P, "HasCamoEffect", function(self)
 +  this(self, "HasCamoEffect")
++  if T.forced_camo and T.forced_camo(self) then return true end
 +  local seeds = Game():GetSeeds()
 +  local S = rawget(_G, "SeedEffect")
 +  if S and ((S.SEED_CAMO_ISAAC and seeds:HasSeedEffect(S.SEED_CAMO_ISAAC)) or (S.SEED_CAMO_EVERYTHING and seeds:HasSeedEffect(S.SEED_CAMO_EVERYTHING))) then
@@ -21277,7 +22416,7 @@ index 3b6d51e..488241e 100644
  ]],
  }
 diff --git a/scripts/recomp/rgon/hook_slots.lua b/scripts/recomp/rgon/hook_slots.lua
-index 2187a0e..08b4b22 100644
+index 2187a0e..f187b2e 100644
 --- a/scripts/recomp/rgon/hook_slots.lua
 +++ b/scripts/recomp/rgon/hook_slots.lua
 @@ -100,6 +100,42 @@ return {
@@ -21357,7 +22496,7 @@ index 2187a0e..08b4b22 100644
    -- instruction hooks (round 110): slot, false, the instruction's address
    ["Entity_Player::EvaluateItems@TearsUp"] = { 160, false, 0x00764864 },
    ["Entity_Player::EvaluateItems@FlatTears"] = { 161, false, 0x00764f2e },
-@@ -170,4 +233,104 @@ return {
+@@ -170,4 +233,138 @@ return {
    ["Entity_Tear::Collision_00676be0@ParasiteSplit"] = { 167, false, 0x006770c2 },
    ["Entity_Tear::Collision_00676be0@BoneSplit"] = { 168, false, 0x00677498 },
    ["ModManager::RenderCharacterPortrait_008f8860@Frame"] = { 170, false, 0x008f89c4 },
@@ -21431,11 +22570,32 @@ index 2187a0e..08b4b22 100644
 +  ["Entity_Pickup::GetCoinValue"] = { 341, 0x0 },
 +  ["Room::TriggerEffectRemoved"] = { 342, 0x8 },
 +  ["RoomTransition::Render"] = { 343, 0x0 },
++  ["Entity_NPC::shopkeeper_get_loot"] = { 345, 0x8 },
++  ["Entity_NPC::fireplace_get_loot"] = { 346, 0x8 },
++  ["Entity_Player::RemovePocketItem"] = { 347, 0x4 },
++  ["Entity_Slot::CreateDropsFromExplosion"] = { 352, 0x0 },
++  ["Entity_Slot::SetPrizeCollectible"] = { 354, 0x4 },
 +  ["Minimap::Update"] = { 377, 0x0 },
 +  ["Minimap::Render"] = { 378, 0x0 },
 +  ["PlayerHUD::RenderInventory"] = { 379, 0x4 },
 +  ["PlayerHUD::RenderSpellQueue"] = { 380, 0x4 },
 +  ["PlayerHUD::RenderCraftingTable"] = { 381, 0x4 },
++  ["Music::PlayJingle"] = { 369, 0xc },
++  ["Music::EnableLayer"] = { 370, 0x8 },
++  ["Music::DisableLayer"] = { 371, 0x4 },
++  ["NightmareScene::Show"] = { 372, 0x4 },
++  ["ANM2::ReplaceSpritesheet"] = { 373, 0x8 },
++  ["Entity_Player::ShuffleCostumes"] = { 374, 0x4 },
++  ["Entity_Player::GetCollectibleNum"] = { 375, 0x8 },
++  ["Backdrop::RenderWalls"] = { 382, 0x30 },
++  ["Backdrop::RenderFloor"] = { 383, 0x30 },
++  ["Backdrop::RenderWater"] = { 384, 0x4 },
++  ["Backdrop::pre_render_walls"] = { 385, 0x0 },
++  ["Room::GetLightingAlpha"] = { 386, 0x0 },
++  ["Room::RenderGridLight"] = { 387, 0x8 },
++  ["Room::RenderEntityLight"] = { 388, 0x8 },
++  ["Entity::IsFlying"] = { 357, 0x0 },
++  ["PlayerManager::SpawnCoPlayerBaby"] = { 358, 0x4 },
 +  ["Camera::ClampedToRoom@Flag"] = { 307, false, 0x0094355b },
 +  ["Camera::Update_009439d0@SlowStopClamp"] = { 308, false, 0x0094433b },
 +  ["Level::GetRandomRoomIndex"] = { 329, 0x8 },
@@ -21461,6 +22621,19 @@ index 2187a0e..08b4b22 100644
 +  ["Game::GetPlanetariumChance@TreasurePenalty"] = { 396, false, 0x0074dcea },
 +  ["Room::GetDevilRoomChance@StagePenalty"] = { 397, false, 0x007f95dc },
 +  ["Room::save_entity@ShouldSave"] = { 399, false, 0x007eef2f },
++  ["Entity_NPC::UpdatePickupGhosts@ShouldShow"] = { 344, false, 0x006da575 },
++  ["Entity_Pickup::HandleCollision@PreCollectCard"] = { 348, false, 0x006ec058 },
++  ["Entity_Pickup::HandleCollision@PreCollectPill"] = { 349, false, 0x006ec1ce },
++  ["Entity_Pickup::HandleCollision@PreBedSleep"] = { 350, false, 0x006ec475 },
++  ["EntityList::Update@PreCommit"] = { 351, false, 0x00419443 },
++  ["Entity_Slot::TakeDamage@DonationDropsDone"] = { 353, false, 0x0066482f },
++  ["Entity_Slot::TakeDamage@DonationDropsNone"] = { 356, false, 0x0066484b },
++  ["Entity_Player::UseActiveItem@AbyssPickup"] = { 355, false, 0x005c3f56 },
++  ["Entity_NPC::delirium_update@Transform"] = { 359, false, 0x004a6d4f },
++  ["Entity_NPC::delirium_update@PreTransform"] = { 365, false, 0x004a6c46 },
++  ["Entity_NPC::delirium_update@PostTransform"] = { 366, false, 0x004a74fc },
++  ["Entity_Player::update_camo@SeedCamo"] = { 367, false, 0x0079edc5 },
++  ["Room::SpawnClearAward@MegaSatanEnding"] = { 368, false, 0x007fc05f },
  }
 diff --git a/scripts/recomp/rgon/lab_ambush_test.lua b/scripts/recomp/rgon/lab_ambush_test.lua
 new file mode 100644
@@ -23268,6 +24441,259 @@ index 0000000..b393f5f
 +  end
 +  local ok, err = pcall(f)
 +  if not ok then check(false, "step " .. idx .. " raised: " .. tostring(err)) end
++end)
+diff --git a/scripts/recomp/rgon/lab_cb_backdrop.lua b/scripts/recomp/rgon/lab_cb_backdrop.lua
+new file mode 100644
+index 0000000..681a728
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_cb_backdrop.lua
+@@ -0,0 +1,247 @@
++-- lab_cb_backdrop.lua (development only; ISAAC_RGON_LAB=lab_cb_backdrop.lua, worker cb-backdrop)
++-- Fires the callbacks of api_cb_backdrop.lua: 1106/1107 (the wall and floor passes: a Color, changed in the callback and drawn with),
++-- 1108 (water pass, with water in the room), 1109 (the wall pre-render, when the backdrop is loaded), 1150 (lighting alpha, an answer
++-- replaces it), 1151 (grid light) and 1152 (entity light): arguments, false skips, a Vector moves.
++-- "visual: <name>" lines mark the frames to photograph in a windowed run. Prints "lab_cb_backdrop: DONE n PASS m FAIL".
++local T = ...
++local B = T.B
++local M = ModCallbacks
++local mod = RegisterMod("rgon lab cb-backdrop", 1)
++local pass, fail = 0, 0
++local function say(s) B.log("lab_cb_backdrop: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_cb_backdrop: %s %s", ok and "PASS" or "FAIL", what))
++end
++local rec, beh = {}, {}
++local function count(n) return #(rec[n] or {}) end
++local function last(n) local l = rec[n] return l and l[#l] end
++local function reset(n) rec[n] = {} end
++local function tos(v)
++  if type(v) == "userdata" then
++    local ok, t = pcall(function()
++      if v.Type ~= nil and v.Variant ~= nil and v.GetData then return "ent:" .. v.Type .. "." .. v.Variant end
++      if v.GetGridIndex then return "grid:" .. v:GetType() .. "@" .. v:GetGridIndex() end
++      if v.RO ~= nil then return string.format("color:%.2f,%.2f,%.2f,%.2f", v.R, v.G, v.B, v.A) end
++      if v.X ~= nil then return string.format("vec:%.0f,%.0f", v.X, v.Y) end
++      return "userdata"
++    end)
++    return ok and t or "userdata"
++  end
++  return tostring(v)
++end
++local NAMES = {
++  "MC_PRE_BACKDROP_RENDER_WALLS", "MC_PRE_BACKDROP_RENDER_FLOOR", "MC_PRE_BACKDROP_RENDER_WATER", "MC_POST_BACKDROP_PRE_RENDER_WALLS",
++  "MC_PRE_GET_LIGHTING_ALPHA", "MC_PRE_RENDER_GRID_LIGHTING", "MC_PRE_RENDER_ENTITY_LIGHTING",
++}
++for _, n in ipairs(NAMES) do
++  local id = M[n]
++  if not id then
++    check(false, n .. " has a ModCallbacks number")
++  else
++    mod:AddCallback(id, function(_, ...)
++      local a = {}
++      for i = 1, select("#", ...) do a[#a + 1] = tos((select(i, ...))) end
++      local l = rec[n] or {}
++      rec[n] = l
++      local r = { n = select("#", ...), ... }
++      r.text = table.concat(a, ",")
++      l[#l + 1] = r
++      if #l <= 2 then say(string.format("%s #%d (%s)", n, #l, r.text)) end
++      local f = beh[n]
++      if f then return f(...) end
++    end)
++  end
++end
++
++local steps = {}
++local function step(f) steps[#steps + 1] = f end
++local waiting, wait_left, wait_what, wait_cond
++local function wait(what, frames, cond) waiting, wait_left, wait_what, wait_cond = true, frames, what, cond end
++local function room() return Game():GetRoom() end
++
++-- 1. the passes that run every frame
++step(function()
++  wait("walls, floor and light callbacks", 200, function()
++    return count("MC_PRE_BACKDROP_RENDER_WALLS") > 3 and count("MC_PRE_BACKDROP_RENDER_FLOOR") > 3 and count("MC_PRE_GET_LIGHTING_ALPHA") > 3
++      and count("MC_PRE_RENDER_GRID_LIGHTING") > 3 and count("MC_PRE_RENDER_ENTITY_LIGHTING") > 3
++  end)
++end)
++step(function()
++  for _, n in ipairs({ "MC_PRE_BACKDROP_RENDER_WALLS", "MC_PRE_BACKDROP_RENDER_FLOOR" }) do
++    local r = last(n)
++    check(r ~= nil and r.n == 1 and type(r[1]) == "userdata" and r[1].RO ~= nil, n .. " (Color) (" .. (r and r.text or "none") .. ")")
++    check(r ~= nil and r[1].A > 0 and r[1].A <= 1.0001 and r[1].R > 0, n .. " the Color is the game's tint, not zeros")
++  end
++  local r = last("MC_PRE_GET_LIGHTING_ALPHA")
++  check(r ~= nil and r.n == 1 and type(r[1]) == "number" and r[1] >= 0 and r[1] <= 1.5, "MC_PRE_GET_LIGHTING_ALPHA (originalAlpha) (" .. (r and r.text or "none") .. ")")
++  local g = last("MC_PRE_RENDER_GRID_LIGHTING")
++  check(g ~= nil and g.n == 2 and type(g[1]) == "userdata" and g[1].GetGridIndex ~= nil and type(g[2]) == "userdata" and g[2].X ~= nil,
++    "MC_PRE_RENDER_GRID_LIGHTING (grid, offset) (" .. (g and g.text or "none") .. ")")
++  local e = last("MC_PRE_RENDER_ENTITY_LIGHTING")
++  check(e ~= nil and e.n == 2 and type(e[1]) == "userdata" and e[1].Type ~= nil and type(e[2]) == "userdata" and e[2].X ~= nil,
++    "MC_PRE_RENDER_ENTITY_LIGHTING (entity, offset) (" .. (e and e.text or "none") .. ")")
++  say("visual: baseline")
++  wait("frames", 90, function() return false end)
++end)
++
++-- 2. the colours: the walls tinted red with a red offset, the floor blue
++step(function()
++  beh.MC_PRE_BACKDROP_RENDER_WALLS = function(c) c.R = 1 c.G = 0.1 c.B = 0.1 c.RO = 0.6 end
++  beh.MC_PRE_BACKDROP_RENDER_FLOOR = function(c) c.R = 0.1 c.G = 0.1 c.B = 1 c.BO = 0.6 end
++  say("visual: walls red, floor blue")
++  wait("frames", 90, function() return false end)
++end)
++step(function()
++  beh.MC_PRE_BACKDROP_RENDER_WALLS, beh.MC_PRE_BACKDROP_RENDER_FLOOR = nil, nil
++  say("visual: colours back")
++  reset("MC_PRE_BACKDROP_RENDER_WALLS")
++  wait("frames", 30, function() return false end)
++end)
++step(function()
++  local r = last("MC_PRE_BACKDROP_RENDER_WALLS")
++  check(r ~= nil and r[1].R > 0.9 and r[1].G > 0.9 and r[1].RO < 0.1, "the wall Color is the game's again, not the red one (" .. (r and r.text or "none") .. ")")
++  wait("frames", 30, function() return false end)
++end)
++
++-- 3. lighting alpha: 0.9 darkens the room, lights show
++local alpha_orig
++step(function()
++  alpha_orig = last("MC_PRE_GET_LIGHTING_ALPHA")[1]
++  beh.MC_PRE_GET_LIGHTING_ALPHA = function(a) return 0.9 end
++  reset("MC_PRE_GET_LIGHTING_ALPHA")
++  Isaac.Spawn(EntityType.ENTITY_FIREPLACE, 0, 0, Vector(200, 200), Vector(0, 0), nil)
++  Isaac.GridSpawn(GridEntityType.GRID_TELEPORTER, 0, room():GetGridPosition(65), true)
++  Isaac.GridSpawn(GridEntityType.GRID_PRESSURE_PLATE, 0, room():GetGridPosition(70), true)
++  local pp = room():GetGridEntity(70)
++  if pp then pp.State = 3 end
++  say("spawned teleporter " .. tostring(room():GetGridEntity(65) ~= nil) .. " plate " .. tostring(pp ~= nil))
++  say("visual: dark room 0.9")
++  wait("frames", 90, function() return false end)
++end)
++step(function()
++  local r = last("MC_PRE_GET_LIGHTING_ALPHA")
++  check(r ~= nil and type(r[1]) == "number" and math.abs(r[1] - alpha_orig) < 0.05,
++    "the callback still hears the game's own alpha, not the answer (" .. (r and r.text or "none") .. ", before " .. tostring(alpha_orig) .. ")")
++  -- entity lights skipped
++  reset("MC_PRE_RENDER_ENTITY_LIGHTING")
++  beh.MC_PRE_RENDER_ENTITY_LIGHTING = function() return false end
++  say("visual: dark, entity lights skipped")
++  wait("frames", 90, function() return false end)
++end)
++step(function()
++  check(count("MC_PRE_RENDER_ENTITY_LIGHTING") > 3, "MC_PRE_RENDER_ENTITY_LIGHTING keeps firing while it skips (" .. count("MC_PRE_RENDER_ENTITY_LIGHTING") .. ")")
++  beh.MC_PRE_RENDER_ENTITY_LIGHTING = function() return Vector(80, 0) end
++  say("visual: dark, entity lights moved 80 right")
++  wait("frames", 90, function() return false end)
++end)
++step(function()
++  local e = last("MC_PRE_RENDER_ENTITY_LIGHTING")
++  check(e ~= nil and math.abs(e[2].X) < 0.01 and math.abs(e[2].Y) < 0.01, "the offset handed to the next call is not carrying the previous answer (" .. (e and e.text or "none") .. ")")
++  beh.MC_PRE_RENDER_ENTITY_LIGHTING = nil
++  beh.MC_PRE_RENDER_GRID_LIGHTING = function() return false end
++  say("visual: dark, grid lights skipped")
++  wait("frames", 90, function() return false end)
++end)
++step(function()
++  check(count("MC_PRE_RENDER_GRID_LIGHTING") > 3, "MC_PRE_RENDER_GRID_LIGHTING keeps firing while it skips")
++  beh.MC_PRE_RENDER_GRID_LIGHTING = nil
++  beh.MC_PRE_GET_LIGHTING_ALPHA = nil
++  say("visual: back to normal")
++  wait("frames", 40, function() return false end)
++end)
++
++-- 3b. what the grid light code does to the room: the teleporter and the pressed plate make the game write the light scale words at
++-- room+0x6edc / 0x6ee0 (measured: Room::RenderGridLight sets them before the draw). A sentinel is put there at the first grid of each frame and
++-- read at the next one: with the callback letting the game run, it is overwritten; with false, the game's code never ran and it stays.
++local ROOM_SCALE, SENT = 0x6edc, 0x7fc00123
++local probe = { frames = 0, written = 0 }
++local function grid_probe(skip)
++  return function(g)
++    if g:GetGridIndex() == 0 then
++      local at = B.ptr(room()) + ROOM_SCALE
++      if probe.armed then
++        probe.frames = probe.frames + 1
++        if B.r32(at) ~= SENT then probe.written = probe.written + 1 end
++      end
++      B.w32(at, SENT)
++      probe.armed = true
++    end
++    if skip then return false end
++  end
++end
++step(function()
++  probe = { frames = 0, written = 0 }
++  beh.MC_PRE_RENDER_ENTITY_LIGHTING = function() return false end   -- the entity light code writes the same words
++  beh.MC_PRE_RENDER_GRID_LIGHTING = grid_probe(false)
++  wait("frames", 60, function() return false end)
++end)
++step(function()
++  check(probe.frames > 20 and probe.written > probe.frames * 0.8,
++    "without a skip the game's grid light code overwrites the sentinel (" .. probe.written .. " of " .. probe.frames .. " frames)")
++  probe = { frames = 0, written = 0 }
++  beh.MC_PRE_RENDER_GRID_LIGHTING = grid_probe(true)
++  wait("frames", 60, function() return false end)
++end)
++step(function()
++  check(probe.frames > 20 and probe.written == 0,
++    "with false the game's grid light code does not run: the sentinel stays (" .. probe.written .. " of " .. probe.frames .. " frames)")
++  beh.MC_PRE_RENDER_GRID_LIGHTING, beh.MC_PRE_RENDER_ENTITY_LIGHTING = nil, nil
++end)
++
++-- 4. water
++step(function()
++  reset("MC_PRE_BACKDROP_RENDER_WATER")
++  room():SetWaterAmount(1.0)
++  wait("water pass", 120, function() return count("MC_PRE_BACKDROP_RENDER_WATER") > 2 end)
++end)
++step(function()
++  local r = last("MC_PRE_BACKDROP_RENDER_WATER")
++  check(r ~= nil and r.n == 0, "MC_PRE_BACKDROP_RENDER_WATER fires with water in the room, no argument (" .. count("MC_PRE_BACKDROP_RENDER_WATER") .. ")")
++  say("visual: water")
++  room():SetWaterAmount(0)
++  wait("frames", 30, function() return false end)
++end)
++
++-- 5. the wall pre-render, when a backdrop is loaded
++step(function()
++  -- identity probe (BD_SKIP_PRE=1 in the environment): the game's function behind slot 385 is not run, and floor 2 is photographed
++  if B.env("BD_SKIP_PRE") == "1" then B.hook(385, function() return true, 0, 0 end, nil) say("slot 385 answers for the function") end
++  reset("MC_POST_BACKDROP_PRE_RENDER_WALLS")
++  Isaac.ExecuteCommand("stage 2")
++  wait("backdrop load", 240, function() return count("MC_POST_BACKDROP_PRE_RENDER_WALLS") > 0 end)
++end)
++step(function()
++  local r = last("MC_POST_BACKDROP_PRE_RENDER_WALLS")
++  check(r ~= nil and r.n == 0, "MC_POST_BACKDROP_PRE_RENDER_WALLS fires when the floor's backdrop is loaded, no argument (" .. count("MC_POST_BACKDROP_PRE_RENDER_WALLS") .. ")")
++  say("visual: floor 2")
++  wait("frames", 60, function() return false end)
++end)
++step(function()
++  B.log(string.format("lab_cb_backdrop: DONE %d PASS %d FAIL", pass, fail))
++end)
++
++local frame, i = 0, 0
++mod:AddCallback(M.MC_POST_UPDATE, function()
++  frame = frame + 1
++  if frame < 5 then return end
++  if waiting then
++    if wait_cond() then
++      waiting = false
++    else
++      wait_left = wait_left - 1
++      if wait_left <= 0 then
++        waiting = false
++        if wait_what ~= "frames" then check(false, "timed out waiting for " .. wait_what) end
++      else
++        return
++      end
++    end
++  end
++  if frame % 3 ~= 0 then return end
++  i = i + 1
++  local f = steps[i]
++  if not f then return end
++  local ok, err = pcall(f)
++  if not ok then check(false, "step " .. i .. " raised: " .. tostring(err)) end
 +end)
 diff --git a/scripts/recomp/rgon/lab_cb_c.lua b/scripts/recomp/rgon/lab_cb_c.lua
 new file mode 100644
@@ -26464,6 +27890,266 @@ index 0000000..254c1ec
 +    if not ok then fail = fail + 1 B.log("lab_cb_lua: FAIL step " .. i .. " error: " .. tostring(err)) end
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_cb_music_menu.lua b/scripts/recomp/rgon/lab_cb_music_menu.lua
+new file mode 100644
+index 0000000..123ebde
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_cb_music_menu.lua
+@@ -0,0 +1,254 @@
++-- lab_cb_music_menu.lua (development only; ISAAC_RGON_LAB=lab_cb_music_menu.lua, worker cb-music-menu)
++-- Fires the callbacks of api_cb_music_menu.lua and checks arguments and what an answer does:
++--   1094 jingle (the game's own PlayJingle through B.call: the countdown shows whether it ran) and MusicManager:GetCurrentJingleID,
++--   1035 layer toggle (the game's own layer bits read back with Music::IsLayerEnabled 0x007e2440),
++--   1116/1117 replace spritesheet (the layer's path read back), 1494/1495 shuffle costumes (the costume vector's order),
++--   1092 innate collectible count, 1103 nightmare scene (a restart shows it).
++-- Prints "lab_cb_music_menu: DONE n PASS m FAIL".
++local T = ...
++local B = T.B
++local M = ModCallbacks
++local mod = RegisterMod("rgon lab cb-music-menu", 1)
++local pass, fail = 0, 0
++local function say(s) B.log("lab_cb_music_menu: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_cb_music_menu: %s %s", ok and "PASS" or "FAIL", what))
++end
++
++local rec, beh = {}, {}
++local function count(n) return #(rec[n] or {}) end
++local function last(n) local l = rec[n] return l and l[#l] end
++local function reset(n) rec[n] = {} end
++local function tos(v)
++  if type(v) == "userdata" then
++    local ok, t = pcall(function()
++      if v.GetPlayerType then return "player:" .. v:GetPlayerType() end
++      return "userdata"
++    end)
++    return ok and t or "userdata"
++  end
++  return tostring(v)
++end
++local NAMES = { "MC_PRE_MUSIC_PLAY_JINGLE", "MC_PRE_MUSIC_LAYER_TOGGLE", "MC_POST_NIGHTMARE_SCENE_SHOW", "MC_PRE_REPLACE_SPRITESHEET",
++  "MC_POST_REPLACE_SPRITESHEET", "MC_PRE_SHUFFLE_COSTUMES", "MC_POST_SHUFFLE_COSTUMES", "MC_PRE_PLAYER_APPLY_INNATE_COLLECTIBLE_NUM" }
++for _, n in ipairs(NAMES) do
++  local id = M[n]
++  if not id then
++    check(false, n .. " has a ModCallbacks number")
++  else
++    mod:AddCallback(id, function(_, ...)
++      local a = {}
++      for i = 1, select("#", ...) do a[#a + 1] = tos((select(i, ...))) end
++      local l = rec[n] or {}
++      rec[n] = l
++      local r = { n = select("#", ...), ... }
++      r.text = table.concat(a, ",")
++      l[#l + 1] = r
++      if #l <= 3 then say(string.format("%s #%d (%s)", n, #l, r.text)) end
++      local f = beh[n]
++      if f then return f(...) end
++    end)
++  end
++end
++
++local game = Game()
++local ptr, r32 = B.ptr, B.r32
++local ri32 = B.ri32
++
++local function jingle()
++  local mm = MusicManager()
++  local m = ptr(mm)
++  check(type(mm.GetCurrentJingleID) == "function", "MusicManager.GetCurrentJingleID exists")
++  mm:StopJingle()
++  check(mm:GetCurrentJingleID() == 0, "no jingle: GetCurrentJingleID is 0")
++  -- the game's own function (no Layer write after it): the hook stores the id
++  local j = Music.MUSIC_JINGLE_TREASUREROOM_ENTRY or 14
++  B.w32(m + 0x364, 0)
++  B.call(0x007e2580, m, j, 140, 0)
++  local a = last("MC_PRE_MUSIC_PLAY_JINGLE")
++  check(a and a.n == 1 and a[1] == j, "1094 (musicId) for the game's own call: " .. tostring(a and a.text))
++  check(ri32(m + 0x364) == 0x8c, "the game started the jingle (countdown " .. ri32(m + 0x364) .. ")")
++  check(mm:GetCurrentJingleID() == j, "GetCurrentJingleID answers the id the game started: " .. tostring(mm:GetCurrentJingleID()))
++  -- an integer answer plays that id instead
++  mm:StopJingle()
++  local j2 = Music.MUSIC_JINGLE_BOSS_OVER or 15
++  if j2 == j then j2 = j + 1 end
++  beh.MC_PRE_MUSIC_PLAY_JINGLE = function(id) return j2 end
++  B.w32(m + 0x364, 0)
++  B.call(0x007e2580, m, j, 140, 0)
++  check(mm:GetCurrentJingleID() == j2, "an integer answer plays that id (" .. j .. " -> " .. j2 .. "): " .. tostring(mm:GetCurrentJingleID()))
++  -- false plays nothing: the countdown stays 0 and the stored id stays
++  mm:StopJingle()
++  beh.MC_PRE_MUSIC_PLAY_JINGLE = function() return false end
++  B.w32(m + 0x364, 0)
++  B.call(0x007e2580, m, j, 140, 0)
++  check(ri32(m + 0x364) == 0, "false cancels the jingle (countdown " .. ri32(m + 0x364) .. ")")
++  check(mm:GetCurrentJingleID() == 0, "...and GetCurrentJingleID stays 0")
++  beh.MC_PRE_MUSIC_PLAY_JINGLE = nil
++  -- the Layer's own PlayJingle goes through the hook too
++  reset("MC_PRE_MUSIC_PLAY_JINGLE")
++  mm:PlayJingle(j2)
++  check(count("MC_PRE_MUSIC_PLAY_JINGLE") == 1 and mm:GetCurrentJingleID() == j2, "MusicManager:PlayJingle(" .. j2 .. ") fires 1094 once and is read back: " .. tostring(mm:GetCurrentJingleID()))
++  mm:StopJingle()
++end
++
++local function layers()
++  local m = ptr(MusicManager())
++  local function on(id) return (B.call(0x007e2440, m, id) & 0xff) ~= 0 end
++  B.call(0x007e2410, m, 1) B.call(0x007e2410, m, 2)
++  reset("MC_PRE_MUSIC_LAYER_TOGGLE")
++  B.call(0x007e2280, m, 1, 0)
++  local a = last("MC_PRE_MUSIC_LAYER_TOGGLE")
++  check(a and a.n == 2 and a[1] == 1 and a[2] == true, "1035 (id, true) for EnableLayer: " .. tostring(a and a.text))
++  check(on(1), "layer 1 is enabled")
++  B.call(0x007e2410, m, 1)
++  a = last("MC_PRE_MUSIC_LAYER_TOGGLE")
++  check(a and a.n == 2 and a[1] == 1 and a[2] == false, "1035 (id, false) for DisableLayer: " .. tostring(a and a.text))
++  check(not on(1), "layer 1 is disabled again")
++  beh.MC_PRE_MUSIC_LAYER_TOGGLE = function() return false end
++  B.call(0x007e2280, m, 1, 0)
++  check(not on(1), "false keeps EnableLayer from enabling layer 1")
++  beh.MC_PRE_MUSIC_LAYER_TOGGLE = function(id, enabling) if enabling then return 2 end end
++  B.call(0x007e2280, m, 1, 0)
++  check(on(2) and not on(1), "an integer answer enables layer 2 instead of 1")
++  beh.MC_PRE_MUSIC_LAYER_TOGGLE = function() return false end
++  B.call(0x007e2410, m, 2)
++  check(on(2), "false keeps DisableLayer from disabling layer 2")
++  beh.MC_PRE_MUSIC_LAYER_TOGGLE = nil
++  B.call(0x007e2410, m, 2)
++  check(not on(2), "layer 2 is disabled again without an answer")
++end
++
++local function spritesheet()
++  local sp = Sprite()
++  sp:Load("gfx/005.100_collectible.anm2", false)
++  local file = sp:GetFilename()
++  check(file ~= "", "a sprite loaded: " .. file)
++  local layer = sp:GetLayer(0)
++  local before = layer:GetSpritesheetPath()
++  check(B.stdstr(ptr(sp)) == file, "the ANM2's own file name is the std::string at +0 (" .. tostring(B.stdstr(ptr(sp))) .. ")")
++  reset("MC_PRE_REPLACE_SPRITESHEET") reset("MC_POST_REPLACE_SPRITESHEET")
++  sp:ReplaceSpritesheet(0, "gfx/items/lab_plain_a.png")
++  local p, q = last("MC_PRE_REPLACE_SPRITESHEET"), last("MC_POST_REPLACE_SPRITESHEET")
++  check(p and p.n == 2 and p[1] == 0 and p[2] == "gfx/items/lab_plain_a.png", "1116 (layerId, png): " .. tostring(p and p.text))
++  check(q and q.n == 2 and q[1] == 0 and q[2] == "gfx/items/lab_plain_a.png", "1117 (layerId, png): " .. tostring(q and q.text))
++  check(layer:GetSpritesheetPath() == "gfx/items/lab_plain_a.png", "the path was replaced: " .. layer:GetSpritesheetPath())
++  -- param filter: a callback for another file does not hear this one (checked through the count)
++  beh.MC_PRE_REPLACE_SPRITESHEET = function(layerId, png) return { 0, "gfx/items/lab_other_path_that_is_longer_than_fifteen.png" } end
++  sp:ReplaceSpritesheet(0, "gfx/items/lab_plain_b.png")
++  q = last("MC_POST_REPLACE_SPRITESHEET")
++  check(layer:GetSpritesheetPath() == "gfx/items/lab_other_path_that_is_longer_than_fifteen.png", "a table answer replaces the png (long string): " .. layer:GetSpritesheetPath())
++  check(q and q[2] == "gfx/items/lab_other_path_that_is_longer_than_fifteen.png", "1117 hears the replaced png: " .. tostring(q and q.text))
++  beh.MC_PRE_REPLACE_SPRITESHEET = function() return { 0, "gfx/x.png" } end
++  sp:ReplaceSpritesheet(0, "gfx/items/lab_plain_c.png")
++  check(layer:GetSpritesheetPath() == "gfx/x.png", "a table answer with a short png: " .. layer:GetSpritesheetPath())
++  beh.MC_PRE_REPLACE_SPRITESHEET = nil
++  sp:ReplaceSpritesheet(0, before)
++  check(layer:GetSpritesheetPath() == before, "and back to the original path")
++end
++
++local function shuffle()
++  local p = Isaac.GetPlayer(0)
++  for _, id in ipairs({ 1, 2, 3, 4, 5, 12, 118, 149, 69, 52 }) do p:AddCollectible(id, 0, false) end
++  local pp = ptr(p)
++  local function order()
++    local b, e = r32(pp + 0x1220), r32(pp + 0x1224)
++    local t = {}
++    for a = b, e - 1, 0x130 do t[#t + 1] = string.format("%x", r32(a + 0x114)) end
++    return table.concat(t, ",")
++  end
++  local o0 = order()
++  say("costume vector: " .. (select(2, o0:gsub(",", ",")) + 1) .. " entries")
++  check(o0:find(",") ~= nil, "the player has several costumes")
++  reset("MC_PRE_SHUFFLE_COSTUMES") reset("MC_POST_SHUFFLE_COSTUMES")
++  beh.MC_PRE_SHUFFLE_COSTUMES = function() return false end
++  for s = 1, 6 do p:ShuffleCostumes(s * 977) end
++  local a = last("MC_PRE_SHUFFLE_COSTUMES")
++  check(a and a.n == 2 and a[1] ~= nil and a[2] == 6 * 977, "1494 (player, seed): " .. tostring(a and a.text))
++  check(count("MC_PRE_SHUFFLE_COSTUMES") == 6 and count("MC_POST_SHUFFLE_COSTUMES") == 0, "PRE false cancels: POST x" .. count("MC_POST_SHUFFLE_COSTUMES"))
++  check(order() == o0, "...and the costume order is unchanged")
++  beh.MC_PRE_SHUFFLE_COSTUMES = nil
++  local changed = false
++  for s = 1, 6 do
++    p:ShuffleCostumes(s * 977)
++    if order() ~= o0 then changed = true break end
++  end
++  local b = last("MC_POST_SHUFFLE_COSTUMES")
++  check(count("MC_POST_SHUFFLE_COSTUMES") >= 1 and b and b.n == 2, "1495 (player, seed) fires after a shuffle: " .. tostring(b and b.text))
++  check(changed, "an unanswered shuffle changes the costume order (the cancelled ones did not)")
++end
++
++local function innate()
++  local p = Isaac.GetPlayer(0)
++  local id = CollectibleType.COLLECTIBLE_SAD_ONION
++  local base = p:GetCollectibleNum(id)
++  reset("MC_PRE_PLAYER_APPLY_INNATE_COLLECTIBLE_NUM")
++  local seen = {}
++  beh.MC_PRE_PLAYER_APPLY_INNATE_COLLECTIBLE_NUM = function(mod_count, player, cid, only)
++    if cid ~= id then return nil end
++    seen = { mod_count, cid, only }
++    -- a mod asking for a count from inside the callback must not recurse
++    seen.nested = player:GetCollectibleNum(id)
++    return 2
++  end
++  local n = p:GetCollectibleNum(id)
++  check(n == base + 2, "1092: the answer is added to the count (" .. base .. " + 2 = " .. n .. ")")
++  check(seen[1] == 0 and seen[2] == id, "1092 (modCount, player, id, onlyTrue): modCount " .. tostring(seen[1]) .. " id " .. tostring(seen[2]))
++  check(seen.nested == base, "a count asked inside the callback is the game's (" .. tostring(seen.nested) .. ")")
++  beh.MC_PRE_PLAYER_APPLY_INNATE_COLLECTIBLE_NUM = nil
++  check(p:GetCollectibleNum(id) == base, "without an answer the count is the game's again")
++end
++
++-- 1103: a real floor change (the game's own trapdoor, as lab_trapdoor.lua does) shows the nightmare scene
++local step, frame, wait, trap = 0, 0, 0, nil
++mod:AddCallback(M.MC_POST_UPDATE, function()
++  frame = frame + 1
++  local room, p = game:GetRoom(), Isaac.GetPlayer(0)
++  if step == 0 and frame >= 12 then
++    for _, f in ipairs({ { "jingle", jingle }, { "layers", layers }, { "spritesheet", spritesheet }, { "shuffle", shuffle }, { "innate", innate } }) do
++      local ok, err = pcall(f[2])
++      if not ok then check(false, f[1] .. " raised: " .. tostring(err)) end
++    end
++    reset("MC_POST_NIGHTMARE_SCENE_SHOW")
++    step, wait = 1, 0
++  elseif step == 1 then
++    wait = wait + 1
++    if wait == 40 then
++      local want = room:FindFreePickupSpawnPosition(p.Position + Vector(80, 0), 0, true)
++      trap = Isaac.GridSpawn(GridEntityType.GRID_TRAPDOOR, 0, want, true)
++      step, wait = 2, 0
++    end
++  elseif step == 2 then
++    wait = wait + 1
++    local ge = room:GetGridEntity(room:GetGridIndex(trap and trap.Position or p.Position))
++    if wait >= 90 and ge then
++      p.Position = ge.Position
++      p.Velocity = Vector(0, 0)
++      step, wait = 3, 0
++    end
++  elseif step == 3 then
++    wait = wait + 1
++    if count("MC_POST_NIGHTMARE_SCENE_SHOW") > 0 or wait > 900 then
++      local a = last("MC_POST_NIGHTMARE_SCENE_SHOW")
++      check(a ~= nil and a.n == 1 and type(a[1]) == "boolean", "1103 (isDogma) after the nightmare scene's Show: " .. tostring(a and a.text) .. " (after " .. wait .. " frames)")
++      step, wait = 4, 0
++    end
++  elseif step == 4 then
++    -- the game's own jingles: the floor's start room after the nightmare scene, then a treasure room by the console
++    wait = wait + 1
++    if wait == 120 then
++      reset("MC_PRE_MUSIC_PLAY_JINGLE")
++      MusicManager():StopJingle()
++      Isaac.ExecuteCommand("goto s.treasure.1")
++    elseif wait == 400 then
++      local a = last("MC_PRE_MUSIC_PLAY_JINGLE")
++      say("game-started jingles seen after the console room change: " .. count("MC_PRE_MUSIC_PLAY_JINGLE") .. " (last " .. tostring(a and a.text) .. ") current id " .. MusicManager():GetCurrentJingleID())
++      if a then
++        check(MusicManager():GetCurrentJingleID() == a[1] or MusicManager():GetCurrentJingleID() == 0, "a game-started jingle (" .. a[1] .. ") is what GetCurrentJingleID answers while it plays, 0 after")
++      end
++      step = 5
++      B.log(string.format("lab_cb_music_menu: DONE %d PASS %d FAIL", pass, fail))
++    end
++  end
++end)
 diff --git a/scripts/recomp/rgon/lab_cb_pocket.lua b/scripts/recomp/rgon/lab_cb_pocket.lua
 new file mode 100644
 index 0000000..9aa506e
@@ -26621,6 +28307,270 @@ index 0000000..9aa506e
 +    started = "end"
 +    B.log(string.format("lab_cb_pocket: DONE %d PASS %d FAIL", pass, fail))
 +  end
++end)
+diff --git a/scripts/recomp/rgon/lab_cb_pocket_two.lua b/scripts/recomp/rgon/lab_cb_pocket_two.lua
+new file mode 100644
+index 0000000..f784eea
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_cb_pocket_two.lua
+@@ -0,0 +1,258 @@
++-- lab_cb_pocket_two.lua (development only; ISAAC_RGON_LAB=lab_cb_pocket_two.lua, worker cb-pocket-2)
++-- Fires the callbacks of api_cb_pocket_two.lua through the game (collisions, damage, items) or by calling the hooked
++-- functions, and checks arguments and what an answer does. Prints "lab_cb_pocket_two: DONE n PASS m FAIL".
++local T = ...
++local B = T.B
++local M = ModCallbacks
++local mod = RegisterMod("rgon lab cb-pocket-two", 1)
++local pass, fail = 0, 0
++local function say(s) B.log("lab_cb_pocket_two: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_cb_pocket_two: %s %s", ok and "PASS" or "FAIL", what))
++end
++
++local rec, beh = {}, {}
++local function count(n) return #(rec[n] or {}) end
++local function last(n) local l = rec[n] return l and l[#l] end
++local function reset(n) if n then rec[n] = {} else rec = {} end end
++local function tos(v)
++  if type(v) == "userdata" then
++    local ok, t = pcall(function()
++      if v.Type ~= nil and v.Variant ~= nil then return "ent:" .. v.Type .. "." .. v.Variant .. "." .. v.SubType end
++      return "userdata"
++    end)
++    return ok and t or "userdata"
++  end
++  return tostring(v)
++end
++local NAMES = { "MC_PRE_NPC_UPDATE_GHOST_PICKUPS", "MC_PRE_NPC_GET_LOOT_LIST", "MC_POST_NPC_GET_LOOT_LIST",
++  "MC_POST_PLAYER_REMOVE_CARD", "MC_POST_PLAYER_REMOVE_PILL", "MC_PRE_PLAYER_COLLECT_CARD", "MC_PRE_PLAYER_COLLECT_PILL",
++  "MC_PRE_BED_SLEEP", "MC_PRE_ROOM_COLLISION_PASS", "MC_POST_SLOT_CREATE_EXPLOSION_DROPS", "MC_PRE_SLOT_SET_PRIZE_COLLECTIBLE",
++  "MC_POST_SLOT_SET_PRIZE_COLLECTIBLE", "MC_PRE_PICKUP_VOIDED_ABYSS" }
++for _, n in ipairs(NAMES) do
++  local id = M[n]
++  if not id then
++    check(false, n .. " has a ModCallbacks number")
++  else
++    mod:AddCallback(id, function(_, ...)
++      local a = {}
++      for i = 1, select("#", ...) do a[#a + 1] = tos((select(i, ...))) end
++      local l = rec[n] or {}
++      rec[n] = l
++      local r = { n = select("#", ...), ... }
++      r.text = table.concat(a, ",")
++      l[#l + 1] = r
++      if #l <= 2 then say(string.format("%s #%d (%s)", n, #l, r.text)) end
++      local f = beh[n]
++      if f then return f(...) end
++    end)
++  end
++end
++
++local game = Game()
++local ptr = B.ptr
++local function pl() return Isaac.GetPlayer(0) end
++local function clear_room()
++  for _, e in ipairs(Isaac.GetRoomEntities()) do
++    if e.Type ~= EntityType.ENTITY_PLAYER and e.Type ~= EntityType.ENTITY_FAMILIAR then e:Remove() end
++  end
++end
++local function spawn(t, v, s, off) return Isaac.Spawn(t, v, s, pl().Position + (off or Vector(0, 0)), Vector(0, 0), nil) end
++
++local steps, cur, wait = {}, 0, 0
++local function step(f, frames) steps[#steps + 1] = { f = f, w = frames or 1 } end
++
++-- 1227: once per room update --------------------------------------------------------------------------------------------
++local updates = 0
++mod:AddCallback(M.MC_POST_UPDATE, function() updates = updates + 1 end)
++step(function() reset() base.f0 = updates end, 30)
++step(function()
++  local frames = updates - base.f0
++  local c = count("MC_PRE_ROOM_COLLISION_PASS")
++  local a = last("MC_PRE_ROOM_COLLISION_PASS")
++  check(c >= frames - 2 and c <= frames + 2, "1227 fires once per update (" .. c .. " calls in " .. frames .. " frames)")
++  check(a ~= nil and a.n == 0, "1227 passes no argument: " .. tostring(a and a.text))
++end)
++
++-- 1338 / 1337 / 1339: shopkeeper -----------------------------------------------------------------------------------------
++step(function()
++  reset() clear_room()
++  base.shop = spawn(EntityType.ENTITY_SHOPKEEPER, 0, 0, Vector(100, 0))
++  base.shop:ToNPC():UpdatePickupGhosts()
++  local a = last("MC_PRE_NPC_UPDATE_GHOST_PICKUPS")
++  check(a ~= nil and a.n == 1 and a[1].Type == EntityType.ENTITY_SHOPKEEPER, "1338 (npc) fires for UpdatePickupGhosts: " .. tostring(a and a.text))
++  local sp = ptr(base.shop)
++  local g0 = B.r32(sp + 0xf50)
++  check(g0 == 0, "no ghost sprite without Guppy's Eye and without an answer (" .. g0 .. ")")
++  beh.MC_PRE_NPC_UPDATE_GHOST_PICKUPS = function() return true end
++  local g1 = 0
++  for _ = 1, 6 do
++    base.shop:ToNPC():UpdatePickupGhosts()
++    g1 = B.r32(sp + 0xf50)
++    if g1 ~= 0 then break end
++  end
++  check(g1 ~= 0, "answer true shows the ghost pickups without Guppy's Eye ([npc+0xf50] " .. g0 .. " -> " .. g1 .. ")")
++  beh.MC_PRE_NPC_UPDATE_GHOST_PICKUPS = nil
++
++  -- loot list callbacks
++  reset()
++  local l0 = base.shop:ToNPC():GetShopkeeperLoot(false)
++  local n0 = #l0:GetEntries()
++  local pre, post = last("MC_PRE_NPC_GET_LOOT_LIST"), last("MC_POST_NPC_GET_LOOT_LIST")
++  check(pre ~= nil and pre.n == 3 and pre[1].Type == EntityType.ENTITY_SHOPKEEPER and pre[2] == false, "1337 (npc, shouldAdvance, rng): " .. tostring(pre and pre.text))
++  check(post ~= nil and post.n == 4 and type(post[2]) == "table" and #post[2]:GetEntries() == n0, "1339 (npc, list with the game's " .. n0 .. " entries, advance, rng): " .. tostring(post and post.text))
++  beh.MC_POST_NPC_GET_LOOT_LIST = function(npc, list) list:PushEntry(5, 20, 1) end
++  local l1 = base.shop:ToNPC():GetShopkeeperLoot(false)
++  local es = l1:GetEntries()
++  check(#es == n0 + 1 and es[#es]:GetVariant() == 20, "an entry pushed in 1339 is in the answered list (" .. #es .. ", was " .. n0 .. ")")
++  beh.MC_POST_NPC_GET_LOOT_LIST = nil
++  beh.MC_PRE_NPC_GET_LOOT_LIST = function() local l = LootList() l:PushEntry(5, 10, 2) return l end
++  local l2 = base.shop:ToNPC():GetShopkeeperLoot(false)
++  check(#l2:GetEntries() == 1 and l2:GetEntries()[1]:GetVariant() == 10, "the LootList 1337 answers replaces the game's (" .. #l2:GetEntries() .. ")")
++  beh.MC_PRE_NPC_GET_LOOT_LIST = nil
++  base.shop:Remove()
++  -- fireplace
++  reset()
++  base.fire = spawn(EntityType.ENTITY_FIREPLACE, 0, 0, Vector(100, 0))
++  local lf = base.fire:ToNPC():GetFireplaceLoot(false)
++  local pf = last("MC_PRE_NPC_GET_LOOT_LIST")
++  check(pf ~= nil and pf[1].Type == EntityType.ENTITY_FIREPLACE, "1337 fires for the fireplace producer too: " .. tostring(pf and pf.text))
++  base.fire:Remove()
++end)
++
++-- 1354 / 1355: RemovePocketItem -------------------------------------------------------------------------------------------
++step(function()
++  reset()
++  local p = pl()
++  p:SetCard(0, Card.CARD_FOOL)
++  B.call(0x007a4850, ptr(p), 0)
++  local a = last("MC_POST_PLAYER_REMOVE_CARD")
++  check(a ~= nil and a.n == 3 and a[2] == Card.CARD_FOOL and a[3] == 0, "1354 (player, id, slot) after RemovePocketItem(0) of a card: " .. tostring(a and a.text))
++  check(p:GetCard(0) == 0, "the card is gone")
++  p:SetPill(0, PillColor.PILL_BLUE_BLUE)
++  B.call(0x007a4850, ptr(p), 0)
++  local b = last("MC_POST_PLAYER_REMOVE_PILL")
++  check(b ~= nil and b.n == 3 and b[2] == PillColor.PILL_BLUE_BLUE, "1355 for a pill: " .. tostring(b and b.text))
++  local c0 = count("MC_POST_PLAYER_REMOVE_CARD")
++  B.call(0x007a4850, ptr(p), 0)
++  check(count("MC_POST_PLAYER_REMOVE_CARD") == c0 and count("MC_POST_PLAYER_REMOVE_PILL") == 1, "an empty slot reports nothing")
++end)
++
++-- 1356 / 1358: collecting off the floor -----------------------------------------------------------------------------------
++step(function()
++  reset() clear_room()
++  base.card = spawn(EntityType.ENTITY_PICKUP, PickupVariant.PICKUP_TAROTCARD, Card.CARD_FOOL)
++  beh.MC_PRE_PLAYER_COLLECT_CARD = function() return false end
++end, 40)
++step(function()
++  local a = last("MC_PRE_PLAYER_COLLECT_CARD")
++  check(a ~= nil and a.n == 2 and a[2].Variant == PickupVariant.PICKUP_TAROTCARD, "1356 (player, pickup): " .. tostring(a and a.text))
++  check(base.card:Exists() and pl():GetCard(0) == 0, "answer false: the card stays on the floor, the player has none")
++  beh.MC_PRE_PLAYER_COLLECT_CARD = nil
++end, 40)
++step(function()
++  check(not base.card:Exists() or base.card:ToPickup():IsDead() or pl():GetCard(0) == Card.CARD_FOOL, "no answer: the card is picked up (card " .. pl():GetCard(0) .. ")")
++  pl():SetCard(0, 0)
++  clear_room()
++  reset()
++  base.pill = spawn(EntityType.ENTITY_PICKUP, PickupVariant.PICKUP_PILL, PillColor.PILL_BLUE_BLUE)
++  beh.MC_PRE_PLAYER_COLLECT_PILL = function() return false end
++end, 40)
++step(function()
++  local a = last("MC_PRE_PLAYER_COLLECT_PILL")
++  check(a ~= nil and a.n == 2, "1358 (player, pickup): " .. tostring(a and a.text))
++  check(base.pill:Exists() and pl():GetPill(0) == 0, "answer false: the pill stays on the floor")
++  beh.MC_PRE_PLAYER_COLLECT_PILL = nil
++end, 40)
++step(function()
++  check(not base.pill:Exists() or pl():GetPill(0) ~= 0, "no answer: the pill is picked up (pill " .. pl():GetPill(0) .. ")")
++  pl():SetPill(0, 0)
++  clear_room()
++end)
++
++-- 1124: slot explosions ---------------------------------------------------------------------------------------------------
++for _, v in ipairs({ 1, 10, 8 }) do
++  step(function()
++    reset() clear_room()
++    base.s = spawn(EntityType.ENTITY_SLOT, v, 0, Vector(100, 0))
++    if v == 8 then base.s:ToSlot():SetDonationValue(50) end
++    base.s:TakeDamage(10, DamageFlag.DAMAGE_EXPLOSION, EntityRef(pl()), 0)
++    local a = last("MC_POST_SLOT_CREATE_EXPLOSION_DROPS")
++    check(count("MC_POST_SLOT_CREATE_EXPLOSION_DROPS") == 1 and a ~= nil and a.n == 1 and a[1].Variant == v, "1124 fires once for an exploded variant-" .. v .. " slot: " .. count("MC_POST_SLOT_CREATE_EXPLOSION_DROPS") .. " " .. tostring(a and a.text))
++    base.s:Remove()
++  end)
++end
++
++-- 1125 / 1126 -------------------------------------------------------------------------------------------------------------
++step(function()
++  reset() clear_room()
++  base.s = spawn(EntityType.ENTITY_SLOT, 15, 0, Vector(100, 0))
++  local sp = ptr(base.s)
++  base.s:ToSlot():SetPrizeCollectible(CollectibleType.COLLECTIBLE_SAD_ONION)
++  local a, b = last("MC_PRE_SLOT_SET_PRIZE_COLLECTIBLE"), last("MC_POST_SLOT_SET_PRIZE_COLLECTIBLE")
++  check(a ~= nil and a.n == 2 and a[2] == CollectibleType.COLLECTIBLE_SAD_ONION, "1125 (slot, id): " .. tostring(a and a.text))
++  check(b ~= nil and b.n == 2 and b[2] == CollectibleType.COLLECTIBLE_SAD_ONION, "1126 (slot, id): " .. tostring(b and b.text))
++  check(B.ri32(sp + 0x540) == CollectibleType.COLLECTIBLE_SAD_ONION, "the prize is stored (" .. B.ri32(sp + 0x540) .. ")")
++  beh.MC_PRE_SLOT_SET_PRIZE_COLLECTIBLE = function() return CollectibleType.COLLECTIBLE_SPOON_BENDER end
++  base.s:ToSlot():SetPrizeCollectible(CollectibleType.COLLECTIBLE_SAD_ONION)
++  check(B.ri32(sp + 0x540) == CollectibleType.COLLECTIBLE_SPOON_BENDER, "an integer answer replaces the prize (" .. B.ri32(sp + 0x540) .. ")")
++  local c = last("MC_POST_SLOT_SET_PRIZE_COLLECTIBLE")
++  check(c ~= nil and c[2] == CollectibleType.COLLECTIBLE_SPOON_BENDER, "1126 gets the replaced id: " .. tostring(c and c.text))
++  beh.MC_PRE_SLOT_SET_PRIZE_COLLECTIBLE = function() return false end
++  local n = count("MC_POST_SLOT_SET_PRIZE_COLLECTIBLE")
++  base.s:ToSlot():SetPrizeCollectible(CollectibleType.COLLECTIBLE_SAD_ONION)
++  check(B.ri32(sp + 0x540) == CollectibleType.COLLECTIBLE_SPOON_BENDER and count("MC_POST_SLOT_SET_PRIZE_COLLECTIBLE") == n, "answer false cancels it and the POST")
++  beh.MC_PRE_SLOT_SET_PRIZE_COLLECTIBLE = nil
++  base.s:Remove()
++end)
++
++-- 1266: Abyss -------------------------------------------------------------------------------------------------------------
++step(function()
++  reset() clear_room()
++  base.ped = spawn(EntityType.ENTITY_PICKUP, PickupVariant.PICKUP_COLLECTIBLE, CollectibleType.COLLECTIBLE_SAD_ONION, Vector(80, 0))
++  beh.MC_PRE_PICKUP_VOIDED_ABYSS = function() return false end
++  pl():UseActiveItem(CollectibleType.COLLECTIBLE_ABYSS, UseFlag.USE_NOANIM)
++  local a = last("MC_PRE_PICKUP_VOIDED_ABYSS")
++  check(a ~= nil and a.n == 1 and a[1].Variant == PickupVariant.PICKUP_COLLECTIBLE, "1266 (pickup): " .. tostring(a and a.text))
++  check(base.ped:Exists() and base.ped.SubType == CollectibleType.COLLECTIBLE_SAD_ONION, "answer false: the pedestal keeps its item")
++  beh.MC_PRE_PICKUP_VOIDED_ABYSS = nil
++  pl():UseActiveItem(CollectibleType.COLLECTIBLE_ABYSS, UseFlag.USE_NOANIM)
++  check(not base.ped:Exists() or base.ped.SubType ~= CollectibleType.COLLECTIBLE_SAD_ONION, "no answer: the Abyss takes the pedestal (subtype " .. tostring(base.ped.SubType) .. ")")
++  clear_room()
++end, 5)
++
++-- 1288: bed -----------------------------------------------------------------------------------------------------------------
++step(function()
++  reset() clear_room()
++  pl():AddHearts(-1)
++  base.bed = spawn(EntityType.ENTITY_PICKUP, 380, 0)
++  beh.MC_PRE_BED_SLEEP = function() return true end
++end, 40)
++step(function()
++  local a = last("MC_PRE_BED_SLEEP")
++  check(a ~= nil and a.n == 2, "1288 (player, bed) fires when a hurt player walks onto a bed: " .. tostring(a and a.text))
++  check(base.bed:Exists() and not base.bed:ToPickup():IsDead(), "answer true: the bed is not used")
++  beh.MC_PRE_BED_SLEEP = nil
++end, 40)
++step(function()
++  say("bed exists " .. tostring(base.bed:Exists()) .. " state " .. tostring(base.bed:ToPickup().State))
++end)
++
++base = {}
++local frame, done = 0, false
++mod:AddCallback(M.MC_POST_UPDATE, function()
++  frame = frame + 1
++  if frame < 12 or done then return end
++  if wait > 0 then wait = wait - 1 return end
++  cur = cur + 1
++  local s = steps[cur]
++  if not s then
++    done = true
++    B.log(string.format("lab_cb_pocket_two: DONE %d PASS %d FAIL", pass, fail))
++    return
++  end
++  local ok, err = pcall(s.f)
++  if not ok then check(false, "step " .. cur .. " raised: " .. tostring(err)) end
++  wait = s.w
 +end)
 diff --git a/scripts/recomp/rgon/lab_census.lua b/scripts/recomp/rgon/lab_census.lua
 new file mode 100644
@@ -28141,6 +30091,239 @@ index 0000000..0a9e655
 +  elseif wait == 240 then
 +    say(string.format("after the room change: %d effect removals fired", removed))
 +  end
++end)
+diff --git a/scripts/recomp/rgon/lab_ending_labs.lua b/scripts/recomp/rgon/lab_ending_labs.lua
+new file mode 100644
+index 0000000..98de49c
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_ending_labs.lua
+@@ -0,0 +1,227 @@
++-- lab_ending_labs.lua (development only; ISAAC_RGON_LAB=lab_ending_labs.lua, worker ending-labs, wave 11)
++-- ISAAC_LAB_PHASE=greed : a Greed Mode run (as lab_cb_h.lua); 1059 MC_PRE_SELECT_GREED_WAVE must fire for the game's own waves, and a
++--   RoomConfigRoom answer must change the wave (the room variant the game spawns).
++-- ISAAC_LAB_PHASE=mega  : `goto s.boss.5000` (the Mega Satan room) and its kill; logs what the game does.
++-- ISAAC_LAB_PHASE=ascent: Ascent state; logs 1308.
++-- Prints "lab_ending_labs: DONE n PASS m FAIL". Steps run one after another on MC_POST_UPDATE.
++local T = ...
++local B = T.B
++local M = ModCallbacks
++local mod = RegisterMod("rgon lab ending-labs", 1)
++local phase = B.env("ISAAC_LAB_PHASE") or "greed"
++local pass, fail = 0, 0
++local game = Game()
++local function say(s) B.log("lab_ending_labs: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_ending_labs: %s %s", ok and "PASS" or "FAIL", what))
++end
++local steps = {}
++local frame, i = 0, 0
++local function step(f) steps[#steps + 1] = f end
++local waiting, wait_left, wait_what, wait_cond
++local function wait(what, frames, cond) waiting, wait_left, wait_what, wait_cond = true, frames, what, cond end
++local function room_info()
++  local r, l = game:GetRoom(), game:GetLevel()
++  return string.format("stage %d room idx %d type %d variant %s", l:GetStage(), l:GetCurrentRoomIndex(), r:GetType(), tostring(l:GetCurrentRoomDesc().Data and l:GetCurrentRoomDesc().Data.Variant))
++end
++
++if phase == "greed" then
++  local hits, hits2, pend = {}, {}, {}
++  mod:AddCallback(M.MC_PRE_SELECT_GREED_WAVE or 1059, function(_, cfg, seed)
++    hits[#hits + 1] = { cfg = cfg, seed = seed, wave = game:GetLevel().GreedModeWave, n = cfg and cfg.Variant }
++    local base = {}
++    for _, e in ipairs(Isaac.GetRoomEntities()) do base[GetPtrHash(e)] = true end
++    pend[#hits] = { base = base, at = Isaac.GetFrameCount() }
++    say(string.format("1059 #%d cfg %s variant %s seed %s wave %s", #hits, tostring(cfg), tostring(cfg and cfg.Variant), tostring(seed), tostring(game:GetLevel().GreedModeWave)))
++    if #hits >= 2 and #hits <= 4 and hits[1].cfg then return hits[1].cfg end   -- waves 2-4 are answered with wave 1's room
++  end)
++  local sigs = {}
++  -- the kinds of enemies two waves share (a room's spawns vary a little with the seed, so the sets are compared by overlap)
++  local function shared(a, b)
++    local n = 0
++    for t in tostring(a):gmatch("%S+") do if (" " .. tostring(b) .. " "):find(" " .. t .. " ", 1, true) then n = n + 1 end end
++    return n
++  end
++  mod:AddCallback(M.MC_POST_START_GREED_WAVE, function()
++    hits2[#hits2 + 1] = game:GetLevel().GreedModeWave
++  end)
++  mod:AddCallback(M.MC_POST_UPDATE, function()
++    for k, p in pairs(pend) do
++      if Isaac.GetFrameCount() >= p.at + 160 then
++        local l = {}
++        for _, e in ipairs(Isaac.GetRoomEntities()) do
++          if not p.base[GetPtrHash(e)] and e:IsActiveEnemy(false) then l[#l + 1] = e.Type .. "." .. e.Variant end
++        end
++        table.sort(l)
++        local seen, u = {}, {}
++        for _, t in ipairs(l) do if not seen[t] then seen[t] = true u[#u + 1] = t end end   -- the kinds of enemies, not the count
++        sigs[k] = table.concat(u, " ")
++        say("wave " .. k .. " new enemies: " .. sigs[k])
++        pend[k] = nil
++      end
++    end
++  end)
++  step(function()
++    local mgr = B.r32(0x00c7169c)
++    B.w32(mgr + 0x4b198, 2)
++    Isaac.ExecuteCommand("restart")
++    wait("restart", 90, function() return false end)
++  end)
++  step(function()
++    say("IsGreedMode " .. tostring(game:IsGreedMode()))
++    Isaac.ExecuteCommand("debug 3")
++    local room = game:GetRoom()
++    local p = Isaac.GetPlayer(0)
++    for gi = 0, room:GetGridSize() - 1 do
++      local ge = room:GetGridEntity(gi)
++      if ge and ge:GetType() == GridEntityType.GRID_PRESSURE_PLATE then p.Position = ge.Position end
++    end
++    wait("greed wave", 900, function() return sigs[1] ~= nil end)
++  end)
++  step(function()
++    check(game:IsGreedMode(), "the run is a Greed Mode run")
++    check(#hits >= 1, "1059 fired from the game's own wave start: " .. #hits)
++    check(#hits >= 1 and hits[1].cfg ~= nil and hits[1].cfg.Type ~= nil, "it gets a RoomConfigRoom")
++    check(#hits >= 1 and type(hits[1].seed) == "number" and hits[1].seed ~= 0, "it gets a non-zero seed " .. tostring(hits[1] and hits[1].seed))
++    check(#hits2 >= 1, "1489 also fired (the wave started): " .. #hits2)
++    for _, e in ipairs(Isaac.GetRoomEntities()) do if e:IsActiveEnemy(false) then e:Kill() end end
++    wait("second wave", 900, function() return sigs[2] ~= nil end)
++  end)
++  step(function()
++    check(#hits >= 2 and hits[2].seed ~= hits[1].seed, "the second wave has another seed: " .. tostring(hits[2] and hits[2].seed))
++    check(#hits >= 2 and hits[2].wave == hits[1].wave + 1, "wave counter advanced")
++    check(sigs[1] and sigs[2] and shared(sigs[1], sigs[2]) >= 1,"answering wave 2 with wave 1's room spawns wave 1's enemies: [" .. tostring(sigs[1]) .. "] vs [" .. tostring(sigs[2]) .. "]")
++    for _, e in ipairs(Isaac.GetRoomEntities()) do if e:IsActiveEnemy(false) then e:Kill() end end
++    wait("third wave", 900, function() return sigs[3] ~= nil end)
++  end)
++  step(function()
++    check(sigs[3] ~= nil and shared(sigs[1], sigs[3]) >= 1,"wave 3 answered with wave 1's room: [" .. tostring(sigs[3]) .. "]")
++    for _, e in ipairs(Isaac.GetRoomEntities()) do if e:IsActiveEnemy(false) then e:Kill() end end
++    wait("fourth wave", 900, function() return sigs[4] ~= nil end)
++  end)
++  step(function()
++    check(sigs[4] ~= nil and shared(sigs[1], sigs[4]) >= 1, "wave 4 answered with wave 1's room: [" .. tostring(sigs[4]) .. "] vs [" .. tostring(sigs[1]) .. "]")
++    for _, e in ipairs(Isaac.GetRoomEntities()) do if e:IsActiveEnemy(false) then e:Kill() end end
++    wait("fifth wave", 900, function() return sigs[5] ~= nil end)
++  end)
++  step(function()
++    check(sigs[5] ~= nil and sigs[5] ~= "" and shared(sigs[1], sigs[5]) == 0,"wave 5 (no answer again) goes back to the game's own pick: [" .. tostring(sigs[5]) .. "]")
++  end)
++elseif phase == "mega" then
++  mod:AddCallback(M.MC_POST_NEW_ROOM, function() say("new room: " .. room_info()) end)
++  step(function() say("start " .. room_info()) Isaac.ExecuteCommand("debug 3") Isaac.ExecuteCommand("goto s.boss.5000") wait("goto", 60, function() return false end) end)
++  step(function()
++    say("after goto: " .. room_info())
++    local n = 0
++    for _, e in ipairs(Isaac.GetRoomEntities()) do if e:IsActiveEnemy(false) then n = n + 1 say("enemy " .. e.Type .. "." .. e.Variant) end end
++    say("enemies " .. n .. " clear " .. tostring(game:GetRoom():IsClear()))
++    wait("settle", 60, function() return false end)
++  end)
++  step(function()
++    wait("kill", 1500, function()
++      for _, e in ipairs(Isaac.GetRoomEntities()) do
++        if e:IsActiveEnemy(false) then
++          e:TakeDamage(100000, 0, EntityRef(Isaac.GetPlayer(0)), 0)
++          e:Kill()
++        end
++      end
++      return game:GetRoom():IsClear()
++    end)
++  end)
++  step(function()
++    say("after kill: " .. room_info() .. " clear " .. tostring(game:GetRoom():IsClear()))
++    for _, e in ipairs(Isaac.GetRoomEntities()) do if e.Type == 5 then say("pickup " .. e.Variant .. "." .. e.SubType) end end
++    for gi = 0, game:GetRoom():GetGridSize() - 1 do
++      local ge = game:GetRoom():GetGridEntity(gi)
++      if ge and ge:GetType() == GridEntityType.GRID_TRAPDOOR then say("trapdoor grid " .. gi) end
++    end
++  end)
++elseif phase == "force" then
++  step(function()
++    Isaac.ExecuteCommand("debug 3")
++    Isaac.ExecuteCommand("forceroom s.boss.5000")
++    Isaac.ExecuteCommand("reseed")
++    wait("settle", 120, function() return false end)
++  end)
++  step(function()
++    say("after reseed: " .. room_info())
++    local l = game:GetLevel()
++    local found = 0
++    for idx = 0, 168 do
++      local d = l:GetRoomByIdx(idx)
++      if d and d.Data then
++        if d.Data.Type == RoomType.ROOM_BOSS then say(string.format("boss room idx %d variant %s", idx, tostring(d.Data.Variant))) end
++        if d.Data.Variant == 5000 then found = found + 1 say("variant 5000 at idx " .. idx .. " type " .. d.Data.Type) end
++      end
++    end
++    say("rooms with variant 5000: " .. found)
++  end)
++elseif phase == "ascent" then
++  local got = {}
++  local ID = M.MC_POST_BACKWARDS_ROOM_RESTORE
++  say("MC_POST_BACKWARDS_ROOM_RESTORE = " .. tostring(ID))
++  mod:AddCallback(ID or 1308, function(_, stage, desc, key)
++    got[#got + 1] = { stage = stage, desc = desc, key = key, ty = desc and desc.Data and desc.Data.Type, var = desc and desc.Data and desc.Data.Variant }
++    say(string.format("1308 #%d stage %s desc idx %s key %s", #got, tostring(stage), tostring(desc and desc.SafeGridIndex), tostring(key)))
++  end)
++  local saved = {}
++  mod:AddCallback(M.MC_POST_BACKWARDS_ROOM_SAVE, function(_, stage, desc, key)
++    saved[key] = desc and desc.Data and desc.Data.Variant
++    say(string.format("1307 stage %s key %s variant %s", tostring(stage), tostring(key), tostring(saved[key])))
++  end)
++  mod:AddCallback(M.MC_POST_NEW_LEVEL, function() say("new level: " .. room_info() .. " ascent " .. tostring(game:GetStateFlag(GameStateFlag.STATE_BACKWARDS_PATH))) end)
++  step(function()
++    say("start " .. room_info())
++    Isaac.ExecuteCommand("debug 3")
++    -- save floor 1's boss and treasure rooms the way the game does when it leaves a floor, then go down
++    B.call(0x00708050, { ecx = B.ptr(game) }, 1)
++    Isaac.ExecuteCommand("stage 2")
++    wait("stage 2", 300, function() return game:GetLevel():GetStage() == 2 end)
++  end)
++  step(function()
++    say("on " .. room_info())
++    game:SetStateFlag(GameStateFlag.STATE_BACKWARDS_PATH, true)
++    say("backwards flag " .. tostring(game:GetStateFlag(GameStateFlag.STATE_BACKWARDS_PATH)))
++    Isaac.ExecuteCommand("stage 1")
++    wait("stage 1", 300, function() return game:GetLevel():GetStage() == 1 and #got > 0 end)
++  end)
++  step(function()
++    say("back on " .. room_info() .. " restores " .. #got)
++    check(#got >= 1, "1308 fired when the game rebuilt a floor on the Ascent path: " .. #got)
++    local k = got[1]
++    check(k ~= nil and k.stage == 1 and k.desc ~= nil and k.desc.SafeGridIndex ~= nil and type(k.key) == "string", "(stage, roomDescriptor, key)")
++    for _, r in ipairs(got) do
++      check(r.key == "boss_0" or r.key == "treasure_0", "key " .. tostring(r.key) .. " uses the numbering of 1307")
++      check(saved[r.key] ~= nil and saved[r.key] == r.var, "the restored room is the one saved on floor 1: " .. tostring(r.key) .. " variant " .. tostring(r.var) .. " (saved " .. tostring(saved[r.key]) .. ")")
++      check((r.key:sub(1, 4) == "boss" and r.ty == RoomType.ROOM_BOSS) or (r.key:sub(1, 4) == "trea" and r.ty == RoomType.ROOM_TREASURE), "room type " .. tostring(r.ty) .. " matches the key")
++    end
++  end)
++else
++  mod:AddCallback(M.MC_POST_NEW_ROOM, function() say("new room: " .. room_info()) end)
++  step(function() say("start " .. room_info()) end)
++end
++
++mod:AddCallback(M.MC_POST_UPDATE, function()
++  frame = frame + 1
++  if frame < 5 then return end
++  if waiting then
++    if wait_cond() then waiting = false
++    else
++      wait_left = wait_left - 1
++      if wait_left <= 0 then
++        waiting = false
++        if wait_what ~= "restart" and wait_what ~= "goto" and wait_what ~= "settle" and wait_what ~= "kill" and wait_what ~= "stage 2" and wait_what ~= "stage 1" then check(false, "timed out waiting for " .. wait_what) end
++      else return end
++    end
++  end
++  if frame % 3 ~= 0 then return end
++  i = i + 1
++  local f = steps[i]
++  if not f then
++    if i == #steps + 1 then B.log(string.format("lab_ending_labs: DONE %d PASS %d FAIL", pass, fail)) end
++    return
++  end
++  local ok, err = pcall(f)
++  if not ok then check(false, "step " .. i .. " raised: " .. tostring(err)) end
 +end)
 diff --git a/scripts/recomp/rgon/lab_engine_names.lua b/scripts/recomp/rgon/lab_engine_names.lua
 new file mode 100644
@@ -30824,12 +33007,393 @@ index 0000000..bd44b1a
 +    done()
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_hook_h_one.lua b/scripts/recomp/rgon/lab_hook_h_one.lua
+new file mode 100644
+index 0000000..3318faa
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_hook_h_one.lua
+@@ -0,0 +1,375 @@
++-- lab_hook_h_one.lua (development only; ISAAC_RGON_LAB=lab_hook_h_one.lua, worker hook-h1, final hook wave part 1)
++-- ISAAC_LAB_PHASE=main (default): flying override, camo, co-op baby, Delirium transform and its three callbacks.
++-- ISAAC_LAB_PHASE=mega : `goto s.boss.5000`, kill the room; ISAAC_LAB_ANSWER=true makes MC_PRE_MEGA_SATAN_ENDING answer true.
++-- Prints "lab_hook_h_one: DONE n PASS m FAIL". Steps run one after another on MC_POST_UPDATE.
++local T = ...
++local B = T.B
++local M = ModCallbacks
++local mod = RegisterMod("rgon lab hook-h-one", 1)
++local phase = B.env("ISAAC_LAB_PHASE") or "main"
++local pass, fail = 0, 0
++local game = Game()
++local function say(s) B.log("lab_hook_h_one: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_hook_h_one: %s %s", ok and "PASS" or "FAIL", what))
++end
++local steps = {}
++local frame, i = 0, 0
++local function step(f) steps[#steps + 1] = f end
++local waiting, wait_left, wait_cond
++local function wait(frames, cond) waiting, wait_left, wait_cond = true, frames, cond or function() return false end end
++local function player() return Isaac.GetPlayer(0) end
++local function fixed(e) e:AddEntityFlags(EntityFlag.FLAG_NO_KNOCKBACK) e.Velocity = Vector(0, 0) end
++
++if phase == "main" then
++  ------------------------------------------------------------------------------------------------ flying override
++  local gaper, fly, g_a, g_b
++  step(function()
++    Isaac.ExecuteCommand("debug 3")
++    local room = game:GetRoom()
++    local c = room:GetCenterPos()
++    gaper = Isaac.Spawn(10, 0, 0, c + Vector(-120, 0), Vector(0, 0), nil):ToNPC()
++    fly = Isaac.Spawn(18, 0, 0, c + Vector(0, 80), Vector(0, 0), nil):ToNPC()
++    local found = {}
++    for o = 0, 0x2000, 4 do if B.r32(B.ptr(gaper) + o) == gaper.InitSeed then found[#found + 1] = string.format("%x", o) end end
++    for _, k in ipairs({ "Index", "DropSeed", "SpawnerType", "SpawnerVariant", "GridCollisionClass", "Variant", "SubType" }) do
++      local f2 = {}
++      for o = 0, 0x400, 4 do if B.r32(B.ptr(gaper) + o) == (gaper[k] & 0xffffffff) then f2[#f2 + 1] = string.format("%x", o) end end
++      say(k .. " " .. tostring(gaper[k]) .. " at " .. table.concat(f2, " ", 1, math.min(#f2, 8)))
++    end
++    say("words +0x30..+0x3c: " .. B.r32(B.ptr(gaper) + 0x30) .. " " .. B.r32(B.ptr(gaper) + 0x34) .. " " .. B.r32(B.ptr(gaper) + 0x38))
++    do
++      local pk = Isaac.Spawn(5, 20, 1, game:GetRoom():GetCenterPos() + Vector(60, 60), Vector(0, 0), nil)
++      local f3 = {}
++      for o = 0, 0x400, 4 do if B.r32(B.ptr(pk) + o) == pk.InitSeed then f3[#f3 + 1] = string.format("%x", o) end end
++      say("pickup InitSeed " .. pk.InitSeed .. " at " .. table.concat(f3, " ") .. "; word +0x34 = " .. B.r32(B.ptr(pk) + 0x34))
++      local a0, b0 = B.r32(B.ptr(pk) + 0x3dc), B.r32(B.ptr(pk) + 0x3ec)
++      local rng = pk:GetDropRNG()
++      for _ = 1, 5 do rng:RandomInt(100) end
++      pk:Update()
++      say(string.format("pickup seed words before %d %d, after 5 draws %d %d, InitSeed %d, DropSeed-ish %d", a0, b0, B.r32(B.ptr(pk) + 0x3dc), B.r32(B.ptr(pk) + 0x3ec), pk.InitSeed, pk:GetDropRNG():GetSeed()))
++      pk:Remove()
++    end
++    say("InitSeed " .. gaper.InitSeed .. " found at offsets " .. table.concat(found, " "))
++    check(B.r32(B.ptr(gaper) + 0x3ec) == gaper.InitSeed, "InitSeed word at entity +0x3ec reads back (+0x34 is 0)")
++    check(gaper:IsFlying() == false, "Gaper IsFlying false")
++    check(fly:IsFlying() == true, "Fly IsFlying true")
++    check(gaper:GetFlyingOverride() == nil, "GetFlyingOverride nil when unset")
++    gaper:SetFlyingOverride(true)
++    check(gaper:GetFlyingOverride() == true, "GetFlyingOverride true after Set(true)")
++    check(gaper:IsFlying() == true, "Gaper IsFlying true with override")
++    fly:SetFlyingOverride(false)
++    check(fly:IsFlying() == false, "Fly IsFlying false with override false")
++    check(gaper:IsFlying() == true, "the other override is untouched")
++    check(not pcall(function() gaper:SetFlyingOverride(1) end), "Set(non boolean) raises")
++    gaper:ClearFlyingOverride()
++    check(gaper:IsFlying() == false and gaper:GetFlyingOverride() == nil, "Clear: IsFlying false, Get nil")
++    fly:ClearFlyingOverride()
++    check(fly:IsFlying() == true, "Fly back to true after Clear")
++    gaper:Remove() fly:Remove()
++  end)
++  -- the game's reaction: a grounded enemy on player creep takes damage, an overridden one does not
++  step(function()
++    local c = game:GetRoom():GetCenterPos()
++    g_a = Isaac.Spawn(10, 0, 0, c + Vector(-100, -60), Vector(0, 0), nil):ToNPC()
++    g_b = Isaac.Spawn(10, 0, 0, c + Vector(100, -60), Vector(0, 0), nil):ToNPC()
++    g_a:AddEntityFlags(EntityFlag.FLAG_FREEZE) g_b:AddEntityFlags(EntityFlag.FLAG_FREEZE)
++    g_a.MaxHitPoints = 1000 g_a.HitPoints = 1000 g_b.MaxHitPoints = 1000 g_b.HitPoints = 1000
++    g_b:SetFlyingOverride(true)
++    for _, e in ipairs({ g_a, g_b }) do
++      local fx = Isaac.Spawn(1000, EffectVariant.PLAYER_CREEP_GREEN, 0, e.Position, Vector(0, 0), player())
++      fx:ToEffect().Timeout = 400
++    end
++    wait(120)
++  end)
++  step(function()
++    say(string.format("creep reaction: control hp %.1f, overridden hp %.1f", g_a.HitPoints, g_b.HitPoints))
++    check(g_a.HitPoints < 1000 and g_b.HitPoints == 1000, "grounded enemy on player creep is hurt, the overridden one is not")
++    g_b:ClearFlyingOverride()
++    g_a:Remove() g_b:Remove()
++  end)
++  ------------------------------------------------------------------------------------------------ camo
++  local function snapshot(p, n)
++    local a, t = B.ptr(p), {}
++    for o = 0, n - 4, 4 do t[o] = B.r32(a + o) end
++    return t
++  end
++  local function diff(a, b)
++    local d, n = {}, 0
++    for o, v in pairs(a) do if b[o] ~= v then d[#d + 1] = o n = n + 1 end end
++    table.sort(d)
++    return d
++  end
++  local base1, base2, seed, forced
++  local function colorinfo(p)
++    local s = p:GetSprite().Color
++    return string.format("sprite A %.3f R %.3f / entity A %.3f", s.A, s.R, p:GetColor() and p:GetColor().A or -1)
++  end
++  step(function()
++    local p = player()
++    p.Position = game:GetRoom():GetCenterPos() + Vector(0, 100)
++    wait(10)
++  end)
++  step(function() base1 = snapshot(player(), 0x2200) wait(4) end)
++  step(function()
++    base2 = snapshot(player(), 0x2200)
++    local d = diff(base1, base2)
++    say("camo baseline noise words: " .. #d .. " " .. colorinfo(player()))
++    check(player():HasCamoEffect() == false and player():HasForcedCamoEffect() == false, "no camo, no forced camo at start")
++    -- the forced camo goes FIRST, from the clean baseline: once the camo colour is set the game never restores it (measured:
++    -- 600 frames after the seed is removed it is still 0.010), so a forced step after a seed step would prove nothing
++    player():SetForceCamoEffect(true)
++    check(player():HasForcedCamoEffect() == true and player():HasCamoEffect() == true, "SetForceCamoEffect(true): Has* true")
++    check(not pcall(function() player():SetForceCamoEffect(1) end), "SetForceCamoEffect(non boolean) raises")
++    wait(4)
++  end)
++  step(function()
++    forced = snapshot(player(), 0x2200)
++    say("camo forced (no seed applied yet): " .. colorinfo(player()))
++    check(player():GetSprite().Color.R < 0.5 and base2[0x170c] ~= forced[0x170c], "forced camo alone (no seed) turned the sprite colour down and changed +0x170c")
++    player():SetForceCamoEffect(false)
++    check(player():HasForcedCamoEffect() == false and player():HasCamoEffect() == false, "SetForceCamoEffect(false): Has* false")
++    game:GetSeeds():AddSeedEffect(SeedEffect.SEED_CAMO_ISAAC)
++    wait(4)
++  end)
++  step(function()
++    seed = snapshot(player(), 0x2200)
++    say("camo by seed (reference): " .. colorinfo(player()))
++    game:GetSeeds():RemoveSeedEffect(SeedEffect.SEED_CAMO_ISAAC)
++    local ds = diff(base2, seed)
++    local df = diff(base2, forced)
++    local noise = {}
++    for _, o in ipairs(diff(base1, base2)) do noise[o] = true end
++    local sd, fd = {}, {}
++    for _, o in ipairs(ds) do if not noise[o] then sd[#sd + 1] = string.format("%x", o) end end
++    for _, o in ipairs(df) do if not noise[o] then fd[#fd + 1] = string.format("%x", o) end end
++    say("words differing from baseline (seed): " .. table.concat(sd, " "))
++    say("words differing from baseline (forced): " .. table.concat(fd, " "))
++    -- animation words (frame counters) drift between two snapshots; the camo colour words 0x170c, 0x1710, 0x1714 are the measured effect
++    local same = #sd > 0
++    for _, o in ipairs({ 0x170c, 0x1710, 0x1714 }) do if forced[o] ~= seed[o] or forced[o] == base2[o] then same = false end end
++    check(same, "the camo colour words (+0x170c, +0x1710, +0x1714) the forced camo set equal the values the seed's camo sets")
++    wait(8)
++  end)
++  step(function()
++    local back = snapshot(player(), 0x2200)
++    local n = 0
++    for _, o in ipairs(diff(base2, back)) do n = n + 1 end
++    say("after unforcing, words differing from baseline: " .. n)
++  end)
++  ------------------------------------------------------------------------------------------------ co-op baby
++  local n0
++  step(function()
++    n0 = game:GetNumPlayers()
++    local ok, err = pcall(PlayerManager.SpawnSelectedBaby, 3, 0)
++    check(ok, "SpawnSelectedBaby(3, 1) does not raise: " .. tostring(err))
++    wait(10)
++  end)
++  local baby1
++  step(function()
++    local n1 = game:GetNumPlayers()
++    check(n1 == n0 + 1, "a co-op player was added (" .. n0 .. " -> " .. n1 .. ")")
++    local p = game:GetPlayer(n1 - 1)
++    local ok, skin = pcall(function() return p:GetBabySkin() end)
++    baby1 = ok and skin or nil
++    say("baby 1 type " .. tostring(p:GetPlayerType()) .. " skin " .. tostring(baby1))
++    check(baby1 == 3, "the new co-op baby is baby 3 (skin " .. tostring(baby1) .. ")")
++    n0 = n1
++    pcall(PlayerManager.SpawnSelectedBaby, 7, 0)
++    wait(10)
++  end)
++  step(function()
++    local n1 = game:GetNumPlayers()
++    local p = game:GetPlayer(n1 - 1)
++    local ok, skin = pcall(function() return p:GetBabySkin() end)
++    say("baby 2 type " .. tostring(p:GetPlayerType()) .. " skin " .. tostring(skin) .. " players " .. n1)
++    check(n1 == n0 + 1 and skin == 7, "the second call spawns baby 7 (skin " .. tostring(skin) .. ")")
++  end)
++  ------------------------------------------------------------------------------------------------ Delirium
++  local del, log_seen = nil, {}
++  local answer_pre, answer_tr
++  mod:AddCallback("DeliriumPreTransformation", function(_, d)
++    log_seen[#log_seen + 1] = "PRE"
++    say("PRE_TRANSFORMATION type " .. d.Type)
++    return answer_pre
++  end)
++  mod:AddCallback("DeliriumTransformation", function(_, d, typ, var, forced)
++    log_seen[#log_seen + 1] = "TR:" .. typ .. "." .. var .. ":" .. tostring(forced)
++    say(string.format("TRANSFORMATION %d.%d forced %s", typ, var, tostring(forced)))
++    return answer_tr
++  end)
++  mod:AddCallback("DeliriumPostTransformation", function(_, d)
++    log_seen[#log_seen + 1] = "POST"
++    say("POST_TRANSFORMATION type " .. d.Type)
++  end)
++  local function dstate() return B.r8(B.ptr(del) + 0xbd3) end
++  step(function()
++    Isaac.ExecuteCommand("clearcache")
++    for _, e in ipairs(Isaac.GetRoomEntities()) do if e:IsActiveEnemy(false) then e:Remove() end end
++    del = Isaac.Spawn(412, 0, 0, game:GetRoom():GetCenterPos(), Vector(0, 0), nil):ToNPC()
++    del.MaxHitPoints = 100000 del.HitPoints = 100000
++    wait(900, function()
++      return dstate() == 8
++    end)
++  end)
++  step(function()
++    say("Delirium state byte " .. dstate() .. " type " .. del.Type .. " boss " .. B.ri32(B.ptr(del) + 0xbc8) .. "." .. B.ri32(B.ptr(del) + 0xbcc))
++    check(dstate() == 8, "Delirium reached the attack state 8")
++    check(not pcall(function() del:Transform(5, 0) end), "Transform(type < 10) raises")
++    log_seen = {}
++    del:Transform(20, 0, true)
++    check(B.r16(B.ptr(del) + 0xbd0) == 1, "Transform writes the 16-bit timer = 1")
++    wait(240, function() return B.ri32(B.ptr(del) + 0xbc8) == 20 end)
++  end)
++  step(function()
++    say("after Transform(20,0): boss " .. B.ri32(B.ptr(del) + 0xbc8) .. "." .. B.ri32(B.ptr(del) + 0xbcc) .. " entity type " .. del.Type .. " log " .. table.concat(log_seen, ","))
++    check(B.ri32(B.ptr(del) + 0xbc8) == 20, "forced transformation stores boss type 20")
++    local has_tr = false
++    for _, s in ipairs(log_seen) do if s == "TR:20.0:true" then has_tr = true end end
++    check(has_tr, "TRANSFORMATION fired with forced = true")
++    wait(150, function() return del.Type == 20 end)
++  end)
++  step(function()
++    say("150 frames after: entity type " .. del.Type .. " variant " .. del.Variant .. " state " .. dstate() .. " boss " .. B.ri32(B.ptr(del) + 0xbc8) .. " raw type word " .. B.ri32(B.ptr(del) + 0x28))
++    say("sprite file now " .. tostring(del:GetSprite():GetFilename()))
++    check(B.ri32(B.ptr(del) + 0xbc8) == 20 and B.ri32(B.ptr(del) + 0xbcc) == 0 and dstate() == 8, "Delirium holds boss pair 20.0 and keeps its attack state (the entity type stays 412 at rest: the AI swaps it in only while the boss runs)")
++    local has_post, has_pre = false, false
++    for _, s in ipairs(log_seen) do if s == "POST" then has_post = true elseif s == "PRE" then has_pre = true end end
++    check(has_pre, "PRE_TRANSFORMATION fired")
++    check(has_post, "POST_TRANSFORMATION fired")
++    wait(900, function() return del:Exists() and dstate() == 8 end)
++  end)
++  step(function()
++    -- a table answer replaces the pair, false refuses
++    answer_tr = { 19, 0 }
++    log_seen = {}
++    del:Transform(20, 0, true)
++    wait(300, function() return B.ri32(B.ptr(del) + 0xbc8) == 19 end)
++  end)
++  step(function()
++    check(B.ri32(B.ptr(del) + 0xbc8) == 19, "a table answer replaces the pair (boss 19)")
++    wait(900, function() return del:Exists() and dstate() == 8 end)
++  end)
++  step(function()
++    answer_tr = false
++    del:Transform(20, 0, true)
++    wait(120)
++  end)
++  step(function()
++    check(B.ri32(B.ptr(del) + 0xbc8) == 19, "a false answer keeps the current boss (19)")
++    answer_tr = nil
++    wait(900, function() return del:Exists() and dstate() == 8 end)
++  end)
++  step(function()
++    answer_pre = false
++    log_seen = {}
++    del:Transform(20, 0, true)
++    wait(240)
++  end)
++  step(function()
++    say("PRE false: boss " .. B.ri32(B.ptr(del) + 0xbc8) .. " state " .. dstate() .. " type " .. del.Type .. " log " .. table.concat(log_seen, ","))
++    local pre_seen, tr20 = false, false
++    for _, x in ipairs(log_seen) do if x == "PRE" then pre_seen = true elseif x == "TR:20.0:true" then tr20 = true end end
++    check(pre_seen and not tr20, "PRE false: PRE fired and the TRANSFORMATION step (the pair store) was never reached")
++    check(B.ri32(B.ptr(del) + 0xbc8) ~= 20, "PRE false: the transformation to 20 did not happen")
++    check(dstate() == 8 or dstate() == 0x11 or dstate() == 0x12, "PRE false: Delirium is in an attack state (" .. dstate() .. ")")
++    answer_pre = nil
++  end)
++elseif phase == "dprobe" then
++  -- what makes Delirium's entity type change: write the boss pair by hand and watch
++  local del
++  step(function()
++    Isaac.ExecuteCommand("debug 3")
++    del = Isaac.Spawn(412, 0, 0, game:GetRoom():GetCenterPos(), Vector(0, 0), nil):ToNPC()
++    del.MaxHitPoints = 100000 del.HitPoints = 100000
++    wait(900, function() return B.r8(B.ptr(del) + 0xbd3) == 8 end)
++  end)
++  step(function()
++    local a = B.ptr(del)
++    say("probe: state " .. B.r8(a + 0xbd3) .. " timer " .. B.r16(a + 0xbd0) .. " remaining " .. B.r8(a + 0xbd2))
++    B.w32(a + 0xbc8, 20) B.w32(a + 0xbcc, 0)
++    wait(60)
++  end)
++  local n = 0
++  step(function()
++    local a = B.ptr(del)
++    say("probe +60: state " .. B.r8(a + 0xbd3) .. " type " .. del.Type .. " boss " .. B.ri32(a + 0xbc8) .. " timer " .. B.r16(a + 0xbd0))
++    B.w16(a + 0xbd0, 1)
++    wait(10)
++  end)
++  step(function()
++    local a = B.ptr(del)
++    say("probe timer=1 +10: state " .. B.r8(a + 0xbd3) .. " type " .. del.Type .. " boss " .. B.ri32(a + 0xbc8) .. " timer " .. B.r16(a + 0xbd0))
++    wait(100)
++  end)
++  step(function()
++    local a = B.ptr(del)
++    say("probe +100: state " .. B.r8(a + 0xbd3) .. " type " .. del.Type .. " boss " .. B.ri32(a + 0xbc8) .. " timer " .. B.r16(a + 0xbd0))
++  end)
++elseif phase == "mega" then
++  local answer = B.env("ISAAC_LAB_ANSWER") == "true"
++  local fired = 0
++  mod:AddCallback(M.MC_PRE_MEGA_SATAN_ENDING or 1201, function()
++    fired = fired + 1
++    say("1201 fired, answer " .. tostring(answer))
++    if answer then return true end
++  end)
++  local function room_info()
++    local r, l = game:GetRoom(), game:GetLevel()
++    return string.format("stage %d idx %d type %d", l:GetStage(), l:GetCurrentRoomIndex(), r:GetType())
++  end
++  -- the Mega Satan branch of the clear-award function is reached only on stage 6 or 8 and up
++  step(function() Isaac.ExecuteCommand("debug 3") Isaac.ExecuteCommand("stage " .. (B.env("ISAAC_LAB_STAGE") or "10")) wait(150) end)
++  step(function() say("stage now " .. game:GetLevel():GetStage()) Isaac.ExecuteCommand("goto s.boss.5000") wait(80) end)
++  step(function()
++    say("after goto: " .. room_info() .. " bossid " .. tostring(game:GetRoom():GetBossID()) .. " room word +0x1bb0 " .. tostring(B.r32(B.ptr(game:GetRoom()) + 0x1bb0)) .. " word +8 " .. tostring(B.r32(B.ptr(game:GetRoom()) + 8)))
++    local n = 0
++    for _, e in ipairs(Isaac.GetRoomEntities()) do if e:IsActiveEnemy(false) then n = n + 1 end end
++    say("enemies " .. n)
++    wait(1500, function()
++      for _, e in ipairs(Isaac.GetRoomEntities()) do
++        if e:IsActiveEnemy(false) then e:TakeDamage(100000, 0, EntityRef(player()), 0) e:Kill() end
++      end
++      return game:GetRoom():IsClear()
++    end)
++  end)
++  step(function() wait(200) end)
++  step(function()
++    say("after kill: " .. room_info() .. " clear " .. tostring(game:GetRoom():IsClear()) .. " fired " .. fired .. " answer " .. tostring(answer))
++    local portal = 0
++    for gi = 0, game:GetRoom():GetGridSize() - 1 do
++      local ge = game:GetRoom():GetGridEntity(gi)
++      if ge and ge:GetType() == GridEntityType.GRID_TRAPDOOR then portal = portal + 1 say("trapdoor/portal grid " .. gi .. " variant " .. ge:GetVariant()) end
++    end
++    for _, e in ipairs(Isaac.GetRoomEntities()) do if e.Type == 5 or e.Type == 1000 then say("entity " .. e.Type .. "." .. e.Variant .. "." .. e.SubType) end end
++    say("portal grids " .. portal .. " manager+0x29fb8 byte " .. B.r8(B.r32(0x00c7169c) + 0x29fb8))
++    local pgd = Isaac.GetPersistentGameData()
++    say("achievement 26 unlocked " .. tostring(pgd:Unlocked(26)) .. ", 0x37 event count " .. tostring(pgd:GetEventCounter(0x37)))
++    check(fired >= 1, "MC_PRE_MEGA_SATAN_ENDING fired")
++    if answer then check(portal >= 1, "answer true: the portal path ran (a trapdoor/portal grid exists)") end
++  end)
++else
++  step(function() say("unknown phase") end)
++end
++
++mod:AddCallback(M.MC_POST_UPDATE, function()
++  frame = frame + 1
++  if frame < 5 then return end
++  if waiting then
++    if wait_cond() then waiting = false
++    else
++      wait_left = wait_left - 1
++      if wait_left <= 0 then waiting = false else return end
++    end
++  end
++  if frame % 3 ~= 0 then return end
++  i = i + 1
++  local f = steps[i]
++  if not f then
++    if i == #steps + 1 then B.log(string.format("lab_hook_h_one: DONE %d PASS %d FAIL", pass, fail)) end
++    return
++  end
++  local ok, err = pcall(f)
++  if not ok then check(false, "step " .. i .. " raised: " .. tostring(err)) end
++end)
 diff --git a/scripts/recomp/rgon/lab_host_misc.lua b/scripts/recomp/rgon/lab_host_misc.lua
 new file mode 100644
-index 0000000..cae1e24
+index 0000000..403a441
 --- /dev/null
 +++ b/scripts/recomp/rgon/lab_host_misc.lua
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,177 @@
 +-- lab_host_misc.lua (development only; ISAAC_RGON_LAB=lab_host_misc.lua, worker host-bridge, wave 9)
 +-- Isaac.GetNanoTime, SetWindowTitle / GetWindowTitle, SetClipboard / GetClipboard, ShowErrorDialog (ISAAC_MAC_NODIALOG=1: the dialog is
 +-- not shown, the first button's id answers), SetIcon (a generated .ico, both frame kinds), Input.GetMouseWheel (the script's
@@ -30878,7 +33442,7 @@ index 0000000..cae1e24
 +
 +step(function()
 +  for _, n in ipairs({ "Isaac.GetNanoTime", "Isaac.SetWindowTitle", "Isaac.SetClipboard", "Isaac.GetClipboard", "Isaac.ShowErrorDialog", "Isaac.SetIcon",
-+    "Input.GetMouseWheel", "Isaac.StartNewGame" }) do
++    "Input.GetMouseWheel", "Isaac.StartNewGame", "Isaac.CenterCursor", "Input.GetDeviceNameByIdx" }) do
 +    check(R.Implemented[n] == true, n .. " is in REPENTOGON.Implemented")
 +  end
 +  -- nano time
@@ -30928,9 +33492,32 @@ index 0000000..cae1e24
 +  check(ok and T.icon_set.path:find("png", 1, true) ~= nil, "SetIcon of a PNG .ico raises nothing and takes it " .. tostring(err))
 +  check(not pcall(Isaac.SetIcon, "C:/rgon_images/hb_missing.ico"), "SetIcon of a missing file raises 'Icon has failed to load!'")
 +  Isaac.SetIcon(0)
++  -- Input.GetDeviceNameByIdx: 0 the keyboard, then the pads, nil past the last
++  check(Input.GetDeviceNameByIdx(0) == "Keyboard", "GetDeviceNameByIdx(0) is the keyboard: " .. tostring(Input.GetDeviceNameByIdx(0)))
++  local n_dev = 0
++  while Input.GetDeviceNameByIdx(n_dev) ~= nil and n_dev < 10 do n_dev = n_dev + 1 end
++  say("devices counted until nil: " .. n_dev)
++  check(n_dev >= 1 and n_dev <= 5, "counting devices until nil ends after the keyboard and at most 4 pads: " .. n_dev)
++  check(Input.GetDeviceNameByIdx(-1) == nil and Input.GetDeviceNameByIdx(99) == nil, "GetDeviceNameByIdx answers nil for a negative or a too large index")
++  check(Input.GetDeviceNameByIdx(1) == nil or type(Input.GetDeviceNameByIdx(1)) == "string", "GetDeviceNameByIdx(1) is nil or a pad name")
++  check(not pcall(Input.GetDeviceNameByIdx, "x"), "GetDeviceNameByIdx with a string raises")
++  -- Isaac.CenterCursor: moves the cursor only when the game window is focused
++  local ok_cc, err_cc = pcall(Isaac.CenterCursor)
++  check(ok_cc, "CenterCursor raises nothing " .. tostring(err_cc))
++  check(select("#", Isaac.CenterCursor()) == 0, "CenterCursor returns nothing")
++  T.cc_warped = B.center_cursor()
++  say("CenterCursor warped: " .. tostring(T.cc_warped))
 +  wait("wheel", 240, function() return wheel_calls > 0 end)
 +end)
 +step(function()
++  if T.cc_warped then
++    local mp = Input.GetMousePosition(false)
++    say(string.format("mouse position after CenterCursor: %.1f %.1f", mp.X, mp.Y))
++    -- the position is in window pixels (1920x1080 in this run: its middle is 960,540); any 16:9 window has its middle on that ratio
++    check(mp.X > 100 and math.abs(mp.X * 9 - mp.Y * 16) < 40, string.format("the game's mouse position (%.0f,%.0f) is the middle of a 16:9 window after CenterCursor", mp.X, mp.Y))
++  else
++    say("window not focused or headless: the cursor position is not checked")
++  end
 +  say("wheel: " .. wheel_seen .. " in " .. wheel_calls .. " frames")
 +  check(wheel_calls >= 1 and wheel_seen == 2, "Input.GetMouseWheel saw the script's wheel (2 notches): " .. tostring(wheel_seen) .. " in " .. wheel_calls .. " frames")
 +  check(getmetatable(Input.GetMouseWheel()) == getmetatable(Vector(0, 0)) and Input.GetMouseWheel().Y == 0, "GetMouseWheel is a Vector and is back to 0 after the frame")
@@ -34230,6 +36817,85 @@ index 0000000..cec4808
 +  if frame == 3 then try("names", names) end
 +  if frame == 10 then try("checks", checks) end
 +  if frame == 60 then B.log(string.format("lab_npc_entity_misc: DONE pass=%d fail=%d", pass, fail)) end
++end)
+diff --git a/scripts/recomp/rgon/lab_options.lua b/scripts/recomp/rgon/lab_options.lua
+new file mode 100644
+index 0000000..464dbd5
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_options.lua
+@@ -0,0 +1,73 @@
++-- lab_options.lua (development only; ISAAC_RGON_LAB=lab_options.lua, worker names-11, wave 11)
++-- Options.Exposure, Brightness, Contrast, AimLockEnabled, TouchMode, WindowWidth, WindowHeight, WindowPosX, WindowPosY, BossHPOnBottom,
++-- AscentVoiceOver, OnlineHUD, StreamerMode, OnlinePlayerVolume, OnlinePlayerOpacity, OnlineChatEnabled, OnlineChatFilterEnabled,
++-- OnlineColorSet, OnlineInputDelay. Each getter is read against the game's own value (the options.ini fixture below, when the support
++-- folder has it: WindowWidth=1111 marks it; otherwise the check says so and is skipped), each setter by a write, a read-back of both the
++-- name and the raw record bytes, and a restore. Prints "lab_options: DONE n PASS m FAIL".
++local T = ...
++local B = T.B
++local mod = RegisterMod("rgon lab options", 1)
++local pass, fail = 0, 0
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_options: %s %s", ok and "PASS" or "FAIL", what))
++end
++local REC = function() return B.r32(0x00c7169c) + 0x2a33c end
++
++-- name, kind, offset, fixture value (options.ini key: value in the fixture), a new value to write
++local FIELDS = {
++  { "Exposure", "float", 0x2c, nil, 1.25 },
++  { "Brightness", "float", 0x30, nil, 0.5 },
++  { "Contrast", "float", 0x34, nil, 1.5 },
++  { "AimLockEnabled", "bool", 0x55, false, true },
++  { "TouchMode", "int", 0x58, 2, 0 },
++  { "WindowWidth", "int", 0x74, 1111, 1000 },
++  { "WindowHeight", "int", 0x78, 777, 600 },
++  { "WindowPosX", "int", 0x7c, 55, 100 },
++  { "WindowPosY", "int", 0x80, 66, 120 },
++  { "BossHPOnBottom", "bool", 0x90, false, true },
++  { "AscentVoiceOver", "bool", 0x9c, false, true },
++  { "OnlineHUD", "int", 0xa0, 2, 1 },
++  { "StreamerMode", "bool", 0xa4, true, false },
++  { "OnlinePlayerVolume", "int", 0xa8, 7, 3 },
++  { "OnlinePlayerOpacity", "int", 0xac, 9, 4 },
++  { "OnlineChatEnabled", "bool", 0xb0, false, true },
++  { "OnlineChatFilterEnabled", "bool", 0xb1, true, false },
++  { "OnlineColorSet", "int", 0xb4, 3, 1 },
++  { "OnlineInputDelay", "int", 0xb8, 5, 2 },
++}
++local function raw(kind, off)
++  if kind == "float" then return B.rf32(REC() + off) elseif kind == "int" then return B.ri32(REC() + off) else return B.r8(REC() + off) ~= 0 end
++end
++
++local done = false
++mod:AddCallback(ModCallbacks.MC_POST_RENDER, function()
++  if done then return end
++  done = true
++  local fixture = Options.WindowWidth == 1111
++  local gamma0 = Options.Gamma
++  B.log("lab_options: options.ini fixture " .. (fixture and "present" or "absent: getters are not compared with the ini"))
++  for _, f in ipairs(FIELDS) do
++    local name, kind, off, ini, new = f[1], f[2], f[3], f[4], f[5]
++    check(T.R.Implemented["Options." .. name] == true, "Options." .. name .. " is in REPENTOGON.Implemented")
++    local v0 = Options[name]
++    check(v0 == raw(kind, off), name .. " reads the record at +" .. string.format("0x%x", off) .. ": " .. tostring(v0))
++    if fixture and ini ~= nil then check(v0 == ini, name .. " equals the options.ini value " .. tostring(ini) .. ": " .. tostring(v0)) end
++    Options[name] = new
++    check(Options[name] == new and raw(kind, off) == new, name .. " set to " .. tostring(new) .. " reads back (name and record): " .. tostring(Options[name]))
++    Options[name] = v0
++    check(Options[name] == v0, name .. " restored to " .. tostring(v0))
++    if kind == "bool" then check(not pcall(function() Options[name] = 1 end), name .. " rejects a number") end
++    if kind ~= "bool" then check(not pcall(function() Options[name] = "x" end), name .. " rejects a string") end
++  end
++  Options.WindowPosX = 3
++  check(Options.WindowPosX == 8, "WindowPosX is clamped up to 8")
++  Options.WindowPosY = 70000
++  check(Options.WindowPosY == 65535, "WindowPosY is clamped down to 65535")
++  Options.WindowPosX = 55
++  Options.WindowPosY = 66
++  -- the game's own neighbours are untouched by the writes
++  check(Options.Gamma == gamma0, "the game's own Gamma is unchanged: " .. tostring(Options.Gamma))
++  check(Options.MaxScale == 99 and Options.MaxRenderScale == 2, "the game's own MaxScale and MaxRenderScale are unchanged")
++  B.log(string.format("lab_options: DONE %d PASS %d FAIL", pass, fail))
 +end)
 diff --git a/scripts/recomp/rgon/lab_particle.lua b/scripts/recomp/rgon/lab_particle.lua
 new file mode 100644
@@ -41737,7 +44403,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..b572c7e 100644
+index 4175f07..6136b3b 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -41760,7 +44426,7 @@ index 4175f07..b572c7e 100644
  -- is its class table, or the const one, and each names the other.
 -local SAMPLE = { Game = function() return Game() end, ItemConfig = function() return Isaac.GetItemConfig() end }
 +local SAMPLE = { Game = function() return Game() end, ItemPool = function() return Game():GetItemPool() end, ItemConfig = function() return Isaac.GetItemConfig() end,
-+  MusicManager = function() return MusicManager() end }
++  MusicManager = function() return MusicManager() end, Options = function() return rawget(_G, "Options") end }
  -- and a class the game registers inside a namespace table has its static table there
  local INSIDE = { ActiveItemDesc = "PlayerTypes" }
  local function class_tables(name)
@@ -41796,7 +44462,7 @@ index 4175f07..b572c7e 100644
    rearm = function() arm(nil) end,
  }
 -for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_hooks.lua" }) do
-+for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_beam.lua", "api_player_fields.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_ambush.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_entity_more.lua", "api_player_health.lua", "api_npc.lua", "api_tears_more.lua", "api_eid.lua", "api_pickup_more.lua", "api_player_items.lua", "api_game_misc.lua", "api_rooms_more.lua", "api_cacheflags.lua", "api_hooks.lua", "api_hooks_hud.lua", "api_framectx.lua", "api_render.lua", "api_weapons.lua", "api_room_hooks.lua", "api_leftovers.lua", "api_charsel.lua", "api_throw_loot.lua", "api_gfx.lua", "api_isaac_misc.lua", "api_misc_b.lua", "api_locate.lua", "api_modhot.lua", "api_stage_config.lua", "api_data_values.lua", "api_challenge_param.lua", "api_familiar_pickup.lua", "api_player_calls.lua", "api_npc_blood.lua", "api_player_easy.lua", "api_cb_grid_one.lua", "api_cb_lua.lua", "api_locate_more.lua", "api_engine_names.lua", "api_console.lua", "api_entity_config.lua", "api_player_rest.lua", "api_room_calls.lua", "api_grid_npc.lua", "api_host_misc.lua", "api_score_isaac.lua", "api_level_game.lua", "api_menus_stats.lua", "api_render_misc.lua", "api_menus_rest.lua", "api_cb_level.lua", "api_cb_pocket.lua", "api_level_itempool_misc.lua", "api_room_sets.lua", "api_npc_entity_misc.lua", "api_player_cooldowns.lua", "api_menus_more.lua", "api_cb_entity.lua", "api_image_render.lua", "api_cb_hud.lua" }) do
++for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api_objects.lua", "api_game.lua", "api_player.lua", "api_sprite.lua", "api_misc.lua", "api_beam.lua", "api_player_fields.lua", "api_more.lua", "api_innate.lua", "api_extra.lua", "api_gaps.lua", "api_menus.lua", "api_census.lua", "api_batch_two.lua", "api_pocket_item.lua", "api_batch_three.lua", "api_minimap.lua", "api_item_fields.lua", "api_stageapi.lua", "api_roomconfig.lua", "api_ambush.lua", "api_shapes.lua", "api_state_getters.lua", "api_familiar.lua", "api_entity_more.lua", "api_player_health.lua", "api_npc.lua", "api_tears_more.lua", "api_eid.lua", "api_pickup_more.lua", "api_player_items.lua", "api_game_misc.lua", "api_rooms_more.lua", "api_cacheflags.lua", "api_hooks.lua", "api_hooks_hud.lua", "api_framectx.lua", "api_render.lua", "api_weapons.lua", "api_room_hooks.lua", "api_leftovers.lua", "api_charsel.lua", "api_throw_loot.lua", "api_gfx.lua", "api_isaac_misc.lua", "api_misc_b.lua", "api_locate.lua", "api_modhot.lua", "api_stage_config.lua", "api_data_values.lua", "api_challenge_param.lua", "api_familiar_pickup.lua", "api_player_calls.lua", "api_npc_blood.lua", "api_player_easy.lua", "api_cb_grid_one.lua", "api_cb_lua.lua", "api_locate_more.lua", "api_engine_names.lua", "api_console.lua", "api_entity_config.lua", "api_player_rest.lua", "api_room_calls.lua", "api_grid_npc.lua", "api_host_misc.lua", "api_score_isaac.lua", "api_level_game.lua", "api_menus_stats.lua", "api_render_misc.lua", "api_menus_rest.lua", "api_cb_level.lua", "api_cb_pocket.lua", "api_level_itempool_misc.lua", "api_room_sets.lua", "api_npc_entity_misc.lua", "api_player_cooldowns.lua", "api_menus_more.lua", "api_cb_entity.lua", "api_image_render.lua", "api_cb_hud.lua", "api_options.lua", "api_cb_ending_labs.lua", "api_cb_music_menu.lua", "api_cb_pocket_two.lua", "api_cb_backdrop.lua", "api_hook_h_one.lua" }) do
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)
@@ -42170,7 +44836,7 @@ index 1a209cf..8d72794 100644
      else if (GL.has(name)) { used++; if (!HAVECLASS.has(name)) missing.push(name); }
      else if (name.startsWith('MC_')) { const id = CB.get(name); if (id >= 1000) { used++; if (!HAVEID.has(id)) missing.push(name); } }
 diff --git a/scripts/recomp/rgon/tools/hook_table.py b/scripts/recomp/rgon/tools/hook_table.py
-index 0d1d8bd..dc03836 100644
+index 0d1d8bd..e604232 100644
 --- a/scripts/recomp/rgon/tools/hook_table.py
 +++ b/scripts/recomp/rgon/tools/hook_table.py
 @@ -68,7 +68,7 @@ HOOKS = [
@@ -42182,7 +44848,7 @@ index 0d1d8bd..dc03836 100644
      (21, "Game::RestoreState", 0x006bb790, "sig", None, ""),
      (22, "Room::SpawnGridEntity", 0x007ebca0, "reg", None, ""),
      (23, "GridEntity::Init", 0x00709db0, "sig", None, ""),
-@@ -206,6 +206,257 @@ HOOKS = [
+@@ -206,6 +206,281 @@ HOOKS = [
       "character it sets [this+5] from Menu_Character_Entry::IsCharacterAvailable (0x0094d64a, 0x0094d657) and "
       "shows layers 4..15 or 16 of the big page; for a mod's (selected id [this+0x10] >= 0x12, 0x0094d62d) it "
       "always sets [this+5] = 1 (0x0094d700)"),
@@ -42436,11 +45102,35 @@ index 0d1d8bd..dc03836 100644
 +    (379, "PlayerHUD::RenderInventory", 0x00848d20, "asm", 4, "PlayerHUD::RenderInventory(Vector* pos, float scale in xmm2); one `ret 4` (0x0084950a); HUD::Render calls it at 0x009a7384 and 0x009a78f2 for player type 0x15 (Tainted Isaac); scale 1.0 and `this` = the PlayerHUD slot"),
 +    (380, "PlayerHUD::RenderSpellQueue", 0x0084a3e0, "asm", 4, "PlayerHUD::RenderSpellQueue(Vector* pos, float scale in xmm2); one `ret 4` (0x0084a86d); HUD::Render calls it at 0x009a73cb and 0x009a7941 for player type 0x19 (Tainted ???)"),
 +    (381, "PlayerHUD::RenderCraftingTable", 0x00849510, "asm", 4, "PlayerHUD::RenderCraftingTable(Vector* pos, float scale in xmm2); one `ret 4` (0x0084a3cf); called at 0x008483ff and 0x0084850c from the pocket-item render 0x008471c0 right after a collectible test for 0x2c6 (Bag of Crafting, 710)"),
++    # worker cb-music-menu (wave 11, slots 369-374): music jingle / layers, nightmare scene, replace spritesheet, shuffle costumes
++    (369, "Music::PlayJingle", 0x007e2580, "asm", 0xc, "Music::PlayJingle(int id, int, bool), thiscall on the music object; one `ret 0xc` (0x007e261f); direct callers 0x004b391f, 0x0070fea2, 0x007105ff, 0x0074ef1d, 0x007eb6cc; it starts the stream and sets the countdown +0x364 = 0x8c only when the track exists"),
++    (370, "Music::EnableLayer", 0x007e2280, "asm", 8, "Music::EnableLayer(int id, bool instant); ids above 5 are ignored; sets the layer bit at +0x170 + 0x184 * [this]; `ret 8` (0x007e2404); callers 0x00441234, 0x004ae644, 0x004aff1b, 0x00592ee2, 0x005930af, 0x00816d06, 0x009499e2, 0x009874e0, 0x009acf8d; also the Lua binding at 0x0086dbeb"),
++    (371, "Music::DisableLayer", 0x007e2410, "asm", 4, "Music::DisableLayer(int id); clears the layer bit; `ret 4` (0x007e243d); the Lua binding 0x0086dbfc"),
++    (372, "NightmareScene::Show", 0x00921ce0, "asm", 4, "NightmareScene::Show(bool isDogma), this = game+0x21628; a SEH function with an aligned frame (push ebx; mov ebx, esp; and esp, -8), its one `ret 4` at 0x0092330c; called once at 0x00954dd0 from Game::Update's state 3/5 code with the byte [game+0x4b2a5]"),
++    (373, "ANM2::ReplaceSpritesheet", 0x0040bf30, "reg", 8, "ANM2::ReplaceSpritesheet(int layerId, std::string& png), thiscall, bool in al; the game's Lua Sprite:ReplaceSpritesheet pushes it directly (registration 0x00867324); three `ret 8` (0x0040bfbd, 0x0040bfd3, 0x0040bfde); about 170 direct callers (the costume code, 0x005cdb20 ...)"),
++    (374, "Entity_Player::ShuffleCostumes", 0x0075d9f0, "asm", 4, "Entity_Player::ShuffleCostumes(uint seed), found by notes/player-locate (the costume vector +0x1220, strings 'swap %d %d'); one `ret 4` (0x0075dfd1); its one direct caller is 0x006654eb"),
++    (375, "Entity_Player::GetCollectibleNum", 0x00770ca0, "asm", 8, "Entity_Player::GetCollectibleNum(int id, bool onlyTrue), thiscall, count in eax; two `ret 8` (0x007710ba, 0x007710c5); 354 direct callers (hot: armed only while a mod listens on 1092)"),
++    (345, "Entity_NPC::shopkeeper_get_loot", 0x006c1ac0, "asm", 8, "Entity_NPC::shopkeeper_get_loot(deque* out, bool shouldAdvance), thiscall on the NPC; one `ret 8` (0x006c20c3); callers 0x006c2498 and 0x006da63f (UpdatePickupGhosts)"),
++    (346, "Entity_NPC::fireplace_get_loot", 0x006d1580, "asm", 8, "Entity_NPC::fireplace_get_loot(deque* out, bool shouldAdvance), thiscall on the NPC; one `ret 8` (0x006d18c1); callers 0x006d2376 and 0x006da5a6 (UpdatePickupGhosts)"),
++    (347, "Entity_Player::RemovePocketItem", 0x007a4850, "asm", 4, "Entity_Player::RemovePocketItem(int slot), entries of 8 bytes at player+0x17a0 (id, type 0 pill / 1 card / 2 active); two `ret 4` (0x007a487c, 0x007a48e7); one direct caller (0x00778ed3)"),
++    (352, "Entity_Slot::CreateDropsFromExplosion", 0x00663aa0, "asm", 0, "Entity_Slot::CreateDropsFromExplosion, thiscall no arguments (api_player_rest.lua); twelve plain `ret` (0x00663c16 .. 0x00664531); callers 0x0065e010, 0x0065e1c8, 0x0065e912, 0x0065ea83, 0x0065fa0b, 0x006621d6, 0x00664906, 0x00665344"),
++    (354, "Entity_Slot::SetPrizeCollectible", 0x00665500, "asm", 4, "Entity_Slot::SetPrizeCollectible(int id), writes [this+0x540]; two `ret 4` (0x00665576, 0x006655d1); callers 0x0065d9ee, 0x0065e8d0, 0x00663787, 0x007ef6bc"),
++    # worker hook-h1 (final hook wave, slots 357-359, 365-368)
++    (357, "Entity::IsFlying", 0x006ac6c0, "asm", 0, "Entity::IsFlying, thiscall no arguments; signature `8b81????????85c074??83f80374??83f80174??83f80274??32c0` matches once; two plain `ret` (0x006ac6db, 0x006ac6de); 20 direct callers; the game's Lua binding pushes it as Entity:IsFlying"),
++    (358, "PlayerManager::SpawnCoPlayerBaby", 0x009b98e0, "asm", 4, "PlayerManager::SpawnCoPlayerBaby(int babyID); `ret 4` (0x009b9955, 0x009b9c0e); 4 callers, one is spawn_selected_baby 0x009bd3b0 at 0x009bd49a (push -1)"),
 +    (343, "RoomTransition::Render", 0x00832850, "asm", 0,"RoomTransition::Render, thiscall no arguments, ecx = game+0x1b83c; its one caller (0x006fc0a1 in Game::Render) calls it only while the game state is 2 or 3 (a transition); six plain `ret` (0x00832be9 .. 0x0083300e). The retired slot 12 note (a false signature match for the zhl Render) was about the signature, not this address"),
++    # wave 11, worker cb-backdrop: the backdrop render passes and the room's lighting (ecx = the Backdrop at room+0x1bc8, or the Room)
++    (382, "Backdrop::RenderWalls", 0x0093f1d0, "asm", 0x30, "Backdrop::RenderWalls(Vector const* offset, ColorMod color: eleven floats by value), thiscall on room+0x1bc8; four `ret 0x30`; Room::Render calls it at 0x0080feff with the ColorMod at room+0x72d0, the water-room pass at 0x00821281; REPENTOGON's byte signature does not match this build"),
++    (383, "Backdrop::RenderFloor", 0x0093ea00, "asm", 0x30, "Backdrop::RenderFloor(Vector const* offset, ColorMod color), thiscall on room+0x1bc8; one `ret 0x30`; Room::Render calls it at 0x0080fddb with the ColorMod at room+0x72a4, the other pass at 0x00821192"),
++    (384, "Backdrop::RenderWater", 0x00821950, "asm", 4, "Backdrop::RenderWater(Vector const* offset), thiscall; one `ret 4` (0x00821f90); Room::Render calls it at 0x0080fcdf when room+0x7240 (the water amount) is above 0 and the option byte is set"),
++    (385, "Backdrop::pre_render_walls", 0x00937420, "asm", 0, "the backdrop's wall pre-render, thiscall no arguments (ecx = the Backdrop), a SEH function with a stack cookie that indexes the configuration table [this+0x150] * 0x13c; its one caller is Backdrop::LoadGraphics 0x0093da00 (at 0x0093e3c4, right after 0x009353b0)"),
++    (386, "Room::GetLightingAlpha", 0x0081e250, "asm", 0, "Room::GetLightingAlpha(), thiscall, the float comes back in st0 (fld before each of the five plain `ret`); callers 0x00808d1d, 0x0080a82f, 0x0080adba, 0x0080addc (RenderEntityLight), 0x00811120 and 0x00811665 (Room::Render's light sprite), 0x0099414d"),
++    (387, "Room::RenderGridLight", 0x0080c810, "asm", 8, "Room::RenderGridLight(GridEntity* grid, Vector* offset), thiscall on the Room; a switch on the grid type [grid+4]; `ret 8` at every exit; its one caller is the Room's light pass at 0x0080eef3 (every slot of the grid list at room+0x24, offset local at [ebp-..])"),
++    (388, "Room::RenderEntityLight", 0x00806c20, "asm", 8, "Room::RenderEntityLight(Entity* ent, Vector* offset), thiscall on the Room; sets the ANM2 light-rendering byte 0x00c7977e itself (0x00806cc4, cleared at 0x00807c3e); one `ret 8`; its one caller is the Room's light pass at 0x0080eec5 (every entity of the list at room+0x125c)"),
  ]
  # the entity classes' virtual functions: slots 100 + 12 * k + class index
  _k = 0
-@@ -213,7 +464,7 @@ for _fn in ("Init", "Update", "Render", "TakeDamage", "HandleCollision"):
+@@ -213,7 +488,7 @@ for _fn in ("Init", "Update", "Render", "TakeDamage", "HandleCollision"):
      for _i, _cls in enumerate(ENTITY_CLASSES):
          HOOKS.append((100 + 12 * _k + _i, "%s::%s" % (_cls, _fn), None, "vt", None, ""))
      _k += 1
@@ -42449,7 +45139,7 @@ index 0d1d8bd..dc03836 100644
  
  # Round 110: instruction hooks (lift_patches.py RGON_INSN_HOOKS): a handler right
  # before one instruction inside a function, which reads and writes the registers
-@@ -280,6 +531,211 @@ INSN_HOOKS = [
+@@ -280,6 +555,250 @@ INSN_HOOKS = [
       "before 0x008f89c4, which every way reaches (the target of `jb` at 0x008f8994), and drawn after it "
       "(0x008f8a10..). Called by the wheel 0x0094bee0 (return address 0x0094c44a) and by 0x00982100 "
       "(0x0098256a). REPENTOGON's signature for its RenderCustomCharacterPortraits matches nothing here"),
@@ -42658,10 +45348,49 @@ index 0d1d8bd..dc03836 100644
 +     "`test ecx, ecx; je 0x7f961d` with ecx = the last devil room stage [game+0x26554]; a handler zeroes ecx to skip the penalty (ecx is rewritten after 0x7f961d)"),
 +    (399, "Room::save_entity@ShouldSave", 0x007eeeb0, 0x007eef2f, (),
 +     "REPENTOGON's `84c00f84????????8b7d??8b46` matches once, here: `test al, al; je 0x7ef39a` after `call 0x7eed10` (the 'should this entity be saved' test); the entity is esi; a handler sets al"),
++    # worker cb-pocket-2 (wave 11): ghost pickups, pocket item collection, bed, collision pass, slot drops, Abyss
++    (344, "Entity_NPC::UpdatePickupGhosts@ShouldShow", 0x006da530, 0x006da575, (),
++     "UpdatePickupGhosts (0x006da530, plain `ret`, esi = the NPC) asks `call 0x9be080` (PlayerManager::FirstCollectibleOwner, item 0x299 = Guppy's Eye) and "
++     "then `test eax, eax; je 0x6da6c5` (no ghosts); REPENTOGON patches that test, so the hook is the `test eax, eax` and a handler replaces eax (the 'should show' answer); "
++     "only a shopkeeper (type 0x11) or a fireplace (0x21) goes on after it"),
++    (348, "Entity_Pickup::HandleCollision@PreCollectCard", 0x006ea558, 0x006ec058, (0x006ebf92,),
++     "the card branch (variant 0x12c) of HandleCollision: `push 1; push ecx (the subtype); mov ecx, edi; call 0x7a3af0` (Entity_Player::AddPocketItem(id, 1)); REPENTOGON's "
++     "`e8????????68????????ff76??8bcfe8????????8b0d` is the call after it; esi = the pickup, edi = the player; cancelling goes to 0x006ebf92 (`cmp [ebp-0x100], 0xfffffc18`, "
++     "the common exit) with al = 0, which leaves the card on the floor"),
++    (349, "Entity_Pickup::HandleCollision@PreCollectPill", 0x006ea558, 0x006ec1ce, (0x006ebf92,),
++     "the pill branch (variant 0x46): `push 0; push ecx; mov ecx, edi; call 0x7a3af0` (AddPocketItem(id, 0)); esi = the pickup, edi = the player; cancelling goes to 0x006ebf92 with al = 0"),
++    (350, "Entity_Pickup::HandleCollision@PreBedSleep", 0x006ea558, 0x006ec475, (0x006ec4ba,),
++     "the bed branch (variant 0x17c): the per-player loop `mov ecx, edx; call 0x7cafe0; cmp eax, 1; je; cmp eax, 2; je; mov ecx, [edx+0x1d88]` is REPENTOGON's "
++     "`8bcae8????????83f80174??83f80274??8b8a` exactly; edx = the player, esi = the bed; the answer 'true' (sleep not allowed) goes to 0x006ec4ba (the loop's next player, "
++     "`mov ecx, [0xc71678]` after the hearts check), which leaves [ebp-0x87] as the bed's subtype==10 flag"),
++    (351, "EntityList::Update@PreCommit", 0x004186c0, 0x00419443, (),
++     "REPENTOGON's `807d??000f84????????8b4f` matches once, here: `cmp byte [ebp-0x48], 0` (an entity was staged for removal) after the update loop and before the commit; "
++     "EntityList::Update(bool isTransition) is `ret 4` with ebx = the frame, so the argument is the byte [ebx+8]; the callback runs only when it is 0"),
++    (353, "Entity_Slot::TakeDamage@DonationDropsDone", 0x006647e8, 0x0066482f, (),
++     "the end of the inlined donation machine explosion loop (0x00664662..0x0066482b): `mov ecx, [0xc71678]; mov eax, [ecx+0x2654c]; or [ecx+0x26548], 0x40020000`, edi still the "
++     "slot + 0x3dc (the drop RNG); the lift has two copies of this tail (sub_006647e8, which holds the loop, and sub_0066482f, the entry when no coin is dropped); only the first is hooked"),
++    (356, "Entity_Slot::TakeDamage@DonationDropsNone", 0x0066482f, 0x0066484b, (),
++     "the same tail as slot 353 in its other lifted copy, sub_0066482f, which the game enters by `jle 0x66482f` when the explosion drops no coin (the machine's donated count % 1000 gives "
++     "a loop count of 0 or less); the hook is the final `jmp 0x6645b9`, the machine is ebx (read from the CPU state: it is not a register local of that copy)"),
++    (355, "Entity_Player::UseActiveItem@AbyssPickup", 0x005b39d0, 0x005c3f56, (0x005c4014,),
++     "the Abyss case (item 706, jump table 0x005c7598 via the byte table 0x005c7760): the per-entity loop over the room, `lea eax, [ebp-0xf58]; mov ecx, esi; push eax; "
++     "call 0x417290` right after the tests that make it a collectible pedestal (variant 100, not touched, price ok); esi = the pickup, edi = the player; REPENTOGON's patch is the "
++     "`push eax` of this; cancelling goes to 0x005c4014 (the loop's next entity, without setting the 'item was used' byte)"),
++    # worker hook-h1
++    (359, "Entity_NPC::delirium_update@Transform", 0x004a6500, 0x004a6d4f, (),
++     "Delirium's AI: `mov [ebx+0xbc8], ecx; mov [ebx+0xbcc], edi` stores the picked boss pair (ecx type, edi variant), ebx = the NPC"),
++    (365, "Entity_NPC::delirium_update@PreTransform", 0x004a6500, 0x004a6c46, (0x004a7501,),
++     "state byte [ebx+0xbd3] is 0x10 here (`cmp al,0x10; jne 0x4a7501` just before); a false answer sets state 8 (al = 8) and goes to 0x004a7501"),
++    (366, "Entity_NPC::delirium_update@PostTransform", 0x004a6500, 0x004a74fc, (),
++     "`jmp 0x4a831b` at the end of the transformation branch, ebx = the NPC"),
++    (367, "Entity_Player::update_camo@SeedCamo", 0x00794e50, 0x0079edc5, (0x0079ee43,),
++     "`mov ecx,[0xc71678]; push 3; call HasSeedEffect; test al,al; jne 0x79ee43` in the giant 0x00794e50 (split part), edi = the player; jumping to 0x79ee43 takes the camo path"),
++    (368, "Room::SpawnClearAward@MegaSatanEnding", 0x007fb250, 0x007fc05f, (0x007fc073,),
++     "boss id 0x37 (Mega Satan) branch of the room-clear function 0x007fb250: `cmp [ebp-0x74],0; je 0x7fc104; cmp [ebp-0x65],0; je 0x7fc104` else the portal path 0x007fc073; 0x7fc104 is `Game::End(8)`; going to 0x7fc073 suppresses the ending"),
  ]
  
  
-@@ -293,7 +749,8 @@ def check_insn(pe_root, taken):
+@@ -293,7 +812,8 @@ def check_insn(pe_root, taken):
          seen.add(slot)
          f = run_pequery(pe_root, "func", "0x%08x" % iva)
          m = re.search(r"start 0x([0-9a-f]+)\s+end 0x([0-9a-f]+)", f)

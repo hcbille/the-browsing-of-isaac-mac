@@ -24,6 +24,18 @@ const char *isaac_mac_sys_get_title(void) {
     return w ? SDL_GetWindowTitle(w) : NULL;
 }
 
+/* ---- cursor ------------------------------------------------------------------------- */
+/* Isaac.CenterCursor: warp the mouse to the middle of the window's client area. Like REPENTOGON's, it does nothing when the
+ * game is not the focused window. Returns 1 when the cursor was moved, 0 headless or unfocused. */
+int isaac_mac_sys_center_cursor(void) {
+    SDL_Window *w = isaac_mac_gl_window();
+    if (!w || !SDL_WasInit(SDL_INIT_VIDEO) || SDL_GetKeyboardFocus() != w) return 0;
+    int ww = 0, wh = 0;
+    if (!SDL_GetWindowSize(w, &ww, &wh) || ww < 1 || wh < 1) return 0;
+    SDL_WarpMouseInWindow(w, (float)ww / 2.0f, (float)wh / 2.0f);
+    return 1;
+}
+
 /* ---- clipboard ---------------------------------------------------------------------- */
 static int video_up(void) { return isaac_mac_gl_window() != NULL && SDL_WasInit(SDL_INIT_VIDEO); }
 

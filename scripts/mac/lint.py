@@ -379,6 +379,18 @@ def rule_orphan_starts_packed(fs):
                          'bodies (endVa), not the PE index\'s merged bounds, decide whether a start falls inside a function' % needle)
 
 
+def rule_stale_enum_post_shuffle(fs):
+    """The staged enums_ex.lua can carry an old callback number (2026-11-21: it still has MC_POST_SHUFFLE_COSTUMES = 1945, REPENTOGON's
+    typo fixed to 1495 later; a `if M[name] == nil` fallback never replaced it, so the POST fired on 1945 and the census saw 1495 missing)."""
+    f = 'scripts/recomp/rgon/api_cb_music_menu.lua'
+    if f not in fs:
+        return
+    t = text_of(f) or ''
+    if 'M.MC_POST_SHUFFLE_COSTUMES = 1495' not in t:
+        yield (f, 0, 'assign "M.MC_POST_SHUFFLE_COSTUMES = 1495" unconditionally: the staged enums_ex.lua still names 1945, and a "only if nil" '
+                     'fallback keeps the wrong number')
+
+
 def rule_fast_setjmp(fs):
     """Every Host and lifted TU builds with setjmp/longjmp mapped to _setjmp/_longjmp (2026-11-19: Darwin's setjmp
     saves the signal mask and sigaltstack, two syscalls per host->guest call, 26.6% of the main thread with 95 mods)."""
@@ -538,6 +550,17 @@ def rule_empty_method_stand_in(fs):
             mm = re.search(r'\b(method|m)\("(\w+)", "(\w+)", function\(\) end\)', line)
             if mm and not ('"%s"' % mm.group(3) in text and 'Implemented["%s." .. n] = nil' % mm.group(2) in text):
                 yield (f, i, 'no-op method: call the game\'s own function (find it in the decompile) or leave the name unregistered')
+
+
+def rule_callback_count_vs_frames(fs):
+    """A lab must not compare a callback's call count with Isaac.GetFrameCount() (wave 11 cb-pocket-2: Isaac frames advance 2 per update,
+    so MC_PRE_ROOM_COLLISION_PASS looked wrong by half). Count MC_POST_UPDATE calls in the lab and compare with that."""
+    for f in fs:
+        if not (f.startswith(RGON + '/lab_') and f.endswith('.lua')):
+            continue
+        for i, line in enumerate((text_of(f) or '').split('\n'), 1):
+            if re.search(r'(calls|fired|count|ticks)\w*\s*[=~<>]=?\s*Isaac\.GetFrameCount|Isaac\.GetFrameCount\(\)\s*[=~<>]=?\s*\w*(calls|fired|count|ticks)', line):
+                yield (f, i, 'do not compare a call count with Isaac.GetFrameCount(): frames advance 2 per update; count MC_POST_UPDATE calls in the lab')
 
 
 def rule_entity_methods_in_lab(fs):
@@ -818,6 +841,25 @@ def rule_host_misc_names_in_lab(fs):
             yield (RGON + '/lab_host_misc.lua', 0, 'add "%s" to the Implemented list of the lab and a check that calls it, or leave it out of api_host_misc.lua' % n)
         elif n.split('.')[1] not in lab.replace('"%s"' % n, ''):
             yield (RGON + '/lab_host_misc.lua', 0, 'the lab names "%s" but never calls it: add a check that calls %s' % (n, n))
+
+
+def rule_options_setters_take_last_argument(fs):
+    """Options is a singleton: luabridge hands its property setter the value alone, not (object, value) (wave 11, names-11: a setter
+    written `function(_, v)` read no value). api_options.lua setters take `...` and use select(-1, ...); every Options.* name it
+    registers is also named in lab_options.lua."""
+    src = text_of(RGON + '/api_options.lua')
+    lab = text_of(RGON + '/lab_options.lua')
+    if src is None:
+        return
+    for i, line in enumerate(src.splitlines(), 1):
+        if re.search(r'function\(_, v\)', line):
+            yield (RGON + '/api_options.lua', i, 'an Options setter gets the value as its last argument: write function(...) and read select(-1, ...)')
+    if lab is None:
+        yield (RGON + '/lab_options.lua', 0, 'add lab_options.lua: every name api_options.lua registers needs a getter/setter check there')
+        return
+    for kind, name in re.findall(r'(bool|int|float)_prop\("(\w+)"', src):
+        if '"%s"' % name not in lab:
+            yield (RGON + '/lab_options.lua', 0, 'add "%s" to the FIELDS table of the lab (read-back and write check), or leave it out of api_options.lua' % name)
 
 
 def rule_scan_global_assignment(fs):
@@ -1114,7 +1156,35 @@ def rule_menus_more_names_in_lab(fs):
 
 
 
-RULES = [rule_home_paths, rule_layer_files_loaded, rule_frame_line_prefix, rule_part_loads_part, rule_lab_prints_done, rule_inert_not_implemented, rule_ctor_implemented_name, rule_host_math_header, rule_image_render_not_registered, rule_layer_setsize_is_scale, rule_hurt_func_source, rule_global_pointer_plus_offset, rule_status_files_in_notes, rule_flip_default, rule_const_table_fallback, rule_lua_vararg_middle, rule_lua_mixed_table_index, rule_room_transition_stand_in, rule_roomconfig_both_tables, rule_orphan_starts_packed, rule_fast_setjmp, rule_gate_class_aware, rule_backlog_narrowing, rule_backlog_class_alias, rule_census_false_positives, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_entity_methods_in_lab, rule_tears_methods_in_lab, rule_read_of_call_result, rule_type_of_callback_result, rule_item_name_is_a_key, rule_conception_pairing, rule_health_field_offsets, rule_cacheflag_literals, rule_lua_format_options, rule_host_string_to_guest, rule_pgrep_game_by_name, rule_web_host_mem_base, rule_insn_hook_giant_entry, rule_stdstring_read, rule_add_cache_flags_one_arg, rule_misc_b_methods_in_lab, rule_data_values_names_in_lab, rule_host_misc_names_in_lab, rule_scan_global_assignment, rule_locate_names_in_lab, rule_familiar_pickup_names_in_lab, rule_npc_entity_misc_names_in_lab, rule_player_calls_names_in_lab, rule_console_box_drawn_in_console_hook, rule_free_only_own_string_buffers, rule_console_game_lines_whitelisted, rule_lua_keyword_table_key, rule_misnamed_collectible_enums, rule_player_rest_names_in_lab, rule_lab_check_never_fails, rule_grid_npc_names_in_lab, rule_room_sets_names_in_lab, rule_menus_rest_names_in_lab, rule_image_render_names_in_lab, rule_player_cooldowns_names_in_lab, rule_stride_divisibility_only, rule_menus_more_names_in_lab]
+
+
+def rule_entity_initseed_offset(fs):
+    """An entity's InitSeed is the word at +0x3ec, never +0x34 (wave 11, worker hook-h1: +0x34 reads 0 on an NPC and on a pickup in v1.9.7.17, so every key built from it was the same; the CanReroll override was shared by all pickups and the hitbox knife's stale-pointer test never tested anything). The word at +0x3dc is the drop RNG's state and changes as it is drawn from."""
+    for f in fs:
+        if not (f.startswith(RGON + '/') and f.endswith('.lua')):
+            continue
+        t = text_of(f)
+        if t is None:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            if re.search(r'E_INITSEED\s*=\s*0x34\b|InitSeeds? \(0x34\)|seed_at\(p\) return r32\(p \+ 0x34\)', line):
+                yield (f, n, 'the entity InitSeed word is at +0x3ec (measured: +0x34 is 0): read r32(p + 0x3ec), or key by the Lua InitSeed property')
+
+
+def rule_hook_h_one_names_in_lab(fs):
+    """Every name api_hook_h_one.lua registers (method("Class", "Name"...) or static(..., "Name") or a string callback id) is named in lab_hook_h_one.lua (wave 11, worker hook-h1)."""
+    src = text_of(RGON + '/api_hook_h_one.lua')
+    lab = text_of(RGON + '/lab_hook_h_one.lua')
+    if src is None or lab is None:
+        return
+    names = set(re.findall(r'method\("(\w+)", "(\w+)"', src))
+    names |= set(('PlayerManager', n) for n in re.findall(r'static\(PM, "PlayerManager", "(\w+)"', src))
+    for cls, name in sorted(names):
+        if name not in lab:
+            yield (RGON + '/lab_hook_h_one.lua', 0, 'call %s.%s in a check (getter by read-back, setter by effect, action by the game\'s reaction), or leave it out of api_hook_h_one.lua' % (cls, name))
+
+
+RULES = [rule_home_paths, rule_layer_files_loaded, rule_frame_line_prefix, rule_part_loads_part, rule_lab_prints_done, rule_inert_not_implemented, rule_ctor_implemented_name, rule_host_math_header, rule_image_render_not_registered, rule_layer_setsize_is_scale, rule_hurt_func_source, rule_global_pointer_plus_offset, rule_status_files_in_notes, rule_flip_default, rule_const_table_fallback, rule_lua_vararg_middle, rule_lua_mixed_table_index, rule_room_transition_stand_in, rule_roomconfig_both_tables, rule_orphan_starts_packed, rule_stale_enum_post_shuffle, rule_fast_setjmp, rule_gate_class_aware, rule_backlog_narrowing, rule_backlog_class_alias, rule_census_false_positives, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_callback_count_vs_frames, rule_entity_methods_in_lab, rule_tears_methods_in_lab, rule_read_of_call_result, rule_type_of_callback_result, rule_item_name_is_a_key, rule_conception_pairing, rule_health_field_offsets, rule_cacheflag_literals, rule_lua_format_options, rule_host_string_to_guest, rule_pgrep_game_by_name, rule_web_host_mem_base, rule_insn_hook_giant_entry, rule_stdstring_read, rule_add_cache_flags_one_arg, rule_misc_b_methods_in_lab, rule_data_values_names_in_lab, rule_host_misc_names_in_lab, rule_options_setters_take_last_argument, rule_scan_global_assignment, rule_locate_names_in_lab, rule_familiar_pickup_names_in_lab, rule_npc_entity_misc_names_in_lab, rule_player_calls_names_in_lab, rule_console_box_drawn_in_console_hook, rule_free_only_own_string_buffers, rule_console_game_lines_whitelisted, rule_lua_keyword_table_key, rule_misnamed_collectible_enums, rule_player_rest_names_in_lab, rule_lab_check_never_fails, rule_grid_npc_names_in_lab, rule_room_sets_names_in_lab, rule_menus_rest_names_in_lab, rule_image_render_names_in_lab, rule_player_cooldowns_names_in_lab, rule_stride_divisibility_only, rule_menus_more_names_in_lab, rule_entity_initseed_offset, rule_hook_h_one_names_in_lab]
 
 def main():
     if '--list' in sys.argv:

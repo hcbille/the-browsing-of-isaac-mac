@@ -55,7 +55,6 @@ be fake.
 
 ## 4. Reachable, not planned yet (listed so they are not mistaken for "cannot")
 
-- `Isaac.CenterCursor`, `Input.GetDeviceNameByIdx`: need the Host's SDL layer (a small C addition); doable.
 - `Debug.ListLoadedFiles`, `Debug.ForceUnload`: mods get no `package` or `debug` table in this build, so there is no
   loaded-module registry to read or clear.
 - `HistoryHUD.GetTrinkets`, `GetTrinketOffsets`: vanilla never puts a trinket in the history list; a getter would only

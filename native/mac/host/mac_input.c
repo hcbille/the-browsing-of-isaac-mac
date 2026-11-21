@@ -370,6 +370,17 @@ void isaac_mac_input_pump_headless(void) {
 
 static int16_t clamp16(int v) { return (int16_t)(v < -32768 ? -32768 : v > 32767 ? 32767 : v); }
 
+/* Input.GetDeviceNameByIdx(idx): the name of the input device with the game's controller index. Index 0 is the keyboard
+ * (always there), index 1..NPADS the pad in XInput slot idx-1 (SDL's name for it); NULL for anything else, so a caller
+ * that counts devices until it gets nil (REPENTOGON's own menus do) stops after the last connected pad. The string lives
+ * in SDL's pad object (valid until the pad goes away) or is static. */
+const char *isaac_mac_input_device_name(int idx) {
+    if (idx == 0) return "Keyboard";
+    if (idx < 1 || idx > NPADS || !pad_ready()) return NULL;
+    pad_frame();
+    return g_slot[idx - 1].pad ? SDL_GetGamepadName(g_slot[idx - 1].pad) : NULL;
+}
+
 /* XINPUT_STATE (16 bytes) for the pad in `slot`; 0 when none is connected. */
 int isaac_mac_pad_state(int slot, uint8_t *out) {
     if (slot < 0 || slot >= NPADS || !pad_ready()) return 0;
