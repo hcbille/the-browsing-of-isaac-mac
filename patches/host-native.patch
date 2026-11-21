@@ -2347,7 +2347,7 @@ index 6aa6b68..133df95 100644
        > ISAAC_GUARD_VA) {
      printf("  FAIL shim tokens overrun the guard\n");
 diff --git a/scripts/recomp/lift/lift_patches.py b/scripts/recomp/lift/lift_patches.py
-index 659f7ce..07e0a2a 100644
+index 659f7ce..3fd3a92 100644
 --- a/scripts/recomp/lift/lift_patches.py
 +++ b/scripts/recomp/lift/lift_patches.py
 @@ -1339,7 +1339,7 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
@@ -2359,7 +2359,7 @@ index 659f7ce..07e0a2a 100644
      (22, 0x007ebca0, "Room::SpawnGridEntity"),    # ret 0x14; reg Room.SpawnGridEntity; sig Room::SpawnGridEntity
      (23, 0x00709db0, "GridEntity::Init"),    # ret 0x4; sig GridEntity::Init
      (24, 0x0082f1c0, "RoomTransition::StartBossIntro"),    # ret 0x8; sig RoomTransition::StartBossIntro
-@@ -1419,6 +1419,140 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
+@@ -1419,6 +1419,141 @@ RGON_HOOKS: list[tuple[int, int, str]] = [
      (98, 0x004199d0, "Room::RenderEntityPass_004199d0"),    # ret 0x8; asm
      (99, 0x008151e0, "Room::GetShopItemPrice"),    # ret 0x10; asm
      (169, 0x0094d500, "Menu_Character::UpdateRotations"),    # ret 0x0; sig Menu_Character::UpdateRotations
@@ -2496,11 +2496,12 @@ index 659f7ce..07e0a2a 100644
 +    (406, 0x009aca90, "ItemOverlay::Update"),    # ret 0x4; asm (worker hook-h2)
 +    (407, 0x009acfe0, "ItemOverlay::Render"),    # ret 0x0; asm (worker hook-h2)
 +    (408, 0x009b7190, "PauseScreen::Render"),    # ret 0x0; asm (worker hook-h2)
++    (409, 0x0080e320, "Room::GetBossThematicItem"),    # ret 0xc; asm (worker leftovers)
 +    (398, 0x00745ca0, "GetLevelName"),    # ret 0x0, the caller pops 0x14; asm (worker hook-h2)
      (100, 0x006a93a0, "Entity::Init"),    # ret 0x10; sig Init; vtable 0x00b6730c slot 1
      (101, 0x00755470, "Entity_Player::Init"),    # ret 0x10; vtable 0x00b6bdd0 slot 1
      (102, 0x006b8b20, "Entity_NPC::Init"),    # ret 0x10; vtable 0x00b67468 slot 1
-@@ -1523,7 +1657,7 @@ if len({_s for _s, _, _ in RGON_HOOKS}) != len(RGON_HOOKS) or len({_v for _, _v,
+@@ -1523,7 +1658,7 @@ if len({_s for _s, _, _ in RGON_HOOKS}) != len(RGON_HOOKS) or len({_v for _, _v,
  # reaches it: spill, set the trampoline's next block, return.
  #
  # Each entry: (slot, function VA, instruction VA, name, (redirect targets...)).
@@ -2509,7 +2510,7 @@ index 659f7ce..07e0a2a 100644
  # The table is checked by scripts/recomp/rgon/tools/hook_table.py, which prints
  # it (`--write`); edit it there. A build error, never a silent skip: the
  # function not in exactly one TU, the marker not exactly once in it, a target
-@@ -1539,8 +1673,83 @@ RGON_INSN_HOOKS: list[tuple[int, int, int, str, tuple[int, ...]]] = [
+@@ -1539,8 +1674,83 @@ RGON_INSN_HOOKS: list[tuple[int, int, int, str, tuple[int, ...]]] = [
      (167, 0x00676be0, 0x006770c2, "Entity_Tear::Collision_00676be0@ParasiteSplit", ()),    # 0x006770c2  mov eax, dword ptr [ebp - 0x64]
      (168, 0x00676be0, 0x00677498, "Entity_Tear::Collision_00676be0@BoneSplit", ()),    # 0x00677498  mov eax, dword ptr [ebp - 0x60]
      (170, 0x008f8860, 0x008f89c4, "ModManager::RenderCharacterPortrait_008f8860@Frame", ()),    # 0x008f89c4  mov edx, dword ptr [edi + 0x138]
@@ -2594,7 +2595,7 @@ index 659f7ce..07e0a2a 100644
  INSN_REGS = ("EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI")
  _RE_INSN_BLOCK = re.compile(
      r"^[ \t]*/\* LIFT-PATCH insn 0x([0-9a-f]{8}) slot (\d+) begin[^\n]*\n.*?"
-@@ -1564,8 +1773,9 @@ def check_insn_table(hooks=None, wrap_hooks=None) -> None:
+@@ -1564,8 +1774,9 @@ def check_insn_table(hooks=None, wrap_hooks=None) -> None:
              raise SystemExit("insn hook %s: slot %d is a function hook's (RGON_HOOKS)" % (what, slot))
          if slot in seen_slot:
              raise SystemExit("insn hooks %s and %s: both on slot %d" % (seen_slot[slot], what, slot))
@@ -2606,7 +2607,7 @@ index 659f7ce..07e0a2a 100644
          if iva == fva:
              raise SystemExit("insn hook %s: 0x%08x is the function's entry (that is a function hook)" % (what, iva))
          if len(set(targets)) != len(targets) or iva in targets or 0 in targets:
-@@ -1573,7 +1783,7 @@ def check_insn_table(hooks=None, wrap_hooks=None) -> None:
+@@ -1573,7 +1784,7 @@ def check_insn_table(hooks=None, wrap_hooks=None) -> None:
          if "*/" in what or "\n" in what:
              raise SystemExit("insn hook %s: the name cannot go in a C comment" % what)
          seen_slot[slot] = what
@@ -2615,7 +2616,7 @@ index 659f7ce..07e0a2a 100644
  
  
  def _fn_spans(text: str, fva: int) -> list[tuple[str, int, int]]:
-@@ -1664,7 +1874,7 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
+@@ -1664,7 +1875,7 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
      TUs that would be (and says why)."""
      hooks = RGON_INSN_HOOKS if hooks is None else hooks
      check_insn_table(hooks)
@@ -2624,7 +2625,7 @@ index 659f7ce..07e0a2a 100644
      texts: dict[Path, str] = {}
      changed: set[Path] = set()
      tus = sorted(lift_dir.glob("lifted_*.c"))
-@@ -1691,7 +1901,7 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
+@@ -1691,7 +1902,7 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
      for tu in list(texts):
          t = texts[tu]
          for m in reversed(list(_RE_INSN_BLOCK.finditer(t))):
@@ -2633,7 +2634,7 @@ index 659f7ce..07e0a2a 100644
                  print("insn-hook 0x%s (slot %s): retired, %s %s" % (m.group(1), m.group(2), "would be removed from" if check_only else "removed from", tu.name))
                  t = t[:m.start()] + t[m.end():]
                  changed.add(tu)
-@@ -1706,7 +1916,7 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
+@@ -1706,7 +1917,7 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
          # the block already there (if any) goes first, so that the marker search sees the lifted text
          old = None
          for m in _RE_INSN_BLOCK.finditer(t):
@@ -2642,7 +2643,7 @@ index 659f7ce..07e0a2a 100644
                  if old is not None:
                      raise SystemExit("insn hook %s: two blocks for 0x%08x in %s" % (what, iva, tu.name))
                  old = (m.start(), m.end(), m.group(0))
-@@ -1715,6 +1925,19 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
+@@ -1715,6 +1926,19 @@ def apply_insn_hooks(lift_dir: Path, check_only: bool = False, hooks=None) -> li
          spans = _fn_spans(t, fva)
          if not spans:
              raise SystemExit("insn hook %s: %s has no body in %s" % (what, name, tu.name))
@@ -4616,10 +4617,10 @@ index 0000000..d09d89b
 +end
 diff --git a/scripts/recomp/rgon/api_cb_level.lua b/scripts/recomp/rgon/api_cb_level.lua
 new file mode 100644
-index 0000000..f24cbd6
+index 0000000..c35ec52
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_cb_level.lua
-@@ -0,0 +1,251 @@
+@@ -0,0 +1,298 @@
 +-- api_cb_level.lua -- level, room save, backwards-stage, planetarium/devil and grid spawn callbacks (worker cb-level, wave 9; hook slots
 +-- 329-337 and 390-399, tools/hook_table.py, hook_slots.lua). Every address was read off this exe (the notes sit in hook_table.py).
 +--   1058 MC_PRE_SELECT_AMBUSH_WAVE   after Ambush::SpawnWave's RoomConfig::GetRandomRoom (insn 337): (roomConfig, seed), a RoomConfigRoom replaces it
@@ -4631,7 +4632,7 @@ index 0000000..f24cbd6
 +--   1306 MC_POST_SWAP_ROOMS          Level::swap_rooms 0x00749270 (slot 332): (descriptor, descriptor)
 +--   1307 MC_POST_BACKWARDS_ROOM_SAVE Game::SaveBackwardsStage 0x00708050 (slot 333): (stage, roomDescriptor, key "boss_0" / "treasure_0")
 +--   (1308 MC_POST_BACKWARDS_ROOM_RESTORE: api_cb_ending_labs.lua)
-+--   (1110-1112, 1131 are deferred, see below)
++--   1110 1111 1112 1131 MC_PRE_PLANETARIUM_APPLY_STAGE_PENALTY / _PLANETARIUM_PENALTY / _TREASURE_PENALTY, MC_PRE_DEVIL_APPLY_STAGE_PENALTY (insns 393-397, see below)
 +--   (1192 MC_PRE_ROOM_GRID_ENTITY_SPAWN is deferred: its call site is lifted into four overlapping chunk functions, one hook cannot cover them)
 +--   1313 MC_SHOULD_SAVE_ENTITY / 1314 MC_ENTITY_SAVE / 1315 MC_ENTITY_RESTORE  Room::save_entity (insn 399, slot 335), Room::restore_entity (slot 336)
 +local T = ...
@@ -4832,9 +4833,56 @@ index 0000000..f24cbd6
 +  -- 1059 MC_PRE_SELECT_GREED_WAVE (insn hook 390) is registered in api_cb_ending_labs.lua (proven in a Greed Mode run).
 +end
 +
-+-- 1110 / 1111 / 1112 / 1131: deferred. The instruction hooks (slots 393-397) are in the tables and fire (lab: each ran once at the
-+-- planetarium / devil chance), but no state was found in which answering false or an integer changes the chance, so no callback is
-+-- registered for them here.
++-- 1110 / 1111 / 1112 / 1131: the penalty switches of the planetarium and devil chances (instruction hooks 393-397; proven by
++-- lab_cb_chance_penalty.lua, which builds the penalty state by writing the game's own counters and calls the chance functions).
++--   1110 Game::GetPlanetariumChance, before the three stage checks (0x0074dc73): false jumps to 0x0074dc9a, past all of them.
++--   1111 at the "planetariums visited" test (0x0074dca0, esi = the game): false writes 0 to the counter [game+0x2655c] for the test and
++--        the hook at 0x0074dcad (the fall through) puts it back, so the not-visited branch runs.
++--   1112 after the treasure-rooms-visited load (0x0074dcea, edx = the count [game+0x26558]): (count), an integer replaces edx, false
++--        makes it 0 (REPENTOGON treats false as "no treasure room entered"; only the Crystal Ball term at stage 1 differs).
++--   1131 Room::GetDevilRoomChance, at `test ecx, ecx` of the last devil room stage [game+0x26554] (0x007f95dc): false zeroes ecx, so
++--        the 0.25 / 0.5 penalty is skipped. Not run while the deal is disabled ([game+9]), as REPENTOGON's reimplementation.
++-- Not done: REPENTOGON's skip of these callbacks in daily runs.
++do
++  local function devil_on() return r8(game_at() + 9) == 0 end
++  local id_stage = M.MC_PRE_PLANETARIUM_APPLY_STAGE_PENALTY
++  if id_stage then
++    insn("Game::GetPlanetariumChance@StagePenalty", { id_stage }, function()
++      if run(id_stage, nil) == false then return 0x0074dc9a end
++    end)
++  end
++  local id_visited = M.MC_PRE_PLANETARIUM_APPLY_PLANETARIUM_PENALTY
++  if id_visited then
++    local VISITED, saved = 0x2655c, nil
++    insn("Game::GetPlanetariumChance@PlanetariumPenalty", { id_visited }, function()
++      saved = nil
++      if run(id_visited, nil) == false then
++        local g = game_at()
++        local v = r32(g + VISITED)
++        if v ~= 0 then saved = v w32(g + VISITED, 0) end
++      end
++    end)
++    insn("Game::GetPlanetariumChance@PlanetariumPenaltyEnd", { id_visited }, function()
++      if saved then w32(game_at() + VISITED, saved) saved = nil end
++    end)
++  end
++  local id_treasure = M.MC_PRE_PLANETARIUM_APPLY_TREASURE_PENALTY
++  if id_treasure then
++    insn("Game::GetPlanetariumChance@TreasurePenalty", { id_treasure }, function()
++      local n = reg("edx")
++      if n >= 0x80000000 then n = n - 0x100000000 end
++      local res = run(id_treasure, nil, n)
++      if mathtype(res) == "integer" then reg("edx", res & 0xffffffff)
++      elseif res == false then reg("edx", 0) end
++    end)
++  end
++  local id_devil = M.MC_PRE_DEVIL_APPLY_STAGE_PENALTY
++  if id_devil then
++    insn("Room::GetDevilRoomChance@StagePenalty", { id_devil }, function()
++      if devil_on() and run(id_devil, nil) == false then reg("ecx", 0) end
++    end)
++  end
++end
 +
 +-- 1313 / 1314 / 1315 ---------------------------------------------------------
 +do
@@ -5181,10 +5229,10 @@ index 0000000..365a2f0
 +T.rearm()
 diff --git a/scripts/recomp/rgon/api_cb_music_menu.lua b/scripts/recomp/rgon/api_cb_music_menu.lua
 new file mode 100644
-index 0000000..e53bf15
+index 0000000..50f2366
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_cb_music_menu.lua
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,199 @@
 +-- api_cb_music_menu.lua -- engine-hook callbacks of worker cb-music-menu (tools/hook_table.py rows 369-375, hook_slots.lua), wave 11.
 +--   1094 MC_PRE_MUSIC_PLAY_JINGLE (param = music id; id)   Music::PlayJingle 0x007e2580 (slot 369), thiscall on the music object,
 +--        (int id, int, bool), `ret 0xc`. An integer answer plays that id, false plays nothing. This hook is armed whoever listens:
@@ -5201,8 +5249,7 @@ index 0000000..e53bf15
 +--   1092 MC_PRE_PLAYER_APPLY_INNATE_COLLECTIBLE_NUM (no param; modCount, player, collectibleId, onlyTrue)   Entity_Player::GetCollectibleNum
 +--        0x00770ca0 (slot 375, `ret 8`), deprecated in REPENTOGON: the integer the callbacks add up is ADDED to the game's count. The `after`
 +--        returns the new count. A call made from inside the callback (a mod asking for a count) is not hooked again.
-+--   1333 MC_PRE_RENDER_CUSTOM_CHARACTER_MENU is deferred: REPENTOGON fires it after a MODDED character's page was drawn (pt, pos, defaultSprite),
-+--        which is api_charsel.lua's POST_RENDER_CHARACTER_SELECT_PAGE hook (slot 258) for a modded page; proving it needs a custom character mod.
++--   1333 MC_PRE_RENDER_CUSTOM_CHARACTER_MENU lives in api_charsel.lua (its POST_RENDER_CHARACTER_SELECT_PAGE hook, slot 258, modded pages only).
 +-- Each is proven by lab_cb_music_menu.lua.
 +local T = ...
 +local B = T.B
@@ -6250,10 +6297,10 @@ index 0000000..1a6c054
 +def("IsBeastPath", function(at) return ri32(at + 0x80) == 3 end)
 diff --git a/scripts/recomp/rgon/api_charsel.lua b/scripts/recomp/rgon/api_charsel.lua
 new file mode 100644
-index 0000000..71f8072
+index 0000000..12d1190
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_charsel.lua
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,181 @@
 +-- api_charsel.lua -- the character select's callbacks (worker charsel, wave 5; hook slots 252-259, hook_slots.lua).
 +-- REPENTOGON patches five places in the menu's code; here each is an instruction hook (lift_patches.py RGON_INSN_HOOKS):
 +--   1328 MC_CAN_SELECT_CHARACTER (pt; pt, true)   Menu_Character::Update 0x0094c580 at 0x0094c619, right after the test of
@@ -6264,6 +6311,8 @@ index 0000000..71f8072
 +--        0x0094bc2d..0x0094bc3f, the modded one the call of ModManager::RenderCustomCharacterMenu at 0x0094bc5f (stdcall(pt,
 +--        pos, background), ret 0xc; the modded sprite is [config+0x134], "render custom background" [config+0x130]); both
 +--        meet at 0x0094bc64 (the post). false from the pre skips the draw (and the Eden tokens text of entry 10, 0x0094bc7c).
++--        The legacy 1333 MC_PRE_RENDER_CUSTOM_CHARACTER_MENU (pt; pt, pos, vanillaSprite) runs at the post of a MODDED page only
++--        (wave 12): REPENTOGON fires it after the custom page was drawn, before 1330.
 +--   1331/1332 MC_PRE/POST_RENDER_CHARACTER_SELECT_PORTRAIT (pt; pt, sprite, pos, scale, color)
 +--        the wheel's render 0x0094bee0 (this = edi = the menu): a vanilla entry's draws start at 0x0094c2f0 (entry offset in
 +--        ebx, position at [esp+0x14] and [esp+0x18]), a modded one is the call of 0x008f8860 at 0x0094c445 (stdcall(pt, pos,
@@ -6336,17 +6385,21 @@ index 0000000..71f8072
 +  end)
 +end
 +
-+-- 1329 / 1330
++-- 1329 / 1330, and the legacy 1333 MC_PRE_RENDER_CUSTOM_CHARACTER_MENU (pt; pt, pos, vanillaSprite): REPENTOGON runs it
++-- after the page of a MODDED character was drawn (never for a vanilla one, never when the PRE callback cancelled the draw),
++-- right before MC_POST_RENDER_CHARACTER_SELECT_PAGE.
++if M.MC_PRE_RENDER_CUSTOM_CHARACTER_MENU == nil then M.MC_PRE_RENDER_CUSTOM_CHARACTER_MENU = 1333 end
++local LEGACY = M.MC_PRE_RENDER_CUSTOM_CHARACTER_MENU
 +if PRE_PAGE and POST_PAGE then
-+  local ids = { PRE_PAGE, POST_PAGE }
++  local ids = { PRE_PAGE, POST_PAGE, LEGACY }
 +  local pending, skip_eden = nil, false
-+  local function pre(pt, pos, vanilla, custom, bg, cancel)
++  local function pre(pt, pos, vanilla, custom, bg, cancel, modded)
 +    pending = nil
 +    if wants(PRE_PAGE, pt) then
 +      first("MC_PRE_RENDER_CHARACTER_SELECT_PAGE")
 +      if run(PRE_PAGE, pt, pt, pos, vanilla, custom, bg) == false then return cancel() end
 +    end
-+    if wants(POST_PAGE, pt) then pending = { pt, pos, vanilla, custom, bg } end
++    if wants(POST_PAGE, pt) or (modded and wants(LEGACY, pt)) then pending = { pt, pos, vanilla, custom, bg, modded } end
 +  end
 +  at("Menu_Character::RenderPage@PreVanilla", ids, function()
 +    skip_eden = false
@@ -6365,14 +6418,20 @@ index 0000000..71f8072
 +    local csp = cfg and r32(cfg + 0x134) or 0
 +    local custom = csp ~= 0 and sprite_in(csp) or nil
 +    local bg = custom ~= nil and r8(cfg + 0x130) ~= 0
-+    return pre(pt, vec_at(posp), vanilla, custom, bg, function() reg("esp", esp + 0xc) return 0x0094bc64 end)
++    return pre(pt, vec_at(posp), vanilla, custom, bg, function() reg("esp", esp + 0xc) return 0x0094bc64 end, true)
 +  end)
-+  at("Menu_Character::RenderPage@Post", { POST_PAGE }, function()
++  at("Menu_Character::RenderPage@Post", { POST_PAGE, LEGACY }, function()
 +    local p = pending
 +    if not p then return end
 +    pending = nil
-+    first("MC_POST_RENDER_CHARACTER_SELECT_PAGE")
-+    run(POST_PAGE, p[1], p[1], p[2], p[3], p[4], p[5])
++    if p[6] and wants(LEGACY, p[1]) then
++      first("MC_PRE_RENDER_CUSTOM_CHARACTER_MENU")
++      run(LEGACY, p[1], p[1], p[2], p[3])
++    end
++    if wants(POST_PAGE, p[1]) then
++      first("MC_POST_RENDER_CHARACTER_SELECT_PAGE")
++      run(POST_PAGE, p[1], p[1], p[2], p[3], p[4], p[5])
++    end
 +  end)
 +  at("Menu_Character::RenderPage@EdenTokens", { PRE_PAGE }, function()
 +    if skip_eden then return 0x0094bd97 end
@@ -10820,17 +10879,20 @@ index 0000000..79bf4e5
 +end
 diff --git a/scripts/recomp/rgon/api_hook_h_two.lua b/scripts/recomp/rgon/api_hook_h_two.lua
 new file mode 100644
-index 0000000..74a7eb3
+index 0000000..a301b7c
 --- /dev/null
 +++ b/scripts/recomp/rgon/api_hook_h_two.lua
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,319 @@
 +-- api_hook_h_two.lua -- final hook wave, part 2 (worker hook-h2): hook slots 376, 389, 398, 400-405 (tools/hook_table.py, hook_slots.lua).
 +-- Written against REPENTOGON's behaviour (LuaLevel.cpp, ASMLevel.cpp, ASMRoom.cpp, LuaAmbush.cpp, ASMGridEntitySpawn.cpp); every
 +-- address measured in THIS executable (v1.9.7.17) and checked by lab_hook_h_two.lua.
 +--   Level:Get/SetForceSpecialQuest   function hooks 376 (Level::HasMirrorDimension 0x0074ef70) and 389 (Level::HasAbandonedMineshaft 0x0074efd0),
 +--       both thiscall, no arguments, plain ret. The value is -1 (no quest at all), 0 (the game's own rules, the default), 1 (mirror world) or 2
-+--       (abandoned mineshaft). Instruction hook 400 (Room::TrySpawnSpecialQuestDoor 0x008279d0, the stage-type test at 0x008279e6) is installed
-+--       but NOT armed: the door did not spawn in the lab even with the game's own rule, so Room:TrySpawnSpecialQuestDoor(force) is deferred.
++--       (abandoned mineshaft). Room:TrySpawnSpecialQuestDoor(force) (wave 12, leftovers): instruction hook 400 (Room::TrySpawnSpecialQuestDoor 0x008279d0,
++--       the stage-type test at 0x008279e6) is armed only while a forced call runs and sends the function on to 0x008279f4. The door needs a room whose
++--       Data is type 1 with subtype 0x22 and a nonzero Data word at +0x3c (the level's own copy of the mirror-door room, variant >= 10000).
++--   Ambush.SetMaxBossChallengeWaves (wave 12): the same hook 401 (eax == 1 is a boss challenge room, subtype 1).
++--   MC_GET_BOSS_THEMATIC_ITEM 1493 (wave 12): function hook 409, Room::GetBossThematicItem 0x0080e320 (found by behaviour; see the block at the end).
 +--   Level:SetName(name)   function hook 398 on the global GetLevelName (0x00745ca0, ecx = the std::string answered, stage in edx, the caller pops
 +--       five stack words, plain ret): its `after` overwrites the answer with the name (REPENTOGON does the same on the global).
 +--   Ambush.Set/GetMax(Boss)ChallengeWaves   instruction hook 401 in Ambush::Update (0x00834350): the `add ebx, 2` at 0x008343ac makes the wave
@@ -10910,8 +10972,34 @@ index 0000000..74a7eb3
 +      arm()
 +    end)
 +    method("Level", "GetForceSpecialQuest", function(self) return force end)
-+    -- Room:TrySpawnSpecialQuestDoor(force) and the door site (instruction hook 400) are NOT armed: the door never spawned in the lab
-+    -- (not even on Downpour II with the game's own rule and a variant-34 room swapped in), so the effect is unproven.
++    -- Room:TrySpawnSpecialQuestDoor(force) (instruction hook 400): the game's own function, 0x008279d0 (thiscall, plain ret, al = a door was
++    -- made). Its first test (the level's stage type must be 4 or 5, the alt path) is what REPENTOGON's "force" skips: the hook sends the
++    -- function on to 0x008279f4 while a forced call runs.
++    local s_door, door_at = slot_of("Room::TrySpawnSpecialQuestDoor@StageTypeTest")
++    if s_door then
++      local forcing = false
++      local c, const = T.class_tables("Room")
++      local orig = c and rawget(c, "TrySpawnSpecialQuestDoor")
++      if orig ~= nil and not R.Implemented["Room.TrySpawnSpecialQuestDoor"] then
++        local wrapped = B.cfn(function(self, force)
++          if force ~= nil and type(force) ~= "boolean" then argerr(2, "TrySpawnSpecialQuestDoor", "boolean", force) end
++          if not force then return orig(self) end
++          B.hook(s_door, function(va)
++            if va ~= door_at then return end
++            if forcing then return 0x008279f4 end
++          end)
++          forcing = true
++          local ok, res = pcall(orig, self)
++          forcing = false
++          B.hook(s_door)
++          if not ok then error(res, 0) end
++          return res
++        end)
++        rawset(c, "TrySpawnSpecialQuestDoor", wrapped)
++        if const and const ~= c and rawget(const, "TrySpawnSpecialQuestDoor") == orig then rawset(const, "TrySpawnSpecialQuestDoor", wrapped) end
++        R.Implemented["Room.TrySpawnSpecialQuestDoor"] = true
++      end
++    end
 +  end
 +end
 +
@@ -10985,7 +11073,7 @@ index 0000000..74a7eb3
 +      end
 +    end
 +    T.static(Ambush, "Ambush", "SetMaxChallengeWaves", function(n) W.normal = int_arg(n, 1, "SetMaxChallengeWaves") arm() end)
-+    -- Ambush.SetMaxBossChallengeWaves is deferred: a boss challenge has no proof in the lab, and boss waves above 2 would have no room to pick.
++    T.static(Ambush, "Ambush", "SetMaxBossChallengeWaves", function(n) W.boss = int_arg(n, 1, "SetMaxBossChallengeWaves") arm() end)
 +  end
 +end
 +
@@ -11073,8 +11161,49 @@ index 0000000..74a7eb3
 +  end
 +  for _, n in ipairs({ "CopyA", "CopyB", "CopyC", "CopyD" }) do handler("Room::SpawnSavedGrid@" .. n) end
 +end
++
++------------------------------------------------------------------------------
++-- MC_GET_BOSS_THEMATIC_ITEM (1493; slot 409): (spawned, collectible, trinket), no param
++------------------------------------------------------------------------------
++-- Room::GetBossThematicItem(int* collectible, int* trinket, uint* seed) 0x0080e320, thiscall, `ret 0xc`, a bool in al: the boss room's clear
++-- award asks it whether a boss-themed item drops (a fixed item per boss id, one in a hundred) and reads the two outputs. After the game's own
++-- work the callback gets what it answered; a table {Collectible = id} or {Trinket = id} replaces the answer (and makes it a spawn), true says
++-- nothing spawns (REPENTOGON's rule). The game's reader of the outputs is the one caller, so the new values are what it spawns.
++do
++  local ID = M.MC_GET_BOSS_THEMATIC_ITEM
++  if ID == nil then M.MC_GET_BOSS_THEMATIC_ITEM = 1493 ID = 1493 end
++  local slot = slot_of("Room::GetBossThematicItem")
++  if slot and T.define and T.wants then
++    local function known(kind, id)
++      local ok, cfg = pcall(function()
++        local c = Isaac.GetItemConfig()
++        return kind == "Collectible" and c:GetCollectible(id) or c:GetTrinket(id)
++      end)
++      return ok and cfg ~= nil
++    end
++    T.define(slot, { ID }, function(self, esp)
++      if not T.wants(ID, nil) then return false end
++      return { r32(esp + 4), r32(esp + 8) }
++    end, function(self, esp, eax, k)
++      if not k then return end
++      local spawned = (eax & 0xff) ~= 0
++      local res = T.run(ID, nil, spawned, ri32(k[1]), ri32(k[2]))
++      if type(res) == "table" then
++        local c, t = res.Collectible, res.Trinket
++        if mathtype(c) == "integer" and known("Collectible", c) then
++          w32(k[1], c & 0xffffffff) w32(k[2], 0) spawned = true
++        elseif mathtype(t) == "integer" and known("Trinket", t) then
++          w32(k[2], t & 0xffffffff) w32(k[1], 0) spawned = true
++        end
++      elseif res == true then
++        spawned = false
++      end
++      return (eax & ~0xff) | (spawned and 1 or 0)
++    end)
++  end
++end
 diff --git a/scripts/recomp/rgon/api_hooks.lua b/scripts/recomp/rgon/api_hooks.lua
-index 92f9c5b..0200bf7 100644
+index 92f9c5b..7717bb2 100644
 --- a/scripts/recomp/rgon/api_hooks.lua
 +++ b/scripts/recomp/rgon/api_hooks.lua
 @@ -179,12 +179,23 @@ local CLASSES = {
@@ -11587,7 +11716,7 @@ index 92f9c5b..0200bf7 100644
 +    -- Room::GetDevilRoomChance 0x007f92b0: the chance is [esp+0xc]. MC_PRE_DEVIL_APPLY_ITEMS (1130) runs on the starting 0.01
 +    -- before the item terms (not when the deal is disabled, [game+9]); MC_PRE_DEVIL_APPLY_SPECIAL_ITEMS (1132) after the stage
 +    -- penalty, before Goat Head and Eucharist; MC_POST_DEVIL_CALCULATE (1133) after them, before the Greed Mode override.
-+    -- (MC_PRE_DEVIL_APPLY_STAGE_PENALTY 1131 is not done.)
++    -- (MC_PRE_DEVIL_APPLY_STAGE_PENALTY 1131: api_cb_level.lua.)
 +    local function devil_on() return r8(r32(GAME_PTR) + 9) == 0 end
 +    local function esp12(esp) return esp + 0xc end
 +    if M.MC_PRE_DEVIL_APPLY_ITEMS then chance_at("Room::GetDevilRoomChance@Items", M.MC_PRE_DEVIL_APPLY_ITEMS, esp12, devil_on) end
@@ -11597,7 +11726,7 @@ index 92f9c5b..0200bf7 100644
 +    -- MC_PRE_PLANETARIUM_APPLY_ITEMS (1113) after the treasure-room term, before Magic 8 Ball, Crystal Ball's second term, Sausage
 +    -- and the Telescope Lens's 0.15; MC_PRE_PLANETARIUM_APPLY_TELESCOPE_LENS (1114) after those, before the Lens's 0.09 (with the
 +    -- 0.15 already in when the Lens is held, and in the already-visited case too); MC_POST_PLANETARIUM_CALCULATE (1115) at the end,
-+    -- before the cap at 1.0. (1110, 1111 and 1112, the penalties, are not done.)
++    -- before the cap at 1.0. (1110, 1111 and 1112, the penalties: api_cb_level.lua.)
 +    if M.MC_PRE_PLANETARIUM_APPLY_ITEMS then
 +      chance_at("Game::GetPlanetariumChance@Items", M.MC_PRE_PLANETARIUM_APPLY_ITEMS, function(esp, ebp) return ebp - 8 end)
 +    end
@@ -22970,7 +23099,7 @@ index 3b6d51e..488241e 100644
  ]],
  }
 diff --git a/scripts/recomp/rgon/hook_slots.lua b/scripts/recomp/rgon/hook_slots.lua
-index 2187a0e..3948ae2 100644
+index 2187a0e..4bbe0a8 100644
 --- a/scripts/recomp/rgon/hook_slots.lua
 +++ b/scripts/recomp/rgon/hook_slots.lua
 @@ -100,6 +100,42 @@ return {
@@ -23050,7 +23179,7 @@ index 2187a0e..3948ae2 100644
    -- instruction hooks (round 110): slot, false, the instruction's address
    ["Entity_Player::EvaluateItems@TearsUp"] = { 160, false, 0x00764864 },
    ["Entity_Player::EvaluateItems@FlatTears"] = { 161, false, 0x00764f2e },
-@@ -170,4 +233,150 @@ return {
+@@ -170,4 +233,151 @@ return {
    ["Entity_Tear::Collision_00676be0@ParasiteSplit"] = { 167, false, 0x006770c2 },
    ["Entity_Tear::Collision_00676be0@BoneSplit"] = { 168, false, 0x00677498 },
    ["ModManager::RenderCharacterPortrait_008f8860@Frame"] = { 170, false, 0x008f89c4 },
@@ -23156,6 +23285,7 @@ index 2187a0e..3948ae2 100644
 +  ["ItemOverlay::Update"] = { 406, 0x4 },
 +  ["ItemOverlay::Render"] = { 407, 0x0 },
 +  ["PauseScreen::Render"] = { 408, 0x0 },
++  ["Room::GetBossThematicItem"] = { 409, 0xc },
 +  ["Camera::ClampedToRoom@Flag"] = { 307, false, 0x0094355b },
 +  ["Camera::Update_009439d0@SlowStopClamp"] = { 308, false, 0x0094433b },
 +  ["Level::GetRandomRoomIndex"] = { 329, 0x8 },
@@ -25700,6 +25830,149 @@ index 0000000..b04e2f0
 +  end
 +  local ok, err = pcall(f)
 +  if not ok then check(false, "step " .. i .. " raised: " .. tostring(err)) end
++end)
+diff --git a/scripts/recomp/rgon/lab_cb_chance_penalty.lua b/scripts/recomp/rgon/lab_cb_chance_penalty.lua
+new file mode 100644
+index 0000000..69cceef
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_cb_chance_penalty.lua
+@@ -0,0 +1,137 @@
++-- lab_cb_chance_penalty.lua (development only; ISAAC_RGON_LAB=lab_cb_chance_penalty.lua, worker planetarium-items)
++-- Proves MC_PRE_PLANETARIUM_APPLY_STAGE_PENALTY (1110), _PLANETARIUM_PENALTY (1111), _TREASURE_PENALTY (1112) and
++-- MC_PRE_DEVIL_APPLY_STAGE_PENALTY (1131): the penalty state is built by writing the game's own counters (stage word game+0,
++-- treasure rooms visited game+0x26558, planetariums visited game+0x2655c, last devil room stage game+0x26554; each read by the
++-- chance functions, restored after), the game's chance functions are called directly and the answer must change the number.
++-- Prints "lab_cb_chance_penalty: DONE n PASS m FAIL".
++local T = ...
++local B = T.B
++local M = ModCallbacks
++local mod = RegisterMod("rgon lab chance penalty", 1)
++local pass, fail = 0, 0
++local function say(s) B.log("lab_cb_chance_penalty: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_cb_chance_penalty: %s %s", ok and "PASS" or "FAIL", what))
++end
++local function near(a, b, eps) return type(a) == "number" and type(b) == "number" and math.abs(a - b) <= (eps or 0.003) end
++
++local NAMES = { "MC_PRE_PLANETARIUM_APPLY_STAGE_PENALTY", "MC_PRE_PLANETARIUM_APPLY_PLANETARIUM_PENALTY",
++  "MC_PRE_PLANETARIUM_APPLY_TREASURE_PENALTY", "MC_PRE_DEVIL_APPLY_STAGE_PENALTY" }
++local beh, seen, args = {}, {}, {}
++for _, n in ipairs(NAMES) do
++  local id = M[n]
++  if not id then check(false, n .. " has a ModCallbacks number") else
++    mod:AddCallback(id, function(_, ...)
++      seen[n] = (seen[n] or 0) + 1
++      args[n] = { ... }
++      local f = beh[n]
++      if f then return f(...) end
++    end)
++  end
++end
++
++local game = Game()
++local GAME_PTR = 0x00c71678
++local function g() return B.r32(GAME_PTR) end
++local function planet() local _, st0 = B.call(0x0074dbd0, g()) return st0 end
++local function devil() local _, st0 = B.call(0x007f92b0, B.ptr(game:GetRoom())) return st0 end
++local STAGE, TREASURE, VISITED, LASTDEVIL = 0, 0x26558, 0x2655c, 0x26554
++local function with(off, v, f)
++  local a = g() + off
++  local old = B.r32(a)
++  B.w32(a, v)
++  local ok, r = pcall(f)
++  B.w32(a, old)
++  if not ok then error(r) end
++  return r
++end
++local function clear() for _, n in ipairs(NAMES) do beh[n] = nil seen[n] = nil end end
++
++local steps = {}
++local function step(f) steps[#steps + 1] = f end
++
++-- 1110: stage 11 is past the last planetarium stage: chance 0; false skips the stage checks
++step(function()
++  clear()
++  with(STAGE, 11, function()
++    local base = planet()
++    check(near(base, 0, 0.0005), "1110: stage 11 gives chance 0 without an answer: " .. tostring(base))
++    check((seen.MC_PRE_PLANETARIUM_APPLY_STAGE_PENALTY or 0) == 1, "1110 fired once per roll: " .. tostring(seen.MC_PRE_PLANETARIUM_APPLY_STAGE_PENALTY))
++    beh.MC_PRE_PLANETARIUM_APPLY_STAGE_PENALTY = function() return true end
++    check(near(planet(), 0, 0.0005), "1110: true keeps the penalty")
++    beh.MC_PRE_PLANETARIUM_APPLY_STAGE_PENALTY = function() return false end
++    local v = planet()
++    check(v > 0.01, "1110: false skips the stage penalty, chance " .. tostring(v))
++  end)
++  clear()
++end)
++
++-- 1111: planetariums visited locks the chance; false runs the not-visited branch and the counter is put back
++step(function()
++  clear()
++  with(STAGE, 3, function() with(TREASURE, 0, function() with(VISITED, 1, function()
++    local base = planet()
++    check((seen.MC_PRE_PLANETARIUM_APPLY_PLANETARIUM_PENALTY or 0) == 1, "1111 fired once per roll")
++    beh.MC_PRE_PLANETARIUM_APPLY_PLANETARIUM_PENALTY = function() return false end
++    local v = planet()
++    check(v > base + 0.3, "1111: false removes the visited lock: " .. tostring(v) .. " vs " .. tostring(base))
++    check(B.r32(g() + VISITED) == 1, "1111: the visited counter is put back (" .. B.r32(g() + VISITED) .. ")")
++    beh.MC_PRE_PLANETARIUM_APPLY_PLANETARIUM_PENALTY = function() return true end
++    check(near(planet(), base), "1111: true keeps the lock")
++  end) end) end)
++  clear()
++end)
++
++-- 1112: treasure rooms visited >= stage - 1 gives no bonus; an integer or false changes the count the game sees
++step(function()
++  clear()
++  with(STAGE, 3, function() with(VISITED, 0, function() with(TREASURE, 5, function()
++    local base = planet()
++    check(type(args.MC_PRE_PLANETARIUM_APPLY_TREASURE_PENALTY) == "table" and args.MC_PRE_PLANETARIUM_APPLY_TREASURE_PENALTY[1] == 5,
++          "1112 gets the visited count 5: " .. tostring(args.MC_PRE_PLANETARIUM_APPLY_TREASURE_PENALTY and args.MC_PRE_PLANETARIUM_APPLY_TREASURE_PENALTY[1]))
++    beh.MC_PRE_PLANETARIUM_APPLY_TREASURE_PENALTY = function() return 0 end
++    check(near(planet(), base + 0.4), "1112: integer 0 gives +0.4 (stage 3): " .. tostring(planet()) .. " vs " .. tostring(base))
++    beh.MC_PRE_PLANETARIUM_APPLY_TREASURE_PENALTY = function() return 1 end
++    check(near(planet(), base + 0.2), "1112: integer 1 gives +0.2: " .. tostring(planet()))
++    beh.MC_PRE_PLANETARIUM_APPLY_TREASURE_PENALTY = function() return false end
++    check(near(planet(), base + 0.4), "1112: false behaves as no treasure room entered: " .. tostring(planet()))
++    beh.MC_PRE_PLANETARIUM_APPLY_TREASURE_PENALTY = function() return true end
++    check(near(planet(), base), "1112: true keeps the penalty")
++  end) end) end)
++  clear()
++end)
++
++-- 1131: the devil stage penalty (last deal stage within two floors) is skipped by false
++step(function()
++  clear()
++  local stage = B.r32(g() + STAGE)
++  with(LASTDEVIL, 0, function()
++    local nopen = devil()
++    say("devil chance without a deal on record: " .. tostring(nopen))
++    with(LASTDEVIL, stage, function()
++      local pen = devil()
++      check((seen.MC_PRE_DEVIL_APPLY_STAGE_PENALTY or 0) >= 1, "1131 fired")
++      check(pen < nopen - 0.01, "a deal this floor lowers the chance: " .. tostring(pen) .. " vs " .. tostring(nopen))
++      beh.MC_PRE_DEVIL_APPLY_STAGE_PENALTY = function() return true end
++      check(near(devil(), pen), "1131: true keeps the penalty")
++      beh.MC_PRE_DEVIL_APPLY_STAGE_PENALTY = function() return false end
++      check(near(devil(), nopen), "1131: false skips the penalty: " .. tostring(devil()) .. " vs " .. tostring(nopen))
++    end)
++  end)
++  clear()
++end)
++
++local frame, idx = 0, 0
++mod:AddCallback(M.MC_POST_UPDATE, function()
++  frame = frame + 1
++  if frame < 5 or frame % 3 ~= 0 then return end
++  idx = idx + 1
++  local f = steps[idx]
++  if not f then
++    if idx == #steps + 1 then B.log(string.format("lab_cb_chance_penalty: DONE %d PASS %d FAIL", pass, fail)) end
++    return
++  end
++  local ok, err = pcall(f)
++  if not ok then check(false, "step " .. idx .. " raised: " .. tostring(err)) end
 +end)
 diff --git a/scripts/recomp/rgon/lab_cb_d.lua b/scripts/recomp/rgon/lab_cb_d.lua
 new file mode 100644
@@ -34282,6 +34555,409 @@ index 0000000..a2d58fa
 +  local ok, err = pcall(f)
 +  if not ok then check(false, "step " .. i .. " raised: " .. tostring(err)) end
 +end)
+diff --git a/scripts/recomp/rgon/lab_hook_leftovers.lua b/scripts/recomp/rgon/lab_hook_leftovers.lua
+new file mode 100644
+index 0000000..9b56974
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_hook_leftovers.lua
+@@ -0,0 +1,397 @@
++-- lab_hook_leftovers.lua (development only; ISAAC_RGON_LAB=lab_hook_leftovers.lua, worker leftovers)
++-- ISAAC_LAB_PHASE=probe : lists challenge room variants and their subtypes.
++-- ISAAC_LAB_PHASE=boss  : a boss challenge room (subtype 1) with Ambush.SetMaxBossChallengeWaves(ISAAC_LAB_WAVES): how many waves the game runs.
++-- Prints "lab_hook_leftovers: DONE n PASS m FAIL". Steps run one after another on MC_POST_RENDER.
++local T = ...
++local B = T.B
++local M = ModCallbacks
++local mod = RegisterMod("rgon lab leftovers", 1)
++local phase = B.env("ISAAC_LAB_PHASE") or "probe"
++local pass, fail = 0, 0
++local game = Game()
++local function say(s) B.log("lab_hook_leftovers: f" .. Isaac.GetFrameCount() .. " " .. s) end
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_hook_leftovers: %s %s", ok and "PASS" or "FAIL", what))
++end
++local function listed(name) return REPENTOGON == nil or REPENTOGON.Implemented == nil or REPENTOGON.Implemented[name] == true end
++local steps = {}
++local frame, i = 0, 0
++local function step(f) steps[#steps + 1] = f end
++local waiting, wait_left, wait_cond
++local function wait(frames, cond) waiting, wait_left, wait_cond = true, frames, cond or function() return false end end
++local function room() return game:GetRoom() end
++
++if phase == "probe" then
++  step(function()
++    Isaac.ExecuteCommand("debug 3")
++    local subs = {}
++    for v = 0, 400 do
++      local ok, r = pcall(function() return RoomConfig.GetRoomByStageTypeAndVariant(StbType.SPECIAL_ROOMS, RoomType.ROOM_CHALLENGE, v, 0) end)
++      if ok and r ~= nil and r.Variant == v and r.Type == RoomType.ROOM_CHALLENGE then
++        subs[#subs + 1] = v .. ":" .. tostring(r.Subtype) .. ":" .. tostring(r.Name)
++      end
++    end
++    say("challenge variants " .. table.concat(subs, " "))
++  end)
++elseif phase == "doorprobe" then
++  local function doors()
++    local t = {}
++    for s = 0, 7 do local d = room():GetDoor(s) t[#t + 1] = s .. "=" .. (d and tostring(d.TargetRoomIndex) or "-") end
++    return table.concat(t, " ")
++  end
++  step(function()
++    Isaac.ExecuteCommand("debug 3")
++    Isaac.ExecuteCommand("stage 2")
++    wait(150)
++  end)
++  step(function()
++    local l = game:GetLevel()
++    say("floor stage " .. l:GetStage() .. " type " .. l:GetStageType())
++    local cls = getmetatable(room())
++    say("room metatable has the method: " .. tostring(rawget(rawget(cls, "__class") or cls, "TrySpawnSpecialQuestDoor") ~= nil) .. " (REPENTOGON.Implemented: " .. tostring(listed("Room.TrySpawnSpecialQuestDoor")) .. ")")
++    local desc = l:GetCurrentRoomDesc()
++    say("current room data type " .. desc.Data.Type .. " variant " .. desc.Data.Variant .. " doors: " .. doors())
++    do
++      local dp = B.r32(B.ptr(desc) + 0x10)
++      local ws = {}
++      for off = 0, 0x48, 4 do ws[#ws + 1] = string.format("%x:%x", off, B.r32(dp + off)) end
++      say(string.format("descriptor data %x (userdata ptr %x) words %s", dp, B.ptr(desc.Data), table.concat(ws, " ")))
++    end
++    do
++      local found = {}
++      for stb = 0, 40 do
++        for v = 0, 4000 do
++          local ok, r = pcall(function() return RoomConfig.GetRoomByStageTypeAndVariant(stb, RoomType.ROOM_DEFAULT, v, 0) end)
++          if ok and r ~= nil and r.Variant == v then
++            local p = B.ptr(r)
++            if (B.r32(p + 0x10) == 0x22 and stb ~= 35) or B.r32(p + 0x3c) ~= 0 or B.r32(p + 0x10) == 10 or B.r32(p + 0x10) == 11 then
++              found[#found + 1] = string.format("stb%d v%d sub%x mask3c=%x name=%s", stb, r.Variant, B.r32(p + 0x10), B.r32(p + 0x3c), tostring(r.Name))
++            end
++          end
++        end
++      end
++      say("rooms with subtype 0x22 or mask: " .. #found)
++      for k = 1, math.min(#found, 12) do say(found[k]) end
++    end
++    for _, v in ipairs({ 5, 6, 101 }) do
++      local r = RoomConfig.GetRoomByStageTypeAndVariant(35, RoomType.ROOM_DEFAULT, v, 0)
++      local p = B.ptr(r)
++      local ws = {}
++      for off = 0, 0x58, 4 do ws[#ws + 1] = string.format("%x:%x", off, B.r32(p + off)) end
++      say("stb35 v" .. v .. " words " .. table.concat(ws, " "))
++    end
++    for _, stb in ipairs({ 1, 4 }) do
++      local ok, r = pcall(function() return RoomConfig.GetRoomByStageTypeAndVariant(stb, RoomType.ROOM_DEFAULT, 34, 0) end)
++      if ok and r ~= nil and r.Variant == 34 then
++        local p = B.ptr(r)
++        local ws = {}
++        for off = 0, 0x48, 4 do ws[#ws + 1] = string.format("%x:%x", off, B.r32(p + off)) end
++        say("stb " .. stb .. " words " .. table.concat(ws, " "))
++        say("stb " .. stb .. " variant 34: name " .. tostring(r.Name) .. " shape " .. r.Shape .. " doormask " .. string.format("%x", r.Doors) .. " raw+0x3c " .. string.format("%x", B.r32(B.ptr(r) + 0x3c)))
++      end
++    end
++  end)
++elseif phase == "doormask" then
++  local function doors()
++    local t = {}
++    for s = 0, 7 do local d = room():GetDoor(s) t[#t + 1] = s .. "=" .. (d and tostring(d.TargetRoomIndex) or "-") end
++    return table.concat(t, " ")
++  end
++  local function door_count()
++    local n = 0
++    for s = 0, 7 do if room():GetDoor(s) then n = n + 1 end end
++    return n
++  end
++  local variant = tonumber(B.env("ISAAC_LAB_VARIANT") or "101")
++  step(function()
++    Isaac.ExecuteCommand("debug 3")
++    Isaac.ExecuteCommand("stage 2")
++    wait(150)
++  end)
++  step(function()
++    local l = game:GetLevel()
++    say("floor stage " .. l:GetStage() .. " type " .. l:GetStageType() .. " doors: " .. doors())
++    check(l:GetStage() == 2, "on floor 2")
++    local desc = l:GetCurrentRoomDesc()
++    local cfg = RoomConfig.GetRoomByStageTypeAndVariant(35, RoomType.ROOM_DEFAULT, variant, 0)
++    check(cfg ~= nil and B.r32(B.ptr(cfg) + 0x10) == 0x22, "stb35 variant " .. variant .. " is subtype 0x22 (the mirror-door room)")
++    desc.Data = cfg
++    local n0 = door_count()
++    local r1 = room():TrySpawnSpecialQuestDoor()
++    say("plain call answered " .. tostring(r1) .. ", doors " .. n0 .. " -> " .. door_count())
++    check(r1 == false and door_count() == n0, "without force the stage-type test refuses (Basement II)")
++    if B.env("ISAAC_LAB_MASK") then
++      local free
++      for s = 0, 3 do if not room():GetDoor(s) then free = s break end end
++      if free then B.w32(B.ptr(cfg) + 0x3c, 1 << free) say("PROBE ONLY: wrote the +0x3c word " .. (1 << free) .. " (free slot " .. free .. ")") end
++    end
++    local r2 = room():TrySpawnSpecialQuestDoor(true)
++    say("forced call answered " .. tostring(r2) .. ", doors " .. n0 .. " -> " .. door_count() .. " : " .. doors())
++    check(r2 == true and door_count() == n0 + 1, "force: a door was spawned")
++  end)
++elseif phase == "door" or phase == "doorreal" then
++  -- Downpour II: the real mirror-door room (type 1, subtype 0x22, its own copy of the room data, variant >= 10000). The game spawns the quest
++  -- door when it is entered; the lab removes it, makes the floor look like a non-alt one (the stage type word at game+4 is what the function's
++  -- first test reads; restored at once) and calls Room:TrySpawnSpecialQuestDoor with and without force.
++  local mirror_idx
++  local function door_slot_with(target)
++    for s = 0, 7 do local d = room():GetDoor(s) if d and d.TargetRoomIndex == target then return s end end
++  end
++  step(function()
++    Isaac.ExecuteCommand("debug 3")
++    Isaac.ExecuteCommand("stage 2d")
++    wait(200)
++  end)
++  step(function()
++    local l = game:GetLevel()
++    check(l:GetStage() == 2 and l:GetStageType() >= 4, "on Downpour II (stage " .. l:GetStage() .. " type " .. l:GetStageType() .. ")")
++    local rooms = l:GetRooms()
++    for k = 0, rooms.Size - 1 do
++      local d = rooms:Get(k)
++      if d and d.Data and d.Data.Type == 1 and B.r32(B.ptr(d.Data) + 0x10) == 0x22 and B.r32(B.ptr(d.Data) + 0x3c) ~= 0 then mirror_idx = d.SafeGridIndex break end
++    end
++    say("mirror-door room index " .. tostring(mirror_idx))
++    check(mirror_idx ~= nil, "the floor has a mirror-door room")
++    if mirror_idx then game:ChangeRoom(mirror_idx) end
++    wait(90)
++  end)
++  step(function()
++    local l = game:GetLevel()
++    check(l:GetCurrentRoomIndex() == mirror_idx, "in the mirror-door room")
++    local slot = door_slot_with(-100)
++    check(slot ~= nil, "the game's own rule spawned the quest door (target -100) on entry, slot " .. tostring(slot))
++    if not slot then return end
++    room():RemoveDoor(slot)
++    check(room():GetDoor(slot) == nil, "the door was removed for the test")
++    local g = B.r32(0x00c71678)
++    local old = B.r32(g + 4)
++    B.w32(g + 4, 0)                       -- stage type 0: the function's first test now refuses
++    local plain = room():TrySpawnSpecialQuestDoor()
++    local plain_door = door_slot_with(-100)
++    local forced = room():TrySpawnSpecialQuestDoor(true)
++    local forced_slot = door_slot_with(-100)
++    B.w32(g + 4, old)
++    say("plain " .. tostring(plain) .. " (door " .. tostring(plain_door) .. "), forced " .. tostring(forced) .. " (door " .. tostring(forced_slot) .. "), stage type word restored to " .. old)
++    check(plain == false and plain_door == nil, "without force the stage-type test refuses")
++    check(forced == true and forced_slot == slot, "force spawns the quest door again in slot " .. slot)
++    check(B.r32(g + 4) == old and l:GetStageType() == old, "stage type restored")
++    check(room():TrySpawnSpecialQuestDoor(true) == false, "a second forced call answers false (the slot already has its door)")
++    check(listed("Room.TrySpawnSpecialQuestDoor"), "REPENTOGON.Implemented lists Room.TrySpawnSpecialQuestDoor")
++  end)
++elseif phase == "charmenu" then
++  -- MC_PRE_RENDER_CUSTOM_CHARACTER_MENU (1333) on a real character select: the title menu is entered by the script (Enter), the clock is the
++  -- character page's own render callback; a modded character (player type >= 41, from the charlab test mod) is selected, then a vanilla one.
++  local mode = B.env("ISAAC_LAB_CS") or "rec"        -- rec: 1333 answers nil; cancel: MC_PRE_RENDER_CHARACTER_SELECT_PAGE answers false for modded pages
++  local ids = { PRE = M.MC_PRE_RENDER_CHARACTER_SELECT_PAGE, POST = M.MC_POST_RENDER_CHARACTER_SELECT_PAGE, LEG = M.MC_PRE_RENDER_CUSTOM_CHARACTER_MENU }
++  check(ids.LEG == 1333, "MC_PRE_RENDER_CUSTOM_CHARACTER_MENU is 1333 (" .. tostring(ids.LEG) .. ")")
++  local n = { pre = 0, post = 0, leg = 0, pre_mod = 0, post_mod = 0, leg_mod = 0, leg_vanilla = 0 }
++  local legargs
++  local clock, sel_mod, sel_van = 0, nil, nil
++  local tick
++  mod:AddCallback(ids.PRE, function(_, pt)
++    tick()
++    n.pre = n.pre + 1
++    if pt >= 41 then
++      n.pre_mod = n.pre_mod + 1
++      if mode == "cancel" then return false end
++    end
++  end)
++  mod:AddCallback(ids.POST, function(_, pt)
++    n.post = n.post + 1
++    if pt >= 41 then n.post_mod = n.post_mod + 1 end
++  end)
++  mod:AddCallback(ids.LEG, function(_, pt, pos, spr)
++    n.leg = n.leg + 1
++    if pt >= 41 then n.leg_mod = n.leg_mod + 1 else n.leg_vanilla = n.leg_vanilla + 1 end
++    if not legargs then
++      legargs = string.format("pt %s pos %s sprite %s select %d", tostring(pt), tostring(pos), tostring(spr and spr:GetFilename()), select("#", pt, pos, spr))
++      say("1333 first call: " .. legargs)
++    end
++  end)
++  local function sel_id()
++    for id = 18, 120 do
++      local pt = CharacterMenu.GetPlayerTypeFromCharacterMenuID(id, false)
++      if pt and pt >= 41 then return id, pt end
++    end
++  end
++  tick = function()
++    clock = clock + 1
++    if clock == 60 then
++      local id, pt = sel_id()
++      say("modded menu id " .. tostring(id) .. " player type " .. tostring(pt))
++      if id then CharacterMenu.SetSelectedCharacterID(id) end
++    elseif clock == 400 then
++      say(string.format("after modded page: pre %d (modded %d) post %d (modded %d) 1333 %d (modded %d, vanilla %d)", n.pre, n.pre_mod, n.post, n.post_mod, n.leg, n.leg_mod, n.leg_vanilla))
++      local before = n.leg
++      CharacterMenu.SetSelectedCharacterID(2)
++      n.mark = before
++    elseif clock == 700 then
++      say(string.format("after vanilla page: pre %d (modded %d) post %d (modded %d) 1333 %d (modded %d, vanilla %d)", n.pre, n.pre_mod, n.post, n.post_mod, n.leg, n.leg_mod, n.leg_vanilla))
++      check(n.pre_mod > 10, "the modded page was shown (" .. n.pre_mod .. " pre calls)")
++      if mode == "rec" then
++        check(n.leg_mod > 10 and n.leg_mod == n.post_mod, "1333 fires for each drawn modded page, as often as 1330 (" .. n.leg_mod .. ", " .. n.post_mod .. ")")
++      else
++        check(n.leg_mod == 0 and n.post_mod == 0, "a cancelled modded page runs neither 1333 nor 1330 (" .. n.leg_mod .. ", " .. n.post_mod .. ")")
++      end
++      check(n.leg_vanilla == 0 and n.leg == n.leg_mod, "1333 never fires for a vanilla page (" .. n.leg_vanilla .. ")")
++      check(n.post > n.post_mod, "vanilla pages kept running 1330 (" .. n.post .. " total, " .. n.post_mod .. " modded)")
++      B.log(string.format("lab_hook_leftovers: DONE %d PASS %d FAIL", pass, fail))
++    end
++  end
++elseif phase == "thematic" then
++  -- MC_GET_BOSS_THEMATIC_ITEM (1493): the boss room's clear award asks Room::GetBossThematicItem (hook 409). The callback records its arguments,
++  -- then answers a table (a Collectible spawns as a pedestal), true (nothing spawns) and nil (the game's own answer stands).
++  local ID = M.MC_GET_BOSS_THEMATIC_ITEM
++  check(ID == 1493, "MC_GET_BOSS_THEMATIC_ITEM is 1493 (" .. tostring(ID) .. ")")
++  local calls, last, answer = 0, nil, nil
++  local step_info = {}
++  mod:AddCallback(ID, function(_, spawned, collectible, trinket)
++    calls = calls + 1
++    last = { spawned, collectible, trinket, select("#", spawned, collectible, trinket) }
++    say(string.format("1493 call %d: spawned %s collectible %s trinket %s", calls, tostring(spawned), tostring(collectible), tostring(trinket)))
++    return answer
++  end)
++  local function pedestals(id)
++    local n = 0
++    for _, e in ipairs(Isaac.FindByType(5, 100, id, false, false)) do n = n + 1 end
++    return n
++  end
++  local function all_pedestals()
++    local n = 0
++    for _, e in ipairs(Isaac.FindByType(5, 100, -1, false, false)) do n = n + 1 end
++    return n
++  end
++  local boss_room = B.env("ISAAC_LAB_ROOM") or "s.boss.1010"
++  step(function()
++    Isaac.ExecuteCommand("debug 3")
++    Isaac.ExecuteCommand("goto " .. boss_room)
++    wait(90)
++  end)
++  step(function()
++    say("room type " .. room():GetType() .. " boss id " .. tostring(room():GetBossID()))
++    check(room():GetType() == RoomType.ROOM_BOSS, "in a boss room")
++    check(listed("MC_GET_BOSS_THEMATIC_ITEM") or REPENTOGON.Implemented[1493] == true, "1493 is listed as implemented")
++    for _, e in ipairs(Isaac.GetRoomEntities()) do if e:IsActiveEnemy(false) then e:Remove() end end
++    answer = nil
++    calls = 0
++    room():SpawnClearAward()
++    say("SpawnClearAward with a nil answer: calls " .. calls)
++    check(calls >= 1, "the callback ran when the clear award was spawned (" .. calls .. ")")
++    check(last ~= nil and last[4] == 3 and type(last[1]) == "boolean" and math.type(last[2]) == "integer" and math.type(last[3]) == "integer", "arguments (boolean, integer, integer)")
++  end)
++  step(function()
++    local before = pedestals(1)
++    local all = all_pedestals()
++    answer = { Collectible = 1 }
++    calls = 0
++    room():SpawnClearAward()
++    wait(10)
++    step_info = { before = before, all = all }
++  end)
++  step(function()
++    say("after the table answer: calls " .. calls .. ", spawned flag seen " .. tostring(last and last[1]))
++    check(calls >= 1, "the callback ran again (" .. calls .. ")")
++    check(pedestals(1) > step_info.before, "a table answer {Collectible = 1} spawned a pedestal with item 1 (" .. step_info.before .. " -> " .. pedestals(1) .. ")")
++    local all = all_pedestals()
++    answer = true
++    calls = 0
++    room():SpawnClearAward()
++    wait(10)
++    step_info.all2 = all
++  end)
++  step(function()
++    check(calls >= 1, "the callback ran for the true answer (" .. calls .. ")")
++    -- true says: no themed item; the clear award itself may still drop its normal reward, so only the item 1 count is compared
++    check(pedestals(1) == step_info.before + 1, "a true answer spawned no further item 1 (" .. pedestals(1) .. "; the game's own draw said false here, so this only shows true does not break the call)")
++  end)
++elseif phase == "downpour" then
++  step(function()
++    Isaac.ExecuteCommand("debug 3")
++    Isaac.ExecuteCommand("stage 2d")
++    wait(200)
++  end)
++  step(function()
++    local l = game:GetLevel()
++    say("floor stage " .. l:GetStage() .. " type " .. l:GetStageType() .. " mirror " .. tostring(l:HasMirrorDimension()))
++    local rooms = l:GetRooms()
++    for k = 0, rooms.Size - 1 do
++      local d = rooms:Get(k)
++      local data = d and d.Data
++      if data then
++        local p = B.ptr(data)
++        local sub = B.r32(p + 0x10)
++        if sub == 0x22 or B.r32(p + 0x3c) ~= 0 or B.r32(p + 0x38) > 1 then
++          say(string.format("room idx %d type %d variant %d sub %x +0x38=%x +0x3c=%x", d.SafeGridIndex, data.Type, data.Variant, sub, B.r32(p + 0x38), B.r32(p + 0x3c)))
++        end
++      end
++    end
++    local cur = l:GetCurrentRoomDesc().Data
++    say(string.format("current room type %d variant %d sub %x +0x38=%x", cur.Type, cur.Variant, B.r32(B.ptr(cur) + 0x10), B.r32(B.ptr(cur) + 0x38)))
++  end)
++elseif phase == "boss" then
++  local want = tonumber(B.env("ISAAC_LAB_WAVES") or "4")
++  local variant = B.env("ISAAC_LAB_VARIANT") or "0"
++  local maxwave, wait_frames = 0, 0
++  local function amb() return B.r32(0x00c71678) + 0x265c8 end
++  local cleared_at
++  step(function()
++    Isaac.ExecuteCommand("debug 3")
++    Ambush.SetMaxBossChallengeWaves(want)
++    check(Ambush.GetMaxBossChallengeWaves() == want, "GetMaxBossChallengeWaves reads " .. want)
++    check(Ambush.GetMaxChallengeWaves() == 3, "GetMaxChallengeWaves still 3")
++    check(listed("Ambush.SetMaxBossChallengeWaves"), "REPENTOGON.Implemented lists the boss setter")
++    Isaac.ExecuteCommand("goto s.challenge.0")
++    wait(60)
++  end)
++  step(function()
++    -- make the current challenge room a boss challenge (subtype 1): swap its room data for a subtype 1 variant
++    local desc = game:GetLevel():GetCurrentRoomDesc()
++    local bossroom = RoomConfig.GetRoomByStageTypeAndVariant(StbType.SPECIAL_ROOMS, RoomType.ROOM_CHALLENGE, tonumber(variant), 0)
++    check(bossroom ~= nil and bossroom.Subtype == 1, "variant " .. variant .. " is a boss challenge (subtype 1)")
++    desc.Data = bossroom
++    say("room type " .. room():GetType() .. " subtype " .. tostring(game:GetLevel():GetCurrentRoomDesc().Data.Subtype))
++    check(room():GetType() == RoomType.ROOM_CHALLENGE, "in a challenge room")
++    Ambush.StartChallenge()
++    check(B.r8(amb() + 0x20) == 1, "the ambush is active")
++    wait_frames = 0
++    wait(3000, function()
++      wait_frames = wait_frames + 1
++      local w = Ambush.GetCurrentWave()
++      if w > maxwave then maxwave = w say("wave " .. w .. " at wait frame " .. wait_frames) end
++      for _, e in ipairs(Isaac.GetRoomEntities()) do
++        if e:IsActiveEnemy(false) and e:IsVulnerableEnemy() then e:Kill() end
++      end
++      if B.r8(amb() + 0x20) == 0 and wait_frames > 60 then cleared_at = wait_frames return true end
++      return false
++    end)
++  end)
++  step(function()
++    say("ambush ended at wait frame " .. tostring(cleared_at) .. ", highest wave counter " .. maxwave .. ", wanted maximum " .. want)
++    check(cleared_at ~= nil, "the challenge ended (active byte back to 0)")
++    check(maxwave == want, "the wave counter ran to the maximum " .. want .. " (highest seen " .. maxwave .. ")")
++  end)
++else
++  step(function() say("unknown phase") end)
++end
++
++mod:AddCallback(M.MC_POST_RENDER, function()
++  frame = frame + 1
++  if frame < 5 then return end
++  if waiting then
++    if wait_cond() then waiting = false
++    else
++      wait_left = wait_left - 1
++      if wait_left <= 0 then waiting = false else return end
++    end
++  end
++  if frame % 3 ~= 0 then return end
++  i = i + 1
++  local f = steps[i]
++  if not f then
++    if i == #steps + 1 and phase ~= "charmenu" then B.log(string.format("lab_hook_leftovers: DONE %d PASS %d FAIL", pass, fail)) end
++    return
++  end
++  local ok, err = pcall(f)
++  if not ok then fail = fail + 1 B.log("lab_hook_leftovers: step " .. i .. " error: " .. tostring(err)) end
++end)
 diff --git a/scripts/recomp/rgon/lab_host_misc.lua b/scripts/recomp/rgon/lab_host_misc.lua
 new file mode 100644
 index 0000000..403a441
@@ -35951,6 +36627,55 @@ index 0000000..e0d88ea
 +    B.log("lab_locate_more: DONE pass=" .. pass .. " fail=" .. fail)
 +  end
 +end)
+diff --git a/scripts/recomp/rgon/lab_log_noise.lua b/scripts/recomp/rgon/lab_log_noise.lua
+new file mode 100644
+index 0000000..38159be
+--- /dev/null
++++ b/scripts/recomp/rgon/lab_log_noise.lua
+@@ -0,0 +1,43 @@
++-- lab_log_noise.lua (development only; ISAAC_RGON_LAB=lab_log_noise.lua, worker log-noise)
++-- The "not implemented: callback" log line: none for a callback that is implemented (the Layer's own listeners on
++-- 1095-1097 used to ask before api_hooks.lua defined them), one for a callback that is not.
++-- Prints "lab_log_noise: DONE n PASS m FAIL"; the run's game.log is also grepped for the two kinds of line.
++local T = ...
++local B = T.B
++local pass, fail = 0, 0
++local function check(ok, what)
++  if ok then pass = pass + 1 else fail = fail + 1 end
++  B.log(string.format("lab_log_noise: %s %s", ok and "PASS" or "FAIL", what))
++end
++local mod = RegisterMod("log noise lab", 1)
++
++local lines = {}
++local debug_string = Isaac.DebugString
++rawset(Isaac, "DebugString", function(s)
++  lines[#lines + 1] = tostring(s)
++  return debug_string(s)
++end)
++local function said(id)
++  local hits = 0
++  for _, s in ipairs(lines) do
++    if s:find("not implemented: callback", 1, true) and s:find("(" .. id .. ")", 1, true) and s:find("log noise lab", 1, true) then hits = hits + 1 end
++  end
++  return hits
++end
++
++-- an implemented callback and one the Layer does not provide
++local impl = ModCallbacks.MC_POST_TRIGGER_COLLECTIBLE_REMOVED
++local missing, mname
++for k, v in pairs(ModCallbacks) do
++  if type(v) == "number" and v >= 1000 and not T.R.Implemented[v] and (not missing or v < missing) then missing, mname = v, k end
++end
++B.log("lab_log_noise: implemented probe " .. tostring(impl) .. ", unimplemented probe " .. tostring(mname) .. " " .. tostring(missing))
++check(impl ~= nil and T.R.Implemented[impl] == true, "1095 is in REPENTOGON.Implemented")
++check(missing ~= nil, "some callback id >= 1000 is not implemented (probe)")
++
++mod:AddCallback(impl, function() end)
++mod:AddCallback(missing, function() end)
++mod:AddCallback(missing, function() end)
++check(said(impl) == 0, "an implemented callback prints no 'not implemented' line (" .. said(impl) .. ")")
++check(said(missing) == 1, "an unimplemented callback prints exactly one line (" .. said(missing) .. ")")
++B.log(string.format("lab_log_noise: DONE %d PASS %d FAIL", pass, fail))
 diff --git a/scripts/recomp/rgon/lab_logbench.lua b/scripts/recomp/rgon/lab_logbench.lua
 new file mode 100644
 index 0000000..38d08dd
@@ -45297,7 +46022,7 @@ index 0000000..ea3c555
 +  end
 +end)
 diff --git a/scripts/recomp/rgon/rgon.lua b/scripts/recomp/rgon/rgon.lua
-index 4175f07..f00066e 100644
+index 4175f07..5f66a9f 100644
 --- a/scripts/recomp/rgon/rgon.lua
 +++ b/scripts/recomp/rgon/rgon.lua
 @@ -72,7 +72,13 @@ end
@@ -45339,7 +46064,42 @@ index 4175f07..f00066e 100644
    local make = SAMPLE[name]
    local sample = make and make()
    local omt = sample and getmetatable(sample)
-@@ -459,6 +472,7 @@ do
+@@ -205,17 +218,27 @@ end
+ -- A mod listening on a callback the layer does not fire yet would wait for
+ -- ever, in silence. It is said once per mod and callback, in the game's own
+ -- log, where the mod's author and drive_stress.mjs both read it.
++-- While the Layer's parts load, a callback is Implemented only once its own part
++-- has run, and an earlier part may listen on it: those asks are checked when the
++-- parts are done (R.FlushCallbackAsks), not at the moment they are made.
+ do
+-  local add, told = Isaac.AddPriorityCallback, {}
++  local add, told, early = Isaac.AddPriorityCallback, {}, {}
++  local function ask(who, id)
++    if R.Implemented[id] or told[who .. id] then return end
++    told[who .. id] = true
++    local name = "?"
++    for k, v in pairs(ModCallbacks) do if v == id then name = k break end end
++    Isaac.DebugString("[REPENTOGON] not implemented: callback " .. name .. " (" .. id .. "), asked for by " .. who)
++  end
++  R.FlushCallbackAsks = function()
++    local list = early
++    early = nil
++    for _, a in ipairs(list) do ask(a[1], a[2]) end
++  end
+   rawset(Isaac, "AddPriorityCallback", function(mod, id, ...)
+     if type(id) == "number" and id >= 1000 and not R.Implemented[id] then
+       local who = type(mod) == "table" and tostring(mod.Name) or "?"
+-      if not told[who .. id] then
+-        told[who .. id] = true
+-        local name = "?"
+-        for k, v in pairs(ModCallbacks) do if v == id then name = k break end end
+-        Isaac.DebugString("[REPENTOGON] not implemented: callback " .. name .. " (" .. id .. "), asked for by " .. who)
+-      end
++      if early then early[#early + 1] = { who, id } else ask(who, id) end
+     end
+     return add(mod, id, ...)
+   end)
+@@ -459,6 +482,7 @@ do
    function L:SetWrapSMode(m) w32(at(self) + LS.wrapS, m) end
    function L:GetWrapTMode() return r32(at(self) + LS.wrapT) end
    function L:SetWrapTMode(m) w32(at(self) + LS.wrapT, m) end
@@ -45347,7 +46107,7 @@ index 4175f07..f00066e 100644
    function L:GetFlipX() return r8(at(self) + LS.flipX) ~= 0 end
    function L:SetFlipX(v) w8(at(self) + LS.flipX, v and 1 or 0) end
    function L:GetFlipY() return r8(at(self) + LS.flipY) ~= 0 end
-@@ -605,10 +619,10 @@ end
+@@ -605,10 +629,10 @@ end
  local T = {
    B = B, R = R, VA = VA, CLASS = CLASS, SLOT = SLOT, HOOKS = HOOKS, listening = listening,
    method = method, static = static, property = property, wrap = wrap, this = this, vt_ptr = vt_ptr,
@@ -45360,7 +46120,15 @@ index 4175f07..f00066e 100644
    local chunk, why = B.load(part)
    if chunk then
      local ok, err = pcall(chunk, T)
-@@ -782,9 +796,11 @@ end
+@@ -619,6 +643,7 @@ for _, part in ipairs({ "api_callbacks.lua", "api_lua.lua", "api_data.lua", "api
+   if T.run ~= run then run_by_rule = T.run end
+ end
+ arm(nil)
++R.FlushCallbackAsks()
+ 
+ -- ISAAC_RGON_LAB=<file>: a development script run with the same table, for
+ -- reading the game's memory while working out an offset (dev_dist.py copies
+@@ -782,9 +807,11 @@ end
  --   it uses names the layer lacks, and runs without REPENTOGON       -> hidden
  --   it names REPENTOGON and uses nothing of it (the mods that switch
  --      themselves off because REPENTOGON does their job natively)    -> hidden
@@ -45375,7 +46143,7 @@ index 4175f07..f00066e 100644
  -- in the game's log and in REPENTOGON.Extras.Gate. No scan file (a dist with
  -- the mods in its instance tree, a packed mod, ?modscan=0): the list alone.
  -- ISAAC_RGON_ALLOW=<folder>,<folder> adds mods for a test; =* lets every mod in;
-@@ -817,26 +833,143 @@ do
+@@ -817,26 +844,143 @@ do
      for name in extra:gmatch("[^,]+") do ALLOW[name:lower()] = true end
    end
  end
@@ -45416,9 +46184,11 @@ index 4175f07..f00066e 100644
 +        out[k] = t
 +      else
 +        out[k] = v
-+      end
-+    end
-+  end
+       end
+     end
+   end
+-  table.sort(missing)
+-  return used, missing
 +  return out
 +end
 +-- the class a receiver hint of the scan stands for: a class name (normalised), nil (unknown) or false (the mod's
@@ -45523,11 +46293,9 @@ index 4175f07..f00066e 100644
 +          used[name] = true
 +          if not R.Implemented[id] and not GATE_NOT_REQUIRED[name] then missing[name] = true end
 +        end
-       end
-     end
-   end
--  table.sort(missing)
--  return used, missing
++      end
++    end
++  end
 +  local list, n = {}, 0
 +  for name in pairs(used) do n = n + 1 end
 +  for name in pairs(missing) do list[#list + 1] = name end
@@ -45536,7 +46304,7 @@ index 4175f07..f00066e 100644
  end
  -- shown or not, and why (the rule in the comment above)
  local function gate_rule(quits, yields, used, nmissing)
-@@ -865,16 +998,26 @@ if ALLOW ~= true and B.env("ISAAC_RGON_AUTO") ~= "0" then
+@@ -865,16 +1009,26 @@ if ALLOW ~= true and B.env("ISAAC_RGON_AUTO") ~= "0" then
      end
    end
    if scan and lists then
@@ -45568,7 +46336,7 @@ index 4175f07..f00066e 100644
      local ids = {}
      for id in pairs(scan.mods) do ids[#ids + 1] = tostring(id) end
      table.sort(ids)
-@@ -882,10 +1025,10 @@ if ALLOW ~= true and B.env("ISAAC_RGON_AUTO") ~= "0" then
+@@ -882,10 +1036,10 @@ if ALLOW ~= true and B.env("ISAAC_RGON_AUTO") ~= "0" then
        local row = scan.mods[id]
        local key = id:lower()
        if type(row) == "table" and ALLOW[key] == nil then
@@ -45581,7 +46349,7 @@ index 4175f07..f00066e 100644
          local list = ""
          if #missing > 0 then
            list = ": " .. table.concat(missing, ", ", 1, math.min(#missing, 12)) .. (#missing > 12 and (" and " .. (#missing - 12) .. " more") or "")
-@@ -895,7 +1038,7 @@ if ALLOW ~= true and B.env("ISAAC_RGON_AUTO") ~= "0" then
+@@ -895,7 +1049,7 @@ if ALLOW ~= true and B.env("ISAAC_RGON_AUTO") ~= "0" then
          if shown then
            -- a global table the layer lacks would end the mod's file where it is first read
            for _, name in ipairs(missing) do
@@ -45590,7 +46358,7 @@ index 4175f07..f00066e 100644
                rawset(_G, name, standin(name))
                miss(name .. " (a stand-in, for " .. key .. ")")
              end
-@@ -907,6 +1050,16 @@ if ALLOW ~= true and B.env("ISAAC_RGON_AUTO") ~= "0" then
+@@ -907,6 +1061,16 @@ if ALLOW ~= true and B.env("ISAAC_RGON_AUTO") ~= "0" then
      log("gate: no scan of the installed mods (modscan.lua): REPENTOGON is shown to the mods of the layer's own list only")
    end
  end
@@ -45730,7 +46498,7 @@ index 1a209cf..8d72794 100644
      else if (GL.has(name)) { used++; if (!HAVECLASS.has(name)) missing.push(name); }
      else if (name.startsWith('MC_')) { const id = CB.get(name); if (id >= 1000) { used++; if (!HAVEID.has(id)) missing.push(name); } }
 diff --git a/scripts/recomp/rgon/tools/hook_table.py b/scripts/recomp/rgon/tools/hook_table.py
-index 0d1d8bd..b587866 100644
+index 0d1d8bd..5386f20 100644
 --- a/scripts/recomp/rgon/tools/hook_table.py
 +++ b/scripts/recomp/rgon/tools/hook_table.py
 @@ -68,7 +68,7 @@ HOOKS = [
@@ -45742,7 +46510,7 @@ index 0d1d8bd..b587866 100644
      (21, "Game::RestoreState", 0x006bb790, "sig", None, ""),
      (22, "Room::SpawnGridEntity", 0x007ebca0, "reg", None, ""),
      (23, "GridEntity::Init", 0x00709db0, "sig", None, ""),
-@@ -206,6 +206,288 @@ HOOKS = [
+@@ -206,6 +206,290 @@ HOOKS = [
       "character it sets [this+5] from Menu_Character_Entry::IsCharacterAvailable (0x0094d64a, 0x0094d657) and "
       "shows layers 4..15 or 16 of the big page; for a mod's (selected id [this+0x10] >= 0x12, 0x0094d62d) it "
       "always sets [this+5] = 1 (0x0094d700)"),
@@ -46018,6 +46786,8 @@ index 0d1d8bd..b587866 100644
 +    (406, "ItemOverlay::Update", 0x009aca90, "asm", 4, "ItemOverlay::Update(bool), thiscall on game+0x1c034, `ret 4` (0x009acac1, 0x009acf02, 0x009acf98, 0x009acfcf); signature `558bec83ec085356578bf98b07` matches once; callers 0x006fa17d, 0x006fb5a2, 0x0092ff5b"),
 +    (407, "ItemOverlay::Render", 0x009acfe0, "asm", 0, "ItemOverlay::Render(), thiscall on game+0x1c034, plain `ret` (0x009ad20a); state [this] 0 or 1 returns at once, id [this+4], 0x2d special; its one caller is Game::Render at 0x006fc3c9 (`lea ecx,[edi+0x1c034]`)"),
 +    (408, "PauseScreen::Render", 0x009b7190, "asm", 0, "PauseScreen::Render(), thiscall on game+0x23a74, plain `ret` (0x009b7467 and four more); draws the sprites at +0x2c and +0x140; its one caller is Game::Render at 0x006fc5b7 (only when the state word is not 0)"),
++    # worker leftovers (slot 409)
++    (409, "Room::GetBossThematicItem", 0x0080e320, "asm", 0xc, "Room::GetBossThematicItem(int* collectible, int* trinket, uint* seed), thiscall on the Room, answers a bool in al; found by behaviour (REPENTOGON's signature matches nothing): it zeroes both outputs, tests [this+8] == 5 (boss room) and [this+0x1bb4], draws seed % 100 == 0, then switches on the boss id [this+0x1bb0] to a fixed item (0x56, 0x13e, 0x24 ...); two `ret 0xc` (0x0080e36e false, 0x0080e8de true); one direct caller, Room::SpawnClearAward at 0x007fd3ea, which pushes (&collectible, &trinket, &seed)"),
 +    (398, "GetLevelName", 0x00745ca0, "asm", 0, "GetLevelName(std::string* out<ecx>, stage<edx>, stage type, curse, basement number, jumble, mode), the caller pops five stack words (`add esp, 0x14`); plain `ret` at 0x00746094; six direct callers, one is Level::GetName 0x007460b0"),
 +    (343, "RoomTransition::Render", 0x00832850, "asm", 0,"RoomTransition::Render, thiscall no arguments, ecx = game+0x1b83c; its one caller (0x006fc0a1 in Game::Render) calls it only while the game state is 2 or 3 (a transition); six plain `ret` (0x00832be9 .. 0x0083300e). The retired slot 12 note (a false signature match for the zhl Render) was about the signature, not this address"),
 +    # wave 11, worker cb-backdrop: the backdrop render passes and the room's lighting (ecx = the Backdrop at room+0x1bc8, or the Room)
@@ -46031,7 +46801,7 @@ index 0d1d8bd..b587866 100644
  ]
  # the entity classes' virtual functions: slots 100 + 12 * k + class index
  _k = 0
-@@ -213,7 +495,7 @@ for _fn in ("Init", "Update", "Render", "TakeDamage", "HandleCollision"):
+@@ -213,7 +497,7 @@ for _fn in ("Init", "Update", "Render", "TakeDamage", "HandleCollision"):
      for _i, _cls in enumerate(ENTITY_CLASSES):
          HOOKS.append((100 + 12 * _k + _i, "%s::%s" % (_cls, _fn), None, "vt", None, ""))
      _k += 1
@@ -46040,7 +46810,7 @@ index 0d1d8bd..b587866 100644
  
  # Round 110: instruction hooks (lift_patches.py RGON_INSN_HOOKS): a handler right
  # before one instruction inside a function, which reads and writes the registers
-@@ -280,6 +562,260 @@ INSN_HOOKS = [
+@@ -280,6 +564,260 @@ INSN_HOOKS = [
       "before 0x008f89c4, which every way reaches (the target of `jb` at 0x008f8994), and drawn after it "
       "(0x008f8a10..). Called by the wheel 0x0094bee0 (return address 0x0094c44a) and by 0x00982100 "
       "(0x0098256a). REPENTOGON's signature for its RenderCustomCharacterPortraits matches nothing here"),
@@ -46301,7 +47071,7 @@ index 0d1d8bd..b587866 100644
  ]
  
  
-@@ -293,7 +829,8 @@ def check_insn(pe_root, taken):
+@@ -293,7 +831,8 @@ def check_insn(pe_root, taken):
          seen.add(slot)
          f = run_pequery(pe_root, "func", "0x%08x" % iva)
          m = re.search(r"start 0x([0-9a-f]+)\s+end 0x([0-9a-f]+)", f)

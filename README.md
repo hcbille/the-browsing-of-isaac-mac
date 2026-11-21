@@ -67,7 +67,7 @@ Working, on an M2 MacBook Air:
   Fiend Folio's character icons, completion marks, Chaos Bombs and Sin plushie drops no longer fail. A recompilation gap that crashed the game
   on a rarely used accessor is fixed, and so is a crash in a script argument check that
   handed the game a pointer from outside its memory.
-  It has 1,588 of REPENTOGON's 1,727 functions and 372 of its 380 callbacks, the
+  It has 1,589 of REPENTOGON's 1,727 functions and 378 of its 380 callbacks, the
   ones the tested mods use first. Item settings such as `ChargeType` are writable, as
   with REPENTOGON. `scripts/mac/rgon_census.py` measures the rest.
 - One pinned game version. The recompilation only works with one exact `isaac-ng.exe`
@@ -88,8 +88,8 @@ Not done yet:
   with a real Steam client.
 - Mod status effects declared without an id (some of Epiphany's and Fiend Folio's) do
   nothing yet. They used to freeze the game on a room change; that's fixed.
-- More REPENTOGON coverage: what is left is the Dear ImGui windows, custom shaders,
-  a few Windows-only calls, and a handful of callbacks and names that need more
+- More REPENTOGON coverage: what is left is the Dear ImGui windows, per-sprite custom shaders
+  (a mod's own `shaders.xml` works), a few Windows-only calls, and a handful of callbacks and names that need more
   hooks in the game. The full list, with reasons, is in `docs/mac/not-implemented.md`.
 - Floor music is missing in some setups (the game reports no track for the stage); the
   cause is being looked into.
@@ -113,7 +113,7 @@ game.
   [`0cd8f863f`](https://github.com/TeamREPENTOGON/REPENTOGON/commit/0cd8f863fe9947a8414d9018a700269603e629e6)
   (2026-11-09, version 1.1.3, its latest snapshot). That snapshot targets game v1.9.7.12;
   this build runs v1.9.7.17, which is why fields are re-measured.
-- **Progress:** 1,588 of its 1,727 functions and 372 of its 380 callbacks, the ones
+- **Progress:** 1,589 of its 1,727 functions and 378 of its 380 callbacks, the ones
   the tested mods use coming first. `scripts/mac/rgon_census.py` compares the layer
   against a REPENTOGON checkout, and `docs/mac/layer-gaps.md` has the details.
 - The layer tells each mod whether REPENTOGON is there, and only says yes when every

@@ -111,6 +111,19 @@ def rule_lab_prints_done(fs):
                              'B.log(string.format("lab_x: DONE %d PASS %d FAIL", pass, fail)) so a run cut short is visible')
 
 
+def rule_callback_ask_deferred(fs):
+    """The "not implemented: callback" check in rgon.lua must wait until the Layer's parts have loaded (2026-11-21: the
+    Layer's own listeners in api_gaps.lua asked for 1095-1097 before api_hooks.lua defined them, so the play log
+    said "not implemented" for callbacks that work). Queue asks made while parts load and check them in
+    R.FlushCallbackAsks(), called after the part loop; never test R.Implemented[id] inside the wrapper directly."""
+    for f in fs:
+        if f == RGON + '/rgon.lua':
+            t = text_of(f) or ''
+            if 'FlushCallbackAsks' not in t or not re.search(r'R\.FlushCallbackAsks\(\)', t) or 'early' not in t:
+                yield (f, 0, 'queue the AddPriorityCallback "not implemented" asks and check them in R.FlushCallbackAsks() '
+                             'after the part loop, so a callback defined by a later part is not reported')
+
+
 def rule_inert_not_implemented(fs):
     """A stand-in that does nothing is not 'implemented' (2026-11-19: Shape and DebugRenderer, which draw nothing, were put
     in REPENTOGON.Implemented). Mark it with a `-- inert: Name Name` line in its Layer file."""
@@ -1201,11 +1214,35 @@ def rule_hook_h_one_names_in_lab(fs):
             yield (RGON + '/lab_hook_h_one.lua', 0, 'call %s.%s in a check (getter by read-back, setter by effect, action by the game\'s reaction), or leave it out of api_hook_h_one.lua' % (cls, name))
 
 
+def rule_hook_rows_agree(fs):
+    """A function hook is declared in three files by hand (hook_table.py row, lift_patches.py RGON_HOOKS row, hook_slots.lua entry): every
+    hook_table.py row that names an address and a pop count must have the same slot, name and address in lift_patches.py and the same
+    name and pop count in hook_slots.lua (2026-11-21, worker leftovers: three hand-written rows for slot 409 that nothing compared)."""
+    ht, lp, lua = (text_of('scripts/recomp/rgon/tools/hook_table.py'), text_of('scripts/recomp/lift/lift_patches.py'),
+                   text_of(RGON + '/hook_slots.lua'))
+    if ht is None or lp is None or lua is None:
+        return
+    a = lp.find('RGON_HOOKS: list')
+    b = lp.find(']\n', a) if a >= 0 else -1
+    if a < 0 or b < 0:
+        return
+    lift = {int(m.group(1)): (m.group(3), int(m.group(2), 16)) for m in re.finditer(r'\(\s*(\d+),\s*(0x[0-9a-fA-F]+),\s*"([^"]+)"\)', lp[a:b])}
+    slots = {int(m.group(2)): (m.group(1), int(m.group(3), 16)) for m in re.finditer(
+        r'\["([^"]+)"\]\s*=\s*\{\s*(\d+),\s*(0x[0-9a-fA-F]+)\s*\}', lua)}
+    for m in re.finditer(r'^\s*\((\d+), "([^"]+)", (0x[0-9a-fA-F]+),\s*"(?:asm|reg|sig|vt)",\s*(0x[0-9a-fA-F]+|\d+),', ht, re.M):
+        slot, name, at, pop = int(m.group(1)), m.group(2), int(m.group(3), 16), int(m.group(4), 0)
+        line = ht.count('\n', 0, m.start()) + 1
+        if lift.get(slot) != (name, at):
+            yield ('scripts/recomp/rgon/tools/hook_table.py', line, 'slot %d (%s): add or fix the row (%d, 0x%08x, "%s") in lift_patches.py RGON_HOOKS' % (slot, name, slot, at, name))
+        if slots.get(slot) != (name, pop):
+            yield ('scripts/recomp/rgon/tools/hook_table.py', line, 'slot %d (%s): add or fix ["%s"] = { %d, 0x%x } in hook_slots.lua' % (slot, name, name, slot, pop))
+
+
 def rule_hook_h_two_names_in_lab(fs):
-    """Every name api_hook_h_two.lua registers (method / static / a string callback id) is named in lab_hook_h_two.lua (wave 11, worker hook-h2)."""
+    """Every name api_hook_h_two.lua registers (method / static / a string callback id) is named in lab_hook_h_two.lua or lab_hook_leftovers.lua (wave 11, worker hook-h2; wave 12, worker leftovers)."""
     src = text_of(RGON + '/api_hook_h_two.lua')
-    lab = text_of(RGON + '/lab_hook_h_two.lua')
-    if src is None or lab is None:
+    lab = (text_of(RGON + '/lab_hook_h_two.lua') or '') + (text_of(RGON + '/lab_hook_leftovers.lua') or '')
+    if src is None or not lab:
         return
     names = set(re.findall(r'method\("(\w+)", "(\w+)"', src))
     names |= set(re.findall(r'static\(\w+, "(\w+)", "(\w+)"', src))
@@ -1227,7 +1264,38 @@ def rule_lab_driver_on_update_with_pause(fs):
                 yield (f, n, 'the game stops updating while the pause screen is open, so a step driver on MC_POST_UPDATE hangs there: drive the steps from MC_POST_RENDER')
 
 
-RULES = [rule_animation_layer_count_equality, rule_home_paths, rule_layer_files_loaded, rule_frame_line_prefix, rule_part_loads_part, rule_lab_prints_done, rule_inert_not_implemented, rule_ctor_implemented_name, rule_host_math_header, rule_image_render_not_registered, rule_layer_setsize_is_scale, rule_hurt_func_source, rule_global_pointer_plus_offset, rule_status_files_in_notes, rule_flip_default, rule_const_table_fallback, rule_lua_vararg_middle, rule_lua_mixed_table_index, rule_room_transition_stand_in, rule_roomconfig_both_tables, rule_orphan_starts_packed, rule_stale_enum_post_shuffle, rule_fast_setjmp, rule_gate_class_aware, rule_backlog_narrowing, rule_backlog_class_alias, rule_census_false_positives, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_callback_count_vs_frames, rule_entity_methods_in_lab, rule_tears_methods_in_lab, rule_read_of_call_result, rule_type_of_callback_result, rule_item_name_is_a_key, rule_conception_pairing, rule_health_field_offsets, rule_cacheflag_literals, rule_lua_format_options, rule_host_string_to_guest, rule_pgrep_game_by_name, rule_web_host_mem_base, rule_insn_hook_giant_entry, rule_stdstring_read, rule_add_cache_flags_one_arg, rule_misc_b_methods_in_lab, rule_data_values_names_in_lab, rule_host_misc_names_in_lab, rule_options_setters_take_last_argument, rule_scan_global_assignment, rule_locate_names_in_lab, rule_familiar_pickup_names_in_lab, rule_npc_entity_misc_names_in_lab, rule_player_calls_names_in_lab, rule_console_box_drawn_in_console_hook, rule_free_only_own_string_buffers, rule_console_game_lines_whitelisted, rule_lua_keyword_table_key, rule_misnamed_collectible_enums, rule_player_rest_names_in_lab, rule_lab_check_never_fails, rule_grid_npc_names_in_lab, rule_room_sets_names_in_lab, rule_menus_rest_names_in_lab, rule_image_render_names_in_lab, rule_player_cooldowns_names_in_lab, rule_stride_divisibility_only, rule_menus_more_names_in_lab, rule_entity_initseed_offset, rule_hook_h_one_names_in_lab, rule_hook_h_two_names_in_lab, rule_lab_driver_on_update_with_pause]
+def rule_callback_id_local_not_reassigned(fs):
+    """A callback-id local that is reassigned (`id = M.MC_X` after `local id = M.MC_Y`) is shared by every handler closure, so
+    all of them run the LAST id (2026-11-21, planetarium-items: the 1110 handler ran callback 1131 and never fired a mod)."""
+    for f in fs:
+        if not (f.startswith(RGON + '/') and f.endswith('.lua')):
+            continue
+        t = text_of(f)
+        if t is None:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            if re.match(r'\s+id = M\.MC_\w+\s*$', line):
+                yield (f, n, 'do not reassign a shared `id` local to another callback: closures capture the variable, not the value; '
+                             'give each callback its own local (id_stage, id_devil ...) or its own do-block')
+
+
+def rule_shader_probe_logs_first(fs):
+    """A probe mod that watches MC_GET_SHADER_PARAMS must register with AddPriorityCallback and a negative number: the game stops at
+    the first callback that returns a table, and StageAPI and Fiend Folio return one for their own shaders, so a plain AddCallback
+    logger never sees SleeperEtAl or StageAPI-TransitionPixelation (2026-11-21: the first probe runs reported both as 'not fired')."""
+    for f in fs:
+        if not (f.startswith('scripts/mac/testmods/') and f.endswith('.lua')):
+            continue
+        t = text_of(f)
+        if t is None:
+            continue
+        for n, line in enumerate(t.splitlines(), 1):
+            if 'MC_GET_SHADER_PARAMS' in line and 'AddCallback' in line:
+                yield (f, n, 'register with mod:AddPriorityCallback(ModCallbacks.MC_GET_SHADER_PARAMS, -100000, fn) so the probe runs before the mods that return params')
+
+
+
+RULES = [rule_hook_rows_agree, rule_shader_probe_logs_first, rule_callback_id_local_not_reassigned, rule_animation_layer_count_equality, rule_home_paths, rule_layer_files_loaded, rule_frame_line_prefix, rule_part_loads_part, rule_lab_prints_done, rule_inert_not_implemented, rule_ctor_implemented_name, rule_host_math_header, rule_image_render_not_registered, rule_layer_setsize_is_scale, rule_hurt_func_source, rule_global_pointer_plus_offset, rule_status_files_in_notes, rule_flip_default, rule_const_table_fallback, rule_lua_vararg_middle, rule_lua_mixed_table_index, rule_room_transition_stand_in, rule_roomconfig_both_tables, rule_orphan_starts_packed, rule_stale_enum_post_shuffle, rule_fast_setjmp, rule_gate_class_aware, rule_backlog_narrowing, rule_backlog_class_alias, rule_census_false_positives, rule_new_class_names_flagged, rule_leftovers_methods_in_lab, rule_isaac_misc_names_in_lab, rule_empty_method_stand_in, rule_callback_count_vs_frames, rule_entity_methods_in_lab, rule_tears_methods_in_lab, rule_read_of_call_result, rule_type_of_callback_result, rule_item_name_is_a_key, rule_conception_pairing, rule_health_field_offsets, rule_cacheflag_literals, rule_lua_format_options, rule_host_string_to_guest, rule_pgrep_game_by_name, rule_web_host_mem_base, rule_insn_hook_giant_entry, rule_stdstring_read, rule_add_cache_flags_one_arg, rule_misc_b_methods_in_lab, rule_data_values_names_in_lab, rule_host_misc_names_in_lab, rule_options_setters_take_last_argument, rule_scan_global_assignment, rule_locate_names_in_lab, rule_familiar_pickup_names_in_lab, rule_npc_entity_misc_names_in_lab, rule_player_calls_names_in_lab, rule_console_box_drawn_in_console_hook, rule_free_only_own_string_buffers, rule_console_game_lines_whitelisted, rule_lua_keyword_table_key, rule_misnamed_collectible_enums, rule_player_rest_names_in_lab, rule_lab_check_never_fails, rule_grid_npc_names_in_lab, rule_room_sets_names_in_lab, rule_menus_rest_names_in_lab, rule_image_render_names_in_lab, rule_player_cooldowns_names_in_lab, rule_stride_divisibility_only, rule_menus_more_names_in_lab, rule_entity_initseed_offset, rule_hook_h_one_names_in_lab, rule_hook_h_two_names_in_lab, rule_lab_driver_on_update_with_pause, rule_callback_ask_deferred]
 
 def main():
     if '--list' in sys.argv:

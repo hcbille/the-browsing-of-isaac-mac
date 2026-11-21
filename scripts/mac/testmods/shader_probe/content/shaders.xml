@@ -1,0 +1,126 @@
+<shaders>
+    <!-- Pass-through, like StageAPI-RenderAboveHUD: proves the game compiles and draws a mod shader and fires the callback. -->
+    <shader name="ShaderProbePlain">
+        <parameters>
+        </parameters>
+        <vertex><![CDATA[
+            attribute vec3 Position;
+            attribute vec4 Color;
+            attribute vec2 TexCoord;
+            attribute vec4 RenderData;
+            attribute float Scale;
+            varying lowp vec4 Color0;
+            varying mediump vec2 TexCoord0;
+            varying lowp vec4 RenderDataOut;
+            varying lowp float ScaleOut;
+            uniform mat4 Transform;
+            void main(void)
+            {
+                RenderDataOut = RenderData;
+                ScaleOut = Scale;
+                Color0 = Color;
+                TexCoord0 = TexCoord;
+                gl_Position = Transform * vec4(Position.xyz, 1.0);
+            }
+        ]]></vertex>
+        <fragment><![CDATA[
+            varying lowp vec4 Color0;
+            varying mediump vec2 TexCoord0;
+            varying lowp vec4 RenderDataOut;
+            varying lowp float ScaleOut;
+            uniform sampler2D Texture0;
+            void main(void)
+            {
+                gl_FragColor = Color0 * texture2D(Texture0, TexCoord0);
+            }
+        ]]></fragment>
+    </shader>
+
+    <!-- Shows what the game puts in the RenderData attribute of a mod shader: RDMix = 1 mixes the screen toward green when
+         RenderData.zw are both above 100, toward magenta when they are not (zero, unset). -->
+    <shader name="ShaderProbeRD">
+        <parameters>
+            <param name="RDMix" type="float"/>
+        </parameters>
+        <vertex><![CDATA[
+            attribute vec3 Position;
+            attribute vec4 Color;
+            attribute vec2 TexCoord;
+            attribute float RDMix;
+            attribute vec4 RenderData;
+            attribute float Scale;
+            varying lowp vec4 Color0;
+            varying mediump vec2 TexCoord0;
+            varying lowp float MixOut;
+            varying mediump vec4 RenderDataOut;
+            varying lowp float ScaleOut;
+            uniform mat4 Transform;
+            void main(void)
+            {
+                MixOut = RDMix;
+                RenderDataOut = RenderData;
+                ScaleOut = Scale;
+                Color0 = Color;
+                TexCoord0 = TexCoord;
+                gl_Position = Transform * vec4(Position.xyz, 1.0);
+            }
+        ]]></vertex>
+        <fragment><![CDATA[
+            varying lowp vec4 Color0;
+            varying mediump vec2 TexCoord0;
+            varying lowp float MixOut;
+            varying mediump vec4 RenderDataOut;
+            varying lowp float ScaleOut;
+            uniform sampler2D Texture0;
+            void main(void)
+            {
+                vec4 Color = Color0 * texture2D(Texture0, TexCoord0);
+                vec3 mark = (RenderDataOut.z > 100.0 && RenderDataOut.w > 100.0) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 1.0);
+                gl_FragColor = vec4(mix(Color.rgb, mark, MixOut * 0.5), Color.a);
+            }
+        ]]></fragment>
+    </shader>
+
+    <!-- Visible effect: one float parameter (TintAmount) from the callback mixes the screen toward red. -->
+    <shader name="ShaderProbeTint">
+        <parameters>
+            <param name="TintAmount" type="float"/>
+        </parameters>
+        <vertex><![CDATA[
+            attribute vec3 Position;
+            attribute vec4 Color;
+            attribute vec2 TexCoord;
+            attribute float TintAmount;
+            attribute vec4 RenderData;
+            attribute float Scale;
+            varying lowp vec4 Color0;
+            varying mediump vec2 TexCoord0;
+            varying lowp float TintOut;
+            varying lowp vec4 RenderDataOut;
+            varying lowp float ScaleOut;
+            uniform mat4 Transform;
+            void main(void)
+            {
+                TintOut = TintAmount;
+                RenderDataOut = RenderData;
+                ScaleOut = Scale;
+                Color0 = Color;
+                TexCoord0 = TexCoord;
+                gl_Position = Transform * vec4(Position.xyz, 1.0);
+            }
+        ]]></vertex>
+        <fragment><![CDATA[
+            varying lowp vec4 Color0;
+            varying mediump vec2 TexCoord0;
+            varying lowp float TintOut;
+            varying lowp vec4 RenderDataOut;
+            varying lowp float ScaleOut;
+            uniform sampler2D Texture0;
+            void main(void)
+            {
+                vec4 Color = Color0 * texture2D(Texture0, TexCoord0);
+                gl_FragColor = vec4(mix(Color.rgb, vec3(1.0, 0.0, 0.0), TintOut), Color.a);
+            }
+        ]]></fragment>
+    </shader>
+</shaders>

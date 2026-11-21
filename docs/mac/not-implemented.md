@@ -42,6 +42,10 @@ needs a renderer feature (a shader compile and bind path in the Host and a way t
 batch. The clip-pane getters read the renderer's internal settings; candidate globals were located but never tested,
 and nothing uses them.
 
+What does work: a mod's own `shaders.xml` (the vanilla route) compiles, and `MC_GET_SHADER_PARAMS` fires with the mod's
+shader name and drives it (checked with a probe mod, StageAPI and Fiend Folio's `SleeperEtAl`). The per-sprite and
+per-image paths above are not planned: the only user is Fiend Folio's five `coloroffset_*` tints, and the cost is high.
+
 ## 3. Windows-only calls: cannot
 
 - `Isaac.GetDwmWindowAttribute`, `Isaac.SetDwmWindowAttribute`: query and set attributes of the Windows desktop window
